@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Decentra - Chat</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            <h2>Decentra Chat</h2>
+            <div class="header-actions">
+                <span id="current-user" class="username-display"></span>
+                <button id="invite-btn" class="btn btn-small">Generate Invite</button>
+                <button id="logout-btn" class="btn btn-small btn-danger">Logout</button>
+            </div>
+        </div>
+        
+        <div id="messages" class="messages-container">
+            <!-- Messages will be appended here -->
+        </div>
+        
+        <div class="input-container">
+            <form id="message-form">
+                <input type="text" id="message-input" placeholder="Type your message..." autocomplete="off" autofocus>
+                <button type="submit" class="btn btn-primary">Send</button>
+            </form>
+        </div>
+    </div>
+    
+    <div id="invite-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Invite Code Generated</h3>
+            <div class="invite-code-display">
+                <code id="invite-code-text"></code>
+            </div>
+            <p>Share this code with someone you want to invite</p>
+            <button id="close-modal" class="btn btn-primary">Close</button>
+        </div>
+    </div>
+    
+    <script src="/static/chat.js"></script>
+</body>
+</html>
