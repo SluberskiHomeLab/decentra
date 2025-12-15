@@ -6,6 +6,8 @@ A decentralized Discord-like chat server and client that is non-federated and se
 
 - 🚀 Real-time WebSocket-based messaging
 - 💬 Multi-user chat support
+- 🔐 Username/password authentication
+- 🎟️ Invite code system for controlled access
 - 📜 Message history (last 100 messages)
 - 🐳 Docker containerized for easy deployment
 - 🔌 Simple server-client architecture
@@ -86,13 +88,16 @@ python server.py
 ```bash
 cd client
 pip install -r requirements.txt
-python client.py YourUsername
-```
-
-Or run without specifying a username (you'll be prompted):
-```bash
 python client.py
 ```
+
+When prompted:
+1. Enter your username
+2. Enter your password
+3. Choose to login (1) or sign up (2)
+4. If signing up and not the first user, provide an invite code
+
+**Note**: The first user can sign up without an invite code. All subsequent users need an invite code from an existing user.
 
 ## Architecture
 
@@ -120,6 +125,7 @@ The client can be configured using environment variables:
 ### Client Commands
 
 - Type any message and press Enter to send
+- `/invite` - Generate an invite code for new users
 - `/quit`, `/exit`, or `/q` to disconnect
 
 ### Message Format
@@ -127,6 +133,47 @@ The client can be configured using environment variables:
 - Your messages appear in **green**
 - Other users' messages appear in **blue**
 - System messages (joins/leaves) appear in **gray**
+- Invite codes appear in **yellow**
+
+## Authentication
+
+### First User Setup
+
+The first user to connect to a new server can sign up without an invite code:
+
+1. Run the client: `python client.py`
+2. Enter a username and password
+3. Choose option "2" (Sign up)
+4. Leave the invite code field empty
+5. You're now authenticated and can start chatting!
+
+### Subsequent Users
+
+After the first user is created, all new users need an invite code:
+
+1. Ask an existing user to generate an invite code using `/invite`
+2. Run the client: `python client.py`
+3. Enter your desired username and password
+4. Choose option "2" (Sign up)
+5. Enter the invite code provided
+6. You're now authenticated!
+
+### Logging In
+
+If you already have an account:
+
+1. Run the client: `python client.py`
+2. Enter your username and password
+3. Choose option "1" (Login)
+4. Start chatting!
+
+### Generating Invite Codes
+
+Any authenticated user can generate invite codes:
+
+1. Type `/invite` in the chat
+2. Share the generated code with someone you want to invite
+3. Each invite code can only be used once
 
 ## Customization
 
