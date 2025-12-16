@@ -33,9 +33,11 @@
             </div>
             
             <div class="user-section">
+                <span id="current-user-avatar" class="user-avatar">👤</span>
                 <span id="current-user" class="username-display"></span>
                 <button id="user-menu-btn" class="btn btn-small btn-icon" title="Menu">⚙</button>
                 <div id="user-menu" class="user-menu hidden">
+                    <button id="menu-avatar-btn" class="menu-item">Set Avatar</button>
                     <button id="menu-friends-btn" class="menu-item">Friends</button>
                     <button id="menu-create-server-btn" class="menu-item">Create Server</button>
                     <button id="menu-create-voice-channel-btn" class="menu-item">Create Voice Channel</button>
@@ -100,8 +102,25 @@
                     <span id="voice-status-text">In Voice Channel</span>
                 </div>
                 <div class="voice-buttons">
+                    <button id="mic-settings-btn" class="btn btn-secondary btn-icon" title="Microphone Settings">⚙️🎤</button>
                     <button id="mute-btn" class="btn btn-secondary btn-icon" title="Mute/Unmute">🎤</button>
+                    <button id="video-btn" class="btn btn-secondary btn-icon" title="Toggle Video">📹</button>
+                    <button id="screen-share-btn" class="btn btn-secondary btn-icon" title="Share Screen">🖥️</button>
                     <button id="leave-voice-btn" class="btn btn-danger">Leave Voice</button>
+                </div>
+            </div>
+            
+            <!-- Voice participants panel -->
+            <div id="voice-participants" class="voice-participants hidden">
+                <div class="participants-header">
+                    <h4>Voice Participants</h4>
+                    <button id="close-participants-btn" class="btn btn-small btn-icon">✕</button>
+                </div>
+                <div id="participants-list" class="participants-list">
+                    <!-- Participants will be added here -->
+                </div>
+                <div id="remote-videos" class="remote-videos">
+                    <!-- Remote video streams will be added here -->
                 </div>
             </div>
         </div>
@@ -214,6 +233,58 @@
             </div>
             
             <button id="close-server-settings-modal" class="btn btn-secondary">Close</button>
+        </div>
+    </div>
+    
+    <div id="avatar-settings-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Choose Your Avatar</h3>
+            <p>Select an emoji to represent you in voice chats</p>
+            <div id="avatar-picker" class="avatar-picker">
+                <button class="avatar-option" data-avatar="👤">👤</button>
+                <button class="avatar-option" data-avatar="😀">😀</button>
+                <button class="avatar-option" data-avatar="😎">😎</button>
+                <button class="avatar-option" data-avatar="🤖">🤖</button>
+                <button class="avatar-option" data-avatar="👨">👨</button>
+                <button class="avatar-option" data-avatar="👩">👩</button>
+                <button class="avatar-option" data-avatar="🧑">🧑</button>
+                <button class="avatar-option" data-avatar="👦">👦</button>
+                <button class="avatar-option" data-avatar="👧">👧</button>
+                <button class="avatar-option" data-avatar="🐶">🐶</button>
+                <button class="avatar-option" data-avatar="🐱">🐱</button>
+                <button class="avatar-option" data-avatar="🐼">🐼</button>
+                <button class="avatar-option" data-avatar="🦊">🦊</button>
+                <button class="avatar-option" data-avatar="🐻">🐻</button>
+                <button class="avatar-option" data-avatar="🐯">🐯</button>
+                <button class="avatar-option" data-avatar="🦁">🦁</button>
+                <button class="avatar-option" data-avatar="🐸">🐸</button>
+                <button class="avatar-option" data-avatar="🐵">🐵</button>
+                <button class="avatar-option" data-avatar="🦄">🦄</button>
+                <button class="avatar-option" data-avatar="🐉">🐉</button>
+            </div>
+            <button id="close-avatar-modal" class="btn btn-secondary">Close</button>
+        </div>
+    </div>
+    
+    <div id="device-settings-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Audio/Video Settings</h3>
+            
+            <div class="form-group">
+                <label for="microphone-select">Microphone</label>
+                <select id="microphone-select" class="device-select">
+                    <option value="">Default</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label for="speaker-select">Speaker</label>
+                <select id="speaker-select" class="device-select">
+                    <option value="">Default</option>
+                </select>
+            </div>
+            
+            <button id="close-device-settings-modal" class="btn btn-secondary">Close</button>
         </div>
     </div>
     
