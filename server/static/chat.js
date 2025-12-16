@@ -419,7 +419,7 @@
         e.preventDefault();
         
         const message = messageInput.value.trim();
-        if (!message || !authenticated || !currentContext) {
+        if (!message || !authenticated) {
             return;
         }
         
@@ -428,10 +428,10 @@
             content: message
         };
         
-        if (currentContext.type === 'server') {
+        if (currentContext && currentContext.type === 'server') {
             msgData.context = 'server';
             msgData.context_id = `${currentContext.serverId}/${currentContext.channelId}`;
-        } else if (currentContext.type === 'dm') {
+        } else if (currentContext && currentContext.type === 'dm') {
             msgData.context = 'dm';
             msgData.context_id = currentContext.dmId;
         } else {

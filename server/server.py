@@ -303,17 +303,18 @@ async def handler(websocket):
                         # Route message based on context
                         if context == 'server' and context_id:
                             # Server channel message
-                            server_id, channel_id = context_id.split('/')
-                            if server_id in servers and channel_id in servers[server_id]['channels']:
-                                if username in servers[server_id]['members']:
-                                    # Store in channel history
-                                    servers[server_id]['channels'][channel_id]['messages'].append(msg_obj)
-                                    if len(servers[server_id]['channels'][channel_id]['messages']) > MAX_HISTORY:
-                                        servers[server_id]['channels'][channel_id]['messages'].pop(0)
-                                    
-                                    # Broadcast to server members
-                                    await broadcast_to_server(server_id, json.dumps(msg_obj))
-                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} in {server_id}/{channel_id}: {msg_content}")
+                            if '/' in context_id:
+                                server_id, channel_id = context_id.split('/', 1)
+                                if server_id in servers and channel_id in servers[server_id]['channels']:
+                                    if username in servers[server_id]['members']:
+                                        # Store in channel history
+                                        servers[server_id]['channels'][channel_id]['messages'].append(msg_obj)
+                                        if len(servers[server_id]['channels'][channel_id]['messages']) > MAX_HISTORY:
+                                            servers[server_id]['channels'][channel_id]['messages'].pop(0)
+                                        
+                                        # Broadcast to server members
+                                        await broadcast_to_server(server_id, json.dumps(msg_obj))
+                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} in {server_id}/{channel_id}: {msg_content}")
                         
                         elif context == 'dm' and context_id:
                             # Direct message
