@@ -88,13 +88,36 @@
     const voiceControls = document.getElementById('voice-controls');
     const voiceStatusText = document.getElementById('voice-status-text');
     const muteBtn = document.getElementById('mute-btn');
+    const videoBtn = document.getElementById('video-btn');
+    const screenShareBtn = document.getElementById('screen-share-btn');
+    const micSettingsBtn = document.getElementById('mic-settings-btn');
     const leaveVoiceBtn = document.getElementById('leave-voice-btn');
     const incomingCallModal = document.getElementById('incoming-call-modal');
     const callerNameDisplay = document.getElementById('caller-name');
     const acceptCallBtn = document.getElementById('accept-call-btn');
     const rejectCallBtn = document.getElementById('reject-call-btn');
+    
+    // Voice participants panel
+    const voiceParticipants = document.getElementById('voice-participants');
+    const participantsList = document.getElementById('participants-list');
+    const remoteVideos = document.getElementById('remote-videos');
+    const closeParticipantsBtn = document.getElementById('close-participants-btn');
+    
+    // Avatar and device modals
+    const avatarSettingsModal = document.getElementById('avatar-settings-modal');
+    const avatarPicker = document.getElementById('avatar-picker');
+    const closeAvatarModalBtn = document.getElementById('close-avatar-modal');
+    const menuAvatarBtn = document.getElementById('menu-avatar-btn');
+    const currentUserAvatar = document.getElementById('current-user-avatar');
+    
+    const deviceSettingsModal = document.getElementById('device-settings-modal');
+    const microphoneSelect = document.getElementById('microphone-select');
+    const speakerSelect = document.getElementById('speaker-select');
+    const closeDeviceSettingsModalBtn = document.getElementById('close-device-settings-modal');
+    
     let incomingCallFrom = null;
     let currentlySelectedServer = null;
+    let currentAvatar = '👤';
     
     // Connect to WebSocket
     function connect() {
@@ -162,6 +185,8 @@
                 servers = data.servers || [];
                 dms = data.dms || [];
                 friends = data.friends || [];
+                currentAvatar = data.avatar || '👤';
+                currentUserAvatar.textContent = currentAvatar;
                 updateServersList();
                 updateDMsList();
                 updateFriendsList();
@@ -216,8 +241,15 @@
                 break;
                 
             case 'friend_added':
-                if (!friends.includes(data.username)) {
-                    friends.push(data.username);
+                // Check if friend is already in the list (by username)
+                const existingFriend = friends.find(f => 
+                    (typeof f === 'object' ? f.username : f) === data.username
+                );
+                if (!existingFriend) {
+                    friends.push({
+                        username: data.username,
+                        avatar: data.avatar || '👤'
+                    });
                     updateFriendsList();
                 }
                 break;
@@ -313,6 +345,76 @@
                 const channelKey = `${data.server_id}/${data.channel_id}`;
                 voiceMembers[channelKey] = data.voice_members || [];
                 updateChannelsForServer(data.server_id);
+                updateVoiceParticipants(data.voice_members);
+                break;
+            
+            case 'avatar_update':
+                // Update avatar in friends list
+                const friendToUpdate = friends.find(f => 
+                    (typeof f === 'object' ? f.username : f) === data.username
+                );
+                if (friendToUpdate && typeof friendToUpdate === 'object') {
+                    friendToUpdate.avatar = data.avatar;
+                    updateFriendsList();
+                }
+                
+                // Update avatar in DMs list
+                const dmToUpdate = dms.find(dm => dm.username === data.username);
+                if (dmToUpdate) {
+                    dmToUpdate.avatar = data.avatar;
+                    updateDMsList();
+                }
+                
+                // Update avatar in voice participants
+                if (voiceChat && voiceChat.currentVoiceChannel) {
+                    const currentKey = `${voiceChat.currentVoiceServer}/${voiceChat.currentVoiceChannel}`;
+                    if (voiceMembers[currentKey]) {
+                        const participant = voiceMembers[currentKey].find(p => 
+                            (typeof p === 'object' ? p.username : p) === data.username
+                        );
+                        if (participant && typeof participant === 'object') {
+                            participant.avatar = data.avatar;
+                            updateVoiceParticipants(voiceMembers[currentKey]);
+                        }
+                    }
+                }
+                break;
+            
+            case 'avatar_updated':
+                currentAvatar = data.avatar;
+                currentUserAvatar.textContent = currentAvatar;
+                break;
+            
+            case 'voice_video_update':
+                // Update video state in participants list
+                if (voiceChat && voiceChat.currentVoiceChannel) {
+                    const currentKey = `${voiceChat.currentVoiceServer}/${voiceChat.currentVoiceChannel}`;
+                    if (voiceMembers[currentKey]) {
+                        const participant = voiceMembers[currentKey].find(p => 
+                            (typeof p === 'object' ? p.username : p) === data.username
+                        );
+                        if (participant && typeof participant === 'object') {
+                            participant.video = data.video;
+                            updateVoiceParticipants(voiceMembers[currentKey]);
+                        }
+                    }
+                }
+                break;
+            
+            case 'voice_screen_share_update':
+                // Update screen sharing state in participants list
+                if (voiceChat && voiceChat.currentVoiceChannel) {
+                    const currentKey = `${voiceChat.currentVoiceServer}/${voiceChat.currentVoiceChannel}`;
+                    if (voiceMembers[currentKey]) {
+                        const participant = voiceMembers[currentKey].find(p => 
+                            (typeof p === 'object' ? p.username : p) === data.username
+                        );
+                        if (participant && typeof participant === 'object') {
+                            participant.screen_sharing = data.screen_sharing;
+                            updateVoiceParticipants(voiceMembers[currentKey]);
+                        }
+                    }
+                }
                 break;
                 
             case 'incoming_voice_call':
@@ -386,6 +488,10 @@
             const dmItem = document.createElement('div');
             dmItem.className = 'dm-item';
             
+            const avatarSpan = document.createElement('span');
+            avatarSpan.className = 'dm-avatar';
+            avatarSpan.textContent = dm.avatar || '👤';
+            
             const nameSpan = document.createElement('span');
             nameSpan.textContent = dm.username;
             
@@ -398,6 +504,7 @@
                 startVoiceCall(dm.username);
             };
             
+            dmItem.appendChild(avatarSpan);
             dmItem.appendChild(nameSpan);
             dmItem.appendChild(callBtn);
             dmItem.onclick = () => selectDM(dm.id);
@@ -412,25 +519,32 @@
             const friendItem = document.createElement('div');
             friendItem.className = 'friend-item';
             
+            const avatarSpan = document.createElement('span');
+            avatarSpan.className = 'friend-avatar';
+            avatarSpan.textContent = typeof friend === 'object' ? (friend.avatar || '👤') : '👤';
+            
             const nameSpan = document.createElement('span');
-            nameSpan.textContent = friend;
+            nameSpan.textContent = typeof friend === 'object' ? friend.username : friend;
             
             const actionsDiv = document.createElement('div');
             actionsDiv.className = 'friend-actions';
+            
+            const friendUsername = typeof friend === 'object' ? friend.username : friend;
             
             const callBtn = document.createElement('button');
             callBtn.className = 'btn btn-small btn-success btn-icon';
             callBtn.textContent = '📞';
             callBtn.title = 'Voice Call';
-            callBtn.onclick = () => startVoiceCall(friend);
+            callBtn.onclick = () => startVoiceCall(friendUsername);
             
             const dmBtn = document.createElement('button');
             dmBtn.className = 'btn btn-small btn-primary btn-icon';
             dmBtn.textContent = 'DM';
-            dmBtn.onclick = () => startDM(friend);
+            dmBtn.onclick = () => startDM(friendUsername);
             
             actionsDiv.appendChild(callBtn);
             actionsDiv.appendChild(dmBtn);
+            friendItem.appendChild(avatarSpan);
             friendItem.appendChild(nameSpan);
             friendItem.appendChild(actionsDiv);
             friendsList.appendChild(friendItem);
@@ -955,10 +1069,15 @@
             const resultItem = document.createElement('div');
             resultItem.className = 'search-result-item';
             
+            const avatarSpan = document.createElement('span');
+            avatarSpan.className = 'search-result-avatar';
+            avatarSpan.textContent = result.avatar || '👤';
+            
             const usernameSpan = document.createElement('span');
             usernameSpan.className = 'username';
             usernameSpan.textContent = result.username;
             
+            resultItem.appendChild(avatarSpan);
             resultItem.appendChild(usernameSpan);
             
             if (result.is_friend) {
@@ -1103,6 +1222,27 @@
         }
     });
     
+    videoBtn.addEventListener('click', async () => {
+        if (voiceChat) {
+            const enabled = await voiceChat.toggleVideo();
+            videoBtn.textContent = enabled ? '📹✓' : '📹';
+            videoBtn.title = enabled ? 'Stop Video' : 'Start Video';
+        }
+    });
+    
+    screenShareBtn.addEventListener('click', async () => {
+        if (voiceChat) {
+            const sharing = await voiceChat.toggleScreenShare();
+            screenShareBtn.textContent = sharing ? '🖥️✓' : '🖥️';
+            screenShareBtn.title = sharing ? 'Stop Sharing' : 'Share Screen';
+        }
+    });
+    
+    micSettingsBtn.addEventListener('click', async () => {
+        deviceSettingsModal.classList.remove('hidden');
+        await populateDeviceSelects();
+    });
+    
     leaveVoiceBtn.addEventListener('click', () => {
         if (voiceChat) {
             if (voiceChat.inDirectCall) {
@@ -1113,6 +1253,11 @@
             hideVoiceControls();
             muteBtn.textContent = '🎤';
             muteBtn.title = 'Mute';
+            videoBtn.textContent = '📹';
+            videoBtn.title = 'Start Video';
+            screenShareBtn.textContent = '🖥️';
+            screenShareBtn.title = 'Share Screen';
+            voiceParticipants.classList.add('hidden');
         }
     });
     
@@ -1143,6 +1288,199 @@
             incomingCallFrom = null;
         }
     });
+    
+    // Avatar settings
+    menuAvatarBtn.addEventListener('click', () => {
+        userMenu.classList.add('hidden');
+        avatarSettingsModal.classList.remove('hidden');
+    });
+    
+    closeAvatarModalBtn.addEventListener('click', () => {
+        avatarSettingsModal.classList.add('hidden');
+    });
+    
+    avatarSettingsModal.addEventListener('click', (e) => {
+        if (e.target === avatarSettingsModal) {
+            avatarSettingsModal.classList.add('hidden');
+        }
+    });
+    
+    // Handle avatar selection
+    avatarPicker.addEventListener('click', (e) => {
+        if (e.target.classList.contains('avatar-option')) {
+            const selectedAvatar = e.target.dataset.avatar;
+            
+            // Update UI
+            document.querySelectorAll('.avatar-option').forEach(btn => {
+                btn.classList.remove('selected');
+            });
+            e.target.classList.add('selected');
+            
+            // Send to server
+            ws.send(JSON.stringify({
+                type: 'set_avatar',
+                avatar: selectedAvatar
+            }));
+        }
+    });
+    
+    // Device settings
+    closeDeviceSettingsModalBtn.addEventListener('click', () => {
+        deviceSettingsModal.classList.add('hidden');
+    });
+    
+    deviceSettingsModal.addEventListener('click', (e) => {
+        if (e.target === deviceSettingsModal) {
+            deviceSettingsModal.classList.add('hidden');
+        }
+    });
+    
+    microphoneSelect.addEventListener('change', async (e) => {
+        if (voiceChat) {
+            await voiceChat.setMicrophone(e.target.value);
+        }
+    });
+    
+    speakerSelect.addEventListener('change', async (e) => {
+        if (voiceChat) {
+            await voiceChat.setSpeaker(e.target.value);
+        }
+    });
+    
+    // Close voice participants panel
+    closeParticipantsBtn.addEventListener('click', () => {
+        voiceParticipants.classList.add('hidden');
+    });
+    
+    // Populate device selects
+    async function populateDeviceSelects() {
+        if (!voiceChat) return;
+        
+        const devices = await voiceChat.getAudioDevices();
+        
+        // Clear existing options (except default)
+        microphoneSelect.innerHTML = '<option value="">Default</option>';
+        speakerSelect.innerHTML = '<option value="">Default</option>';
+        
+        // Add microphones
+        devices.microphones.forEach(device => {
+            const option = document.createElement('option');
+            option.value = device.deviceId;
+            option.textContent = device.label || `Microphone ${device.deviceId.substring(0, 8)}`;
+            if (device.deviceId === voiceChat.selectedMicrophoneId) {
+                option.selected = true;
+            }
+            microphoneSelect.appendChild(option);
+        });
+        
+        // Add speakers (if supported)
+        devices.speakers.forEach(device => {
+            const option = document.createElement('option');
+            option.value = device.deviceId;
+            option.textContent = device.label || `Speaker ${device.deviceId.substring(0, 8)}`;
+            if (device.deviceId === voiceChat.selectedSpeakerId) {
+                option.selected = true;
+            }
+            speakerSelect.appendChild(option);
+        });
+    }
+    
+    // Update voice participants panel
+    function updateVoiceParticipants(members) {
+        if (!members || members.length === 0) {
+            voiceParticipants.classList.add('hidden');
+            participantsList.innerHTML = '';
+            return;
+        }
+        
+        voiceParticipants.classList.remove('hidden');
+        participantsList.innerHTML = '';
+        
+        members.forEach(member => {
+            const memberUsername = typeof member === 'object' ? member.username : member;
+            const memberAvatar = typeof member === 'object' ? (member.avatar || '👤') : '👤';
+            const muted = typeof member === 'object' ? member.muted : false;
+            const video = typeof member === 'object' ? member.video : false;
+            const screenSharing = typeof member === 'object' ? member.screen_sharing : false;
+            
+            const participantItem = document.createElement('div');
+            participantItem.className = 'participant-item';
+            
+            const avatarSpan = document.createElement('span');
+            avatarSpan.className = 'participant-avatar';
+            avatarSpan.textContent = memberAvatar;
+            
+            const infoDiv = document.createElement('div');
+            infoDiv.className = 'participant-info';
+            
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'participant-name';
+            nameSpan.textContent = memberUsername;
+            
+            const statusDiv = document.createElement('div');
+            statusDiv.className = 'participant-status';
+            
+            // Microphone status
+            const micStatus = document.createElement('span');
+            micStatus.className = 'status-indicator' + (muted ? ' muted' : '');
+            micStatus.textContent = muted ? '🔇' : '🎤';
+            micStatus.title = muted ? 'Muted' : 'Unmuted';
+            statusDiv.appendChild(micStatus);
+            
+            // Video status
+            if (video) {
+                const videoStatus = document.createElement('span');
+                videoStatus.className = 'status-indicator';
+                videoStatus.textContent = '📹';
+                videoStatus.title = 'Video On';
+                statusDiv.appendChild(videoStatus);
+            }
+            
+            // Screen sharing status
+            if (screenSharing) {
+                const screenStatus = document.createElement('span');
+                screenStatus.className = 'status-indicator';
+                screenStatus.textContent = '🖥️';
+                screenStatus.title = 'Sharing Screen';
+                statusDiv.appendChild(screenStatus);
+            }
+            
+            infoDiv.appendChild(nameSpan);
+            infoDiv.appendChild(statusDiv);
+            
+            participantItem.appendChild(avatarSpan);
+            participantItem.appendChild(infoDiv);
+            
+            participantsList.appendChild(participantItem);
+        });
+    }
+    
+    // Handle remote video tracks
+    window.onRemoteVideoTrack = function(username, stream) {
+        // Remove existing video for this user
+        const existingVideo = document.getElementById(`video-${username}`);
+        if (existingVideo) {
+            existingVideo.remove();
+        }
+        
+        // Create video element
+        const videoContainer = document.createElement('div');
+        videoContainer.className = 'remote-video-container';
+        videoContainer.id = `video-${username}`;
+        
+        const video = document.createElement('video');
+        video.srcObject = stream;
+        video.autoplay = true;
+        video.playsInline = true;
+        
+        const label = document.createElement('div');
+        label.className = 'remote-video-label';
+        label.textContent = username;
+        
+        videoContainer.appendChild(video);
+        videoContainer.appendChild(label);
+        remoteVideos.appendChild(videoContainer);
+    };
     
     // Scroll to bottom of messages
     function scrollToBottom() {

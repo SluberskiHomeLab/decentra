@@ -5,11 +5,17 @@ class VoiceChat {
         this.username = username;
         this.peerConnections = new Map(); // Map of username -> RTCPeerConnection
         this.localStream = null;
+        this.localVideoStream = null;
+        this.localScreenStream = null;
         this.currentVoiceChannel = null;
         this.currentVoiceServer = null;
         this.inDirectCall = false;
         this.directCallPeer = null;
         this.isMuted = false;
+        this.isVideoEnabled = false;
+        this.isScreenSharing = false;
+        this.selectedMicrophoneId = null;
+        this.selectedSpeakerId = null;
         
         // ICE servers configuration (using public STUN servers)
         this.iceServers = {
@@ -22,10 +28,12 @@ class VoiceChat {
     
     async initLocalStream() {
         try {
-            this.localStream = await navigator.mediaDevices.getUserMedia({ 
-                audio: true, 
+            const constraints = { 
+                audio: this.selectedMicrophoneId ? 
+                    { deviceId: { exact: this.selectedMicrophoneId } } : true, 
                 video: false 
-            });
+            };
+            this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
             return true;
         } catch (error) {
             console.error('Error accessing microphone:', error);
@@ -38,6 +46,255 @@ class VoiceChat {
             }
             return false;
         }
+    }
+    
+    async getAudioDevices() {
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            return {
+                microphones: devices.filter(d => d.kind === 'audioinput'),
+                speakers: devices.filter(d => d.kind === 'audiooutput')
+            };
+        } catch (error) {
+            console.error('Error enumerating devices:', error);
+            return { microphones: [], speakers: [] };
+        }
+    }
+    
+    async setMicrophone(deviceId) {
+        this.selectedMicrophoneId = deviceId;
+        
+        // If already in a call, restart the stream with the new device
+        if (this.localStream) {
+            const wasInVoice = this.currentVoiceChannel !== null;
+            const oldStream = this.localStream;
+            
+            // Get new stream
+            const constraints = { 
+                audio: deviceId ? { deviceId: { exact: deviceId } } : true, 
+                video: false 
+            };
+            
+            try {
+                this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
+                
+                // Replace audio track in all peer connections
+                this.peerConnections.forEach(pc => {
+                    const senders = pc.getSenders();
+                    const audioSender = senders.find(s => s.track && s.track.kind === 'audio');
+                    if (audioSender && this.localStream) {
+                        const newAudioTrack = this.localStream.getAudioTracks()[0];
+                        audioSender.replaceTrack(newAudioTrack);
+                    }
+                });
+                
+                // Stop old stream
+                oldStream.getTracks().forEach(track => track.stop());
+                
+                // Restore muted state
+                if (this.isMuted) {
+                    this.localStream.getAudioTracks().forEach(track => {
+                        track.enabled = false;
+                    });
+                }
+            } catch (error) {
+                console.error('Error switching microphone:', error);
+                alert('Failed to switch microphone. Please try again.');
+            }
+        }
+    }
+    
+    async setSpeaker(deviceId) {
+        this.selectedSpeakerId = deviceId;
+        
+        // Update audio output for all remote audio elements
+        this.peerConnections.forEach(pc => {
+            if (pc.remoteAudio && pc.remoteAudio.setSinkId) {
+                pc.remoteAudio.setSinkId(deviceId).catch(error => {
+                    console.error('Error setting speaker:', error);
+                });
+            }
+        });
+    }
+    
+    async toggleVideo() {
+        if (!this.isVideoEnabled) {
+            // Start video
+            try {
+                this.localVideoStream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 640, height: 480 },
+                    audio: false
+                });
+                
+                this.isVideoEnabled = true;
+                
+                // Add video tracks to all peer connections
+                this.peerConnections.forEach(pc => {
+                    this.localVideoStream.getVideoTracks().forEach(track => {
+                        pc.addTrack(track, this.localVideoStream);
+                    });
+                });
+                
+                // Notify server
+                this.ws.send(JSON.stringify({
+                    type: 'voice_video',
+                    video: true
+                }));
+                
+                return true;
+            } catch (error) {
+                console.error('Error accessing camera:', error);
+                alert('Could not access camera. Please check permissions.');
+                return false;
+            }
+        } else {
+            // Stop video
+            if (this.localVideoStream) {
+                this.localVideoStream.getTracks().forEach(track => track.stop());
+                
+                // Remove video tracks from all peer connections
+                this.peerConnections.forEach(pc => {
+                    const senders = pc.getSenders();
+                    senders.forEach(sender => {
+                        if (sender.track && sender.track.kind === 'video') {
+                            pc.removeTrack(sender);
+                        }
+                    });
+                });
+                
+                this.localVideoStream = null;
+            }
+            
+            this.isVideoEnabled = false;
+            
+            // Notify server
+            this.ws.send(JSON.stringify({
+                type: 'voice_video',
+                video: false
+            }));
+            
+            return false;
+        }
+    }
+    
+    async toggleScreenShare() {
+        if (!this.isScreenSharing) {
+            // Start screen sharing
+            try {
+                this.localScreenStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: { cursor: 'always' },
+                    audio: false
+                });
+                
+                // Handle stream ended (user clicked stop sharing in browser UI)
+                this.localScreenStream.getVideoTracks()[0].onended = () => {
+                    // Stop screen sharing when user stops from browser UI
+                    if (this.isScreenSharing) {
+                        // Use a separate cleanup to avoid recursion issues
+                        this.stopScreenSharing();
+                    }
+                };
+                
+                this.isScreenSharing = true;
+                
+                // Replace video track or add screen track to all peer connections
+                this.peerConnections.forEach(pc => {
+                    const screenTrack = this.localScreenStream.getVideoTracks()[0];
+                    const senders = pc.getSenders();
+                    const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+                    
+                    if (videoSender) {
+                        // Replace existing video track
+                        videoSender.replaceTrack(screenTrack);
+                    } else {
+                        // Add new track
+                        pc.addTrack(screenTrack, this.localScreenStream);
+                    }
+                });
+                
+                // Notify server
+                this.ws.send(JSON.stringify({
+                    type: 'voice_screen_share',
+                    screen_sharing: true
+                }));
+                
+                return true;
+            } catch (error) {
+                console.error('Error sharing screen:', error);
+                if (error.name !== 'NotAllowedError') {
+                    alert('Could not share screen. Please try again.');
+                }
+                return false;
+            }
+        } else {
+            // Stop screen sharing
+            if (this.localScreenStream) {
+                this.localScreenStream.getTracks().forEach(track => track.stop());
+                
+                // Restore video track or remove screen track from all peer connections
+                this.peerConnections.forEach(pc => {
+                    const senders = pc.getSenders();
+                    const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+                    
+                    if (videoSender) {
+                        if (this.isVideoEnabled && this.localVideoStream) {
+                            // Restore camera video
+                            const videoTrack = this.localVideoStream.getVideoTracks()[0];
+                            videoSender.replaceTrack(videoTrack);
+                        } else {
+                            // Remove video track
+                            pc.removeTrack(videoSender);
+                        }
+                    }
+                });
+                
+                this.localScreenStream = null;
+            }
+            
+            this.isScreenSharing = false;
+            
+            // Notify server
+            this.ws.send(JSON.stringify({
+                type: 'voice_screen_share',
+                screen_sharing: false
+            }));
+            
+            return false;
+        }
+    }
+    
+    stopScreenSharing() {
+        // Helper method to cleanly stop screen sharing without toggling
+        if (this.localScreenStream) {
+            this.localScreenStream.getTracks().forEach(track => track.stop());
+            
+            // Restore video track or remove screen track from all peer connections
+            this.peerConnections.forEach(pc => {
+                const senders = pc.getSenders();
+                const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+                
+                if (videoSender) {
+                    if (this.isVideoEnabled && this.localVideoStream) {
+                        // Restore camera video
+                        const videoTrack = this.localVideoStream.getVideoTracks()[0];
+                        videoSender.replaceTrack(videoTrack);
+                    } else {
+                        // Remove video track
+                        pc.removeTrack(videoSender);
+                    }
+                }
+            });
+            
+            this.localScreenStream = null;
+        }
+        
+        this.isScreenSharing = false;
+        
+        // Notify server
+        this.ws.send(JSON.stringify({
+            type: 'voice_screen_share',
+            screen_sharing: false
+        }));
     }
     
     async joinVoiceChannel(serverId, channelId) {
@@ -75,13 +332,25 @@ class VoiceChat {
         this.currentVoiceServer = null;
         this.currentVoiceChannel = null;
         
-        // Stop local stream
+        // Stop all local streams
         if (this.localStream) {
             this.localStream.getTracks().forEach(track => track.stop());
             this.localStream = null;
         }
         
+        if (this.localVideoStream) {
+            this.localVideoStream.getTracks().forEach(track => track.stop());
+            this.localVideoStream = null;
+        }
+        
+        if (this.localScreenStream) {
+            this.localScreenStream.getTracks().forEach(track => track.stop());
+            this.localScreenStream = null;
+        }
+        
         this.isMuted = false;
+        this.isVideoEnabled = false;
+        this.isScreenSharing = false;
     }
     
     async startDirectCall(friendUsername) {
@@ -136,40 +405,82 @@ class VoiceChat {
         this.inDirectCall = false;
         this.directCallPeer = null;
         
-        // Stop local stream
+        // Stop all local streams
         if (this.localStream) {
             this.localStream.getTracks().forEach(track => track.stop());
             this.localStream = null;
         }
         
+        if (this.localVideoStream) {
+            this.localVideoStream.getTracks().forEach(track => track.stop());
+            this.localVideoStream = null;
+        }
+        
+        if (this.localScreenStream) {
+            this.localScreenStream.getTracks().forEach(track => track.stop());
+            this.localScreenStream = null;
+        }
+        
         this.isMuted = false;
+        this.isVideoEnabled = false;
+        this.isScreenSharing = false;
     }
     
     async createPeerConnection(targetUsername, isInitiator = true) {
         const pc = new RTCPeerConnection(this.iceServers);
         this.peerConnections.set(targetUsername, pc);
         
-        // Add local stream tracks
+        // Add local audio stream tracks
         if (this.localStream) {
             this.localStream.getTracks().forEach(track => {
                 pc.addTrack(track, this.localStream);
             });
         }
         
+        // Add local video stream tracks if enabled
+        if (this.isVideoEnabled && this.localVideoStream) {
+            this.localVideoStream.getTracks().forEach(track => {
+                pc.addTrack(track, this.localVideoStream);
+            });
+        }
+        
+        // Add screen sharing track if enabled
+        if (this.isScreenSharing && this.localScreenStream) {
+            this.localScreenStream.getTracks().forEach(track => {
+                pc.addTrack(track, this.localScreenStream);
+            });
+        }
+        
         // Handle incoming tracks
         pc.ontrack = (event) => {
-            console.log('Received remote track from', targetUsername);
-            const remoteAudio = new Audio();
-            remoteAudio.srcObject = event.streams[0];
+            console.log('Received remote track from', targetUsername, 'kind:', event.track.kind);
             
-            // Handle play promise to avoid unhandled rejection
-            remoteAudio.play().catch(error => {
-                console.warn('Audio autoplay failed:', error);
-                // Audio will play when user interacts with the page
-            });
-            
-            // Store audio element for later control
-            pc.remoteAudio = remoteAudio;
+            if (event.track.kind === 'audio') {
+                // Handle audio track
+                const remoteAudio = new Audio();
+                remoteAudio.srcObject = event.streams[0];
+                
+                // Set speaker if selected
+                if (this.selectedSpeakerId && remoteAudio.setSinkId) {
+                    remoteAudio.setSinkId(this.selectedSpeakerId).catch(error => {
+                        console.error('Error setting speaker:', error);
+                    });
+                }
+                
+                // Handle play promise to avoid unhandled rejection
+                remoteAudio.play().catch(error => {
+                    console.warn('Audio autoplay failed:', error);
+                    // Audio will play when user interacts with the page
+                });
+                
+                // Store audio element for later control
+                pc.remoteAudio = remoteAudio;
+            } else if (event.track.kind === 'video') {
+                // Handle video track - emit event for UI to handle
+                if (window.onRemoteVideoTrack) {
+                    window.onRemoteVideoTrack(targetUsername, event.streams[0]);
+                }
+            }
         };
         
         // Handle ICE candidates
