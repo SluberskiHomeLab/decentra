@@ -12,7 +12,6 @@
         <div class="left-sidebar">
             <div class="sidebar-header">
                 <h3>Decentra</h3>
-                <button id="create-server-btn" class="btn btn-small btn-primary" title="Create Server">+</button>
             </div>
             
             <div class="servers-section">
@@ -35,7 +34,14 @@
             
             <div class="user-section">
                 <span id="current-user" class="username-display"></span>
-                <button id="logout-btn" class="btn btn-small btn-danger">Logout</button>
+                <button id="user-menu-btn" class="btn btn-small btn-icon" title="Menu">⚙</button>
+                <div id="user-menu" class="user-menu hidden">
+                    <button id="menu-friends-btn" class="menu-item">Friends</button>
+                    <button id="menu-create-server-btn" class="menu-item">Create Server</button>
+                    <button id="menu-invite-btn" class="menu-item">Generate Invite</button>
+                    <div class="menu-divider"></div>
+                    <button id="menu-logout-btn" class="menu-item menu-item-danger">Logout</button>
+                </div>
             </div>
         </div>
         
@@ -65,10 +71,6 @@
         <div class="chat-container">
             <div class="chat-header">
                 <h2 id="chat-title">Welcome to Decentra</h2>
-                <div class="header-actions">
-                    <button id="friends-btn" class="btn btn-small">Friends</button>
-                    <button id="invite-btn" class="btn btn-small">Generate Invite</button>
-                </div>
             </div>
             
             <div id="messages" class="messages-container">
@@ -76,8 +78,8 @@
                     <h2>Welcome to Decentra!</h2>
                     <p>Create a server, add friends, or start a conversation.</p>
                     <ul>
-                        <li>Click <strong>+ button</strong> to create a new server</li>
-                        <li>Click <strong>Friends</strong> to search and add friends</li>
+                        <li>Click the <strong>⚙ menu button</strong> (bottom left) to create a server or access features</li>
+                        <li>Click <strong>Friends</strong> in the menu to search and add friends</li>
                         <li>Start direct messages with your friends</li>
                     </ul>
                 </div>

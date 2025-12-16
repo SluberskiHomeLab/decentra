@@ -43,10 +43,12 @@
     const serverNameDisplay = document.getElementById('server-name');
     
     // Button elements
-    const createServerBtn = document.getElementById('create-server-btn');
-    const inviteBtn = document.getElementById('invite-btn');
-    const logoutBtn = document.getElementById('logout-btn');
-    const friendsBtn = document.getElementById('friends-btn');
+    const userMenuBtn = document.getElementById('user-menu-btn');
+    const userMenu = document.getElementById('user-menu');
+    const menuCreateServerBtn = document.getElementById('menu-create-server-btn');
+    const menuInviteBtn = document.getElementById('menu-invite-btn');
+    const menuLogoutBtn = document.getElementById('menu-logout-btn');
+    const menuFriendsBtn = document.getElementById('menu-friends-btn');
     const searchUsersBtn = document.getElementById('search-users-btn');
     
     // Modal elements
@@ -442,8 +444,22 @@
         messageInput.value = '';
     });
     
-    // Create server
-    createServerBtn.addEventListener('click', () => {
+    // User menu toggle
+    userMenuBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        userMenu.classList.toggle('hidden');
+    });
+    
+    // Close menu when clicking outside
+    document.addEventListener('click', (e) => {
+        if (!userMenu.contains(e.target) && e.target !== userMenuBtn) {
+            userMenu.classList.add('hidden');
+        }
+    });
+    
+    // Create server (from menu)
+    menuCreateServerBtn.addEventListener('click', () => {
+        userMenu.classList.add('hidden');
         createServerModal.classList.remove('hidden');
         serverNameInput.focus();
     });
@@ -465,8 +481,9 @@
         serverNameInput.value = '';
     });
     
-    // Friends view
-    friendsBtn.addEventListener('click', () => {
+    // Friends view (from menu)
+    menuFriendsBtn.addEventListener('click', () => {
+        userMenu.classList.add('hidden');
         channelsView.classList.add('hidden');
         friendsView.classList.remove('hidden');
         chatTitle.textContent = 'Friends';
@@ -551,8 +568,9 @@
         button.textContent = 'Added!';
     }
     
-    // Generate invite code
-    inviteBtn.addEventListener('click', () => {
+    // Generate invite code (from menu)
+    menuInviteBtn.addEventListener('click', () => {
+        userMenu.classList.add('hidden');
         if (!authenticated) return;
         
         ws.send(JSON.stringify({
@@ -593,8 +611,8 @@
         }
     });
     
-    // Logout
-    logoutBtn.addEventListener('click', logout);
+    // Logout (from menu)
+    menuLogoutBtn.addEventListener('click', logout);
     
     function logout() {
         sessionStorage.clear();
