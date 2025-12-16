@@ -5,12 +5,14 @@ A decentralized Discord-like chat server and client that is non-federated and se
 ## Features
 
 - 🚀 Real-time WebSocket-based messaging
-- 💬 Multi-user chat support
+- 🖥️ **Servers** - Create and manage multiple servers with channels
+- 💬 **Direct Messages** - Private conversations with friends
+- 👥 **Friend System** - Search for users and add friends
 - 🔐 Username/password authentication
 - 🎟️ Invite code system for controlled access
-- 📜 Message history (last 100 messages)
+- 📜 Message history (last 100 messages per channel/DM)
 - 🐳 Docker containerized for easy deployment
-- 🌐 Modern web-based interface
+- 🌐 Modern web-based interface with Discord-like layout
 - 🎨 Beautiful responsive UI design
 
 ## Quick Start
@@ -73,13 +75,19 @@ Then open your browser to `http://localhost:8765`
 
 ### Server (`server/`)
 
-- **server.py**: Combined HTTP and WebSocket server that handles client connections, broadcasts messages, and maintains chat history
+- **server.py**: Combined HTTP and WebSocket server that handles:
+  - User authentication and management
+  - Server and channel creation
+  - Friend system and user search
+  - Direct messaging
+  - Message routing to appropriate contexts
+  - Real-time WebSocket communication
 - **static/**: Web client files (HTML, CSS, JavaScript)
   - **index.html**: Login and signup page
-  - **chat.html**: Main chat interface
-  - **styles.css**: Application styling
+  - **chat.html**: Main chat interface with servers, channels, DMs, and friends
+  - **styles.css**: Application styling with Discord-like layout
   - **auth.js**: Authentication logic
-  - **chat.js**: Chat functionality and WebSocket client
+  - **chat.js**: Chat functionality, WebSocket client, and UI management
 - **Dockerfile**: Container configuration for the server
 - **requirements.txt**: Python dependencies (websockets, bcrypt, aiohttp)
 
@@ -99,17 +107,36 @@ The server runs on port 8765 by default and serves both HTTP and WebSocket conne
    - Click "Login" to sign in with an existing account
    - Click "Sign Up" to create a new account (first user doesn't need an invite code)
    
-2. **Chat Interface**: 
-   - Type your message in the input field and click "Send" or press Enter
-   - Click "Generate Invite" to create an invite code for new users
-   - Click "Logout" to sign out
+2. **Main Interface**: 
+   - **Left Sidebar**: View your servers and direct messages
+   - **Middle Sidebar**: View channels (when server selected) or friends list
+   - **Main Chat Area**: Send and receive messages
+
+### Core Features
+
+#### Servers
+- Click the **+ button** in the left sidebar to create a new server
+- Each server automatically gets a "general" channel
+- Click on any server to view its channels
+- Send messages in server channels to communicate with all members
+
+#### Friends
+- Click the **Friends** button in the header to view your friends list
+- Click **Search Users** to find other users by username
+- Click **Add Friend** to send a friend request
+- Friends are added instantly (no approval needed)
+
+#### Direct Messages
+- Once you've added friends, click the **DM** button next to a friend's name
+- Start a private conversation that only you and your friend can see
+- All your DMs appear in the left sidebar under "Direct Messages"
 
 ### Message Display
 
 - Your messages appear in **green** bubbles
 - Other users' messages appear in **blue** bubbles
 - System messages (joins/leaves) appear in **gray** text
-- Message history is displayed when you first join
+- Message history is displayed when you first join a channel or DM
 
 ## Authentication
 

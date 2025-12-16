@@ -7,28 +7,92 @@
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-    <div class="chat-container">
-        <div class="chat-header">
-            <h2>Decentra Chat</h2>
-            <div class="header-actions">
+    <div class="main-container">
+        <!-- Left Sidebar: Servers and DMs -->
+        <div class="left-sidebar">
+            <div class="sidebar-header">
+                <h3>Decentra</h3>
+                <button id="create-server-btn" class="btn btn-small btn-primary" title="Create Server">+</button>
+            </div>
+            
+            <div class="servers-section">
+                <div class="section-header">
+                    <h4>Servers</h4>
+                </div>
+                <div id="servers-list" class="items-list">
+                    <!-- Server items will be added here -->
+                </div>
+            </div>
+            
+            <div class="dms-section">
+                <div class="section-header">
+                    <h4>Direct Messages</h4>
+                </div>
+                <div id="dms-list" class="items-list">
+                    <!-- DM items will be added here -->
+                </div>
+            </div>
+            
+            <div class="user-section">
                 <span id="current-user" class="username-display"></span>
-                <button id="invite-btn" class="btn btn-small">Generate Invite</button>
                 <button id="logout-btn" class="btn btn-small btn-danger">Logout</button>
             </div>
         </div>
         
-        <div id="messages" class="messages-container">
-            <!-- Messages will be appended here -->
+        <!-- Middle Sidebar: Channels or Friends -->
+        <div class="middle-sidebar">
+            <div id="channels-view" class="sidebar-view">
+                <div class="sidebar-header">
+                    <h3 id="server-name">Select a Server</h3>
+                </div>
+                <div id="channels-list" class="items-list">
+                    <!-- Channel items will be added here -->
+                </div>
+            </div>
+            
+            <div id="friends-view" class="sidebar-view hidden">
+                <div class="sidebar-header">
+                    <h3>Friends</h3>
+                    <button id="search-users-btn" class="btn btn-small btn-primary">Search Users</button>
+                </div>
+                <div id="friends-list" class="items-list">
+                    <!-- Friend items will be added here -->
+                </div>
+            </div>
         </div>
         
-        <div class="input-container">
-            <form id="message-form">
-                <input type="text" id="message-input" placeholder="Type your message..." autocomplete="off" autofocus>
-                <button type="submit" class="btn btn-primary">Send</button>
-            </form>
+        <!-- Main Chat Area -->
+        <div class="chat-container">
+            <div class="chat-header">
+                <h2 id="chat-title">Welcome to Decentra</h2>
+                <div class="header-actions">
+                    <button id="friends-btn" class="btn btn-small">Friends</button>
+                    <button id="invite-btn" class="btn btn-small">Generate Invite</button>
+                </div>
+            </div>
+            
+            <div id="messages" class="messages-container">
+                <div class="welcome-message">
+                    <h2>Welcome to Decentra!</h2>
+                    <p>Create a server, add friends, or start a conversation.</p>
+                    <ul>
+                        <li>Click <strong>+ button</strong> to create a new server</li>
+                        <li>Click <strong>Friends</strong> to search and add friends</li>
+                        <li>Start direct messages with your friends</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="input-container">
+                <form id="message-form">
+                    <input type="text" id="message-input" placeholder="Select a channel or DM to start chatting..." autocomplete="off" disabled>
+                    <button type="submit" class="btn btn-primary" disabled>Send</button>
+                </form>
+            </div>
         </div>
     </div>
     
+    <!-- Modals -->
     <div id="invite-modal" class="modal hidden">
         <div class="modal-content">
             <h3>Invite Code Generated</h3>
@@ -36,7 +100,36 @@
                 <code id="invite-code-text"></code>
             </div>
             <p>Share this code with someone you want to invite</p>
-            <button id="close-modal" class="btn btn-primary">Close</button>
+            <button id="close-invite-modal" class="btn btn-primary">Close</button>
+        </div>
+    </div>
+    
+    <div id="create-server-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Create Server</h3>
+            <form id="create-server-form">
+                <div class="form-group">
+                    <label for="server-name-input">Server Name</label>
+                    <input type="text" id="server-name-input" required>
+                </div>
+                <div class="button-group">
+                    <button type="submit" class="btn btn-primary">Create</button>
+                    <button type="button" id="cancel-server-btn" class="btn btn-secondary">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <div id="search-users-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Search Users</h3>
+            <div class="form-group">
+                <input type="text" id="search-users-input" placeholder="Type username...">
+            </div>
+            <div id="search-results" class="search-results">
+                <!-- Search results will be added here -->
+            </div>
+            <button id="close-search-modal" class="btn btn-secondary">Close</button>
         </div>
     </div>
     
