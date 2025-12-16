@@ -14,16 +14,26 @@ import string
 from aiohttp import web
 import os
 
-# Store connected clients
-clients = set()
-# Store message history
+# Store connected clients: {websocket: username}
+clients = {}
+# Store message history (deprecated - now per server/channel)
 messages = []
 MAX_HISTORY = 100
 
-# Store user accounts: {username: {password_hash, invite_codes}}
+# Store user accounts: {username: {password_hash, created_at, friends: set()}}
 users = {}
 # Store active invite codes: {code: creator_username}
 invite_codes = {}
+
+# Store servers: {server_id: {name, owner, members: set(), channels: {channel_id: {name, messages: []}}}}
+servers = {}
+# Store direct messages: {dm_id: {participants: set(), messages: []}}
+direct_messages = {}
+
+# Helper counters for IDs
+server_counter = 0
+channel_counter = 0
+dm_counter = 0
 
 
 def hash_password(password):
@@ -42,15 +52,74 @@ def generate_invite_code():
     return ''.join(secrets.choice(alphabet) for _ in range(8))
 
 
+def get_next_server_id():
+    """Get next server ID."""
+    global server_counter
+    server_counter += 1
+    return f"server_{server_counter}"
+
+
+def get_next_channel_id():
+    """Get next channel ID."""
+    global channel_counter
+    channel_counter += 1
+    return f"channel_{channel_counter}"
+
+
+def get_next_dm_id():
+    """Get next DM ID."""
+    global dm_counter
+    dm_counter += 1
+    return f"dm_{dm_counter}"
+
+
+def get_or_create_dm(user1, user2):
+    """Get existing DM or create new one between two users."""
+    participants = {user1, user2}
+    # Find existing DM
+    for dm_id, dm_data in direct_messages.items():
+        if dm_data['participants'] == participants:
+            return dm_id
+    # Create new DM
+    dm_id = get_next_dm_id()
+    direct_messages[dm_id] = {
+        'participants': participants,
+        'messages': []
+    }
+    return dm_id
+
+
 async def broadcast(message, exclude=None):
     """Broadcast a message to all connected clients except the excluded one."""
     if clients:
         tasks = []
-        for client in clients:
-            if client != exclude:
-                tasks.append(client.send_str(message))
+        for client_ws, client_username in clients.items():
+            if client_ws != exclude:
+                tasks.append(client_ws.send_str(message))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def broadcast_to_server(server_id, message, exclude=None):
+    """Broadcast a message to all members of a server."""
+    if server_id not in servers:
+        return
+    
+    server_members = servers[server_id]['members']
+    tasks = []
+    for client_ws, client_username in clients.items():
+        if client_username in server_members and client_ws != exclude:
+            tasks.append(client_ws.send_str(message))
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def send_to_user(username, message):
+    """Send a message to a specific user."""
+    for client_ws, client_username in clients.items():
+        if client_username == username:
+            await client_ws.send_str(message)
+            break
 
 
 async def handler(websocket):
@@ -60,7 +129,7 @@ async def handler(websocket):
     
     try:
         # Register client
-        clients.add(websocket)
+        clients[websocket] = None  # Will be set after authentication
         
         # Authentication loop
         while not authenticated:
@@ -105,7 +174,8 @@ async def handler(websocket):
                 # Create user account
                 users[username] = {
                     'password_hash': hash_password(password),
-                    'created_at': datetime.now().isoformat()
+                    'created_at': datetime.now().isoformat(),
+                    'friends': set()
                 }
                 
                 # Remove used invite code
@@ -117,6 +187,7 @@ async def handler(websocket):
                     'message': 'Account created successfully'
                 }))
                 authenticated = True
+                clients[websocket] = username
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] New user registered: {username}")
             
             # Handle login
@@ -150,6 +221,7 @@ async def handler(websocket):
                     'message': 'Login successful'
                 }))
                 authenticated = True
+                clients[websocket] = username
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] User logged in: {username}")
             
             else:
@@ -158,12 +230,45 @@ async def handler(websocket):
                     'message': 'Invalid authentication request'
                 }))
         
-        # Send message history to authenticated client
-        history_message = json.dumps({
-            'type': 'history',
-            'messages': messages[-MAX_HISTORY:]
+        # Send user data to authenticated client
+        user_servers = []
+        for server_id, server_data in servers.items():
+            if username in server_data['members']:
+                user_servers.append({
+                    'id': server_id,
+                    'name': server_data['name'],
+                    'owner': server_data['owner'],
+                    'channels': [
+                        {'id': ch_id, 'name': ch_data['name']}
+                        for ch_id, ch_data in server_data['channels'].items()
+                    ]
+                })
+        
+        user_dms = []
+        for dm_id, dm_data in direct_messages.items():
+            if username in dm_data['participants']:
+                other_user = list(dm_data['participants'] - {username})[0]
+                user_dms.append({
+                    'id': dm_id,
+                    'username': other_user
+                })
+        
+        user_data = json.dumps({
+            'type': 'init',
+            'username': username,
+            'servers': user_servers,
+            'dms': user_dms,
+            'friends': list(users[username]['friends'])
         })
-        await websocket.send_str(history_message)
+        await websocket.send_str(user_data)
+        
+        # Deprecated: Send old message history for backward compatibility
+        if messages:
+            history_message = json.dumps({
+                'type': 'history',
+                'messages': messages[-MAX_HISTORY:]
+            })
+            await websocket.send_str(history_message)
         
         # Notify others about new user joining
         join_message = json.dumps({
@@ -182,24 +287,199 @@ async def handler(websocket):
                     
                     if data.get('type') == 'message':
                         msg_content = data.get('content', '')
+                        context = data.get('context', 'global')  # 'global', 'server', or 'dm'
+                        context_id = data.get('context_id', None)
                         
                         # Create message object
                         msg_obj = {
                             'type': 'message',
                             'username': username,
                             'content': msg_content,
-                            'timestamp': datetime.now().isoformat()
+                            'timestamp': datetime.now().isoformat(),
+                            'context': context,
+                            'context_id': context_id
                         }
                         
-                        # Store in history
-                        messages.append(msg_obj)
-                        if len(messages) > MAX_HISTORY:
-                            messages.pop(0)
+                        # Route message based on context
+                        if context == 'server' and context_id:
+                            # Server channel message
+                            server_id, channel_id = context_id.split('/')
+                            if server_id in servers and channel_id in servers[server_id]['channels']:
+                                if username in servers[server_id]['members']:
+                                    # Store in channel history
+                                    servers[server_id]['channels'][channel_id]['messages'].append(msg_obj)
+                                    if len(servers[server_id]['channels'][channel_id]['messages']) > MAX_HISTORY:
+                                        servers[server_id]['channels'][channel_id]['messages'].pop(0)
+                                    
+                                    # Broadcast to server members
+                                    await broadcast_to_server(server_id, json.dumps(msg_obj))
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} in {server_id}/{channel_id}: {msg_content}")
                         
-                        # Broadcast to all clients
-                        await broadcast(json.dumps(msg_obj))
+                        elif context == 'dm' and context_id:
+                            # Direct message
+                            if context_id in direct_messages:
+                                if username in direct_messages[context_id]['participants']:
+                                    # Store in DM history
+                                    direct_messages[context_id]['messages'].append(msg_obj)
+                                    if len(direct_messages[context_id]['messages']) > MAX_HISTORY:
+                                        direct_messages[context_id]['messages'].pop(0)
+                                    
+                                    # Send to both participants
+                                    for participant in direct_messages[context_id]['participants']:
+                                        await send_to_user(participant, json.dumps(msg_obj))
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] DM {username}: {msg_content}")
                         
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {username}: {msg_content}")
+                        else:
+                            # Global chat (backward compatibility)
+                            messages.append(msg_obj)
+                            if len(messages) > MAX_HISTORY:
+                                messages.pop(0)
+                            await broadcast(json.dumps(msg_obj))
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username}: {msg_content}")
+                    
+                    elif data.get('type') == 'create_server':
+                        server_name = data.get('name', '').strip()
+                        if server_name:
+                            server_id = get_next_server_id()
+                            channel_id = get_next_channel_id()
+                            
+                            servers[server_id] = {
+                                'name': server_name,
+                                'owner': username,
+                                'members': {username},
+                                'channels': {
+                                    channel_id: {
+                                        'name': 'general',
+                                        'messages': []
+                                    }
+                                }
+                            }
+                            
+                            await websocket.send_str(json.dumps({
+                                'type': 'server_created',
+                                'server': {
+                                    'id': server_id,
+                                    'name': server_name,
+                                    'owner': username,
+                                    'channels': [{'id': channel_id, 'name': 'general'}]
+                                }
+                            }))
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} created server: {server_name}")
+                    
+                    elif data.get('type') == 'join_server':
+                        server_id = data.get('server_id', '')
+                        if server_id in servers:
+                            servers[server_id]['members'].add(username)
+                            
+                            await websocket.send_str(json.dumps({
+                                'type': 'server_joined',
+                                'server': {
+                                    'id': server_id,
+                                    'name': servers[server_id]['name'],
+                                    'owner': servers[server_id]['owner'],
+                                    'channels': [
+                                        {'id': ch_id, 'name': ch_data['name']}
+                                        for ch_id, ch_data in servers[server_id]['channels'].items()
+                                    ]
+                                }
+                            }))
+                    
+                    elif data.get('type') == 'get_channel_history':
+                        server_id = data.get('server_id', '')
+                        channel_id = data.get('channel_id', '')
+                        
+                        if server_id in servers and channel_id in servers[server_id]['channels']:
+                            if username in servers[server_id]['members']:
+                                channel_messages = servers[server_id]['channels'][channel_id]['messages']
+                                await websocket.send_str(json.dumps({
+                                    'type': 'channel_history',
+                                    'server_id': server_id,
+                                    'channel_id': channel_id,
+                                    'messages': channel_messages[-MAX_HISTORY:]
+                                }))
+                    
+                    elif data.get('type') == 'get_dm_history':
+                        dm_id = data.get('dm_id', '')
+                        
+                        if dm_id in direct_messages:
+                            if username in direct_messages[dm_id]['participants']:
+                                dm_messages = direct_messages[dm_id]['messages']
+                                await websocket.send_str(json.dumps({
+                                    'type': 'dm_history',
+                                    'dm_id': dm_id,
+                                    'messages': dm_messages[-MAX_HISTORY:]
+                                }))
+                    
+                    elif data.get('type') == 'search_users':
+                        query = data.get('query', '').strip().lower()
+                        results = []
+                        if query:
+                            for user in users.keys():
+                                if query in user.lower() and user != username:
+                                    results.append({
+                                        'username': user,
+                                        'is_friend': user in users[username]['friends']
+                                    })
+                        
+                        await websocket.send_str(json.dumps({
+                            'type': 'search_results',
+                            'results': results[:20]  # Limit to 20 results
+                        }))
+                    
+                    elif data.get('type') == 'add_friend':
+                        friend_username = data.get('username', '').strip()
+                        
+                        if friend_username in users and friend_username != username:
+                            users[username]['friends'].add(friend_username)
+                            users[friend_username]['friends'].add(username)
+                            
+                            await websocket.send_str(json.dumps({
+                                'type': 'friend_added',
+                                'username': friend_username
+                            }))
+                            
+                            # Notify the other user
+                            await send_to_user(friend_username, json.dumps({
+                                'type': 'friend_added',
+                                'username': username
+                            }))
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} added {friend_username} as friend")
+                    
+                    elif data.get('type') == 'remove_friend':
+                        friend_username = data.get('username', '').strip()
+                        
+                        if friend_username in users[username]['friends']:
+                            users[username]['friends'].discard(friend_username)
+                            users[friend_username]['friends'].discard(username)
+                            
+                            await websocket.send_str(json.dumps({
+                                'type': 'friend_removed',
+                                'username': friend_username
+                            }))
+                    
+                    elif data.get('type') == 'start_dm':
+                        friend_username = data.get('username', '').strip()
+                        
+                        if friend_username in users and friend_username in users[username]['friends']:
+                            dm_id = get_or_create_dm(username, friend_username)
+                            
+                            dm_info = {
+                                'type': 'dm_started',
+                                'dm': {
+                                    'id': dm_id,
+                                    'username': friend_username
+                                }
+                            }
+                            await websocket.send_str(json.dumps(dm_info))
+                            
+                            # Notify the other user
+                            await send_to_user(friend_username, json.dumps({
+                                'type': 'dm_started',
+                                'dm': {
+                                    'id': dm_id,
+                                    'username': username
+                                }
+                            }))
                     
                     elif data.get('type') == 'generate_invite':
                         # Generate a new invite code
@@ -217,6 +497,8 @@ async def handler(websocket):
                     print("Invalid JSON received")
                 except Exception as e:
                     print(f"Error processing message: {e}")
+                    import traceback
+                    traceback.print_exc()
             elif msg.type == web.WSMsgType.ERROR:
                 print(f'WebSocket connection closed with exception {websocket.exception()}')
                 break
@@ -225,7 +507,8 @@ async def handler(websocket):
         print(f"Error in handler: {e}")
     finally:
         # Unregister client
-        clients.discard(websocket)
+        if websocket in clients:
+            del clients[websocket]
         
         if username and authenticated:
             # Notify others about user leaving
