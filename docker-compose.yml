@@ -12,38 +12,6 @@ services:
       - decentra-network
     restart: unless-stopped
 
-  client1:
-    build:
-      context: ./client
-      dockerfile: Dockerfile
-    container_name: decentra-client1
-    environment:
-      - SERVER_HOST=server
-      - SERVER_PORT=8765
-    stdin_open: true
-    tty: true
-    depends_on:
-      - server
-    networks:
-      - decentra-network
-    command: python client.py Client1
-
-  client2:
-    build:
-      context: ./client
-      dockerfile: Dockerfile
-    container_name: decentra-client2
-    environment:
-      - SERVER_HOST=server
-      - SERVER_PORT=8765
-    stdin_open: true
-    tty: true
-    depends_on:
-      - server
-    networks:
-      - decentra-network
-    command: python client.py Client2
-
 networks:
   decentra-network:
     driver: bridge
