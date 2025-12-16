@@ -26,7 +26,14 @@ users = {}
 # Store active invite codes: {code: creator_username}
 invite_codes = {}
 
-# Store servers: {server_id: {name, owner, members: set(), permissions: {username: {can_create_channel, can_edit_channel, can_delete_channel}}, invite_codes: {code: creator}, channels: {channel_id: {name, type: 'text'|'voice', messages: [], voice_members: set()}}}}
+# Store servers: {
+#   server_id: {
+#     name, owner, members: set(),
+#     permissions: {username: {can_create_channel, can_edit_channel, can_delete_channel}},
+#     invite_codes: {code: creator},
+#     channels: {channel_id: {name, type: 'text'|'voice', messages: [], voice_members: set()}}
+#   }
+# }
 servers = {}
 # Store direct messages: {dm_id: {participants: set(), messages: []}}
 direct_messages = {}
@@ -120,6 +127,14 @@ def has_permission(server_id, username, permission):
     # Default: no permission
     return False
 
+
+def get_default_permissions():
+    """Get default permissions for new server members."""
+    return {
+        'can_create_channel': False,
+        'can_edit_channel': False,
+        'can_delete_channel': False
+    }
 
 
 async def broadcast(message, exclude=None):
@@ -278,11 +293,7 @@ async def handler(websocket):
                 }
                 # Add permissions if user is not owner
                 if username != server_data['owner']:
-                    server_info['permissions'] = server_data.get('permissions', {}).get(username, {
-                        'can_create_channel': False,
-                        'can_edit_channel': False,
-                        'can_delete_channel': False
-                    })
+                    server_info['permissions'] = server_data.get('permissions', {}).get(username, get_default_permissions())
                 user_servers.append(server_info)
         
         user_dms = []
@@ -590,11 +601,7 @@ async def handler(websocket):
                                     # Initialize default permissions (none)
                                     if 'permissions' not in server_data:
                                         server_data['permissions'] = {}
-                                    server_data['permissions'][username] = {
-                                        'can_create_channel': False,
-                                        'can_edit_channel': False,
-                                        'can_delete_channel': False
-                                    }
+                                    server_data['permissions'][username] = get_default_permissions()
                                     
                                     # Remove used invite code
                                     del server_data['invite_codes'][invite_code]
@@ -687,11 +694,7 @@ async def handler(websocket):
                                         'is_owner': member == servers[server_id]['owner']
                                     }
                                     if member != servers[server_id]['owner']:
-                                        member_data['permissions'] = servers[server_id].get('permissions', {}).get(member, {
-                                            'can_create_channel': False,
-                                            'can_edit_channel': False,
-                                            'can_delete_channel': False
-                                        })
+                                        member_data['permissions'] = servers[server_id].get('permissions', {}).get(member, get_default_permissions())
                                     members.append(member_data)
                                 
                                 await websocket.send_str(json.dumps({

@@ -889,6 +889,7 @@
                     const checkbox = document.createElement('input');
                     checkbox.type = 'checkbox';
                     checkbox.checked = member.permissions && member.permissions[perm];
+                    checkbox.dataset.permission = perm;  // Add data attribute for permission type
                     checkbox.onchange = () => {
                         updatePermission(serverId, member.username, perm, checkbox.checked);
                     };
@@ -912,23 +913,24 @@
         const server = servers.find(s => s.id === serverId);
         if (!server) return;
         
-        // Get current permissions
+        // Get current permissions by reading from checkboxes using data attributes
         const currentPerms = {
             can_create_channel: false,
             can_edit_channel: false,
             can_delete_channel: false
         };
         
-        // Update from checkboxes
+        // Find the member's row and read all checkboxes
         document.querySelectorAll('.member-item').forEach(item => {
             const name = item.querySelector('.member-name').textContent;
             if (name === targetUsername) {
                 const checkboxes = item.querySelectorAll('input[type="checkbox"]');
-                if (checkboxes.length >= 3) {
-                    currentPerms.can_create_channel = checkboxes[0].checked;
-                    currentPerms.can_edit_channel = checkboxes[1].checked;
-                    currentPerms.can_delete_channel = checkboxes[2].checked;
-                }
+                checkboxes.forEach(cb => {
+                    const perm = cb.dataset.permission;
+                    if (perm) {
+                        currentPerms[perm] = cb.checked;
+                    }
+                });
             }
         });
         
