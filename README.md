@@ -1,10 +1,14 @@
 # Decentra
 
-A decentralized Discord-like chat server and client that is non-federated and self-hostable. Built with Python and WebSockets, designed to run in Docker containers.
+A decentralized Discord-like chat server and client that is non-federated and self-hostable. Built with Python and WebSockets, designed to run in Docker containers with persistent data storage.
 
 ## Features
 
 - 🚀 Real-time WebSocket-based messaging
+- 💾 **Persistent Data Storage** - All data stored in SQLite database
+  - User accounts and friendships persist across restarts
+  - Message history saved permanently
+  - Servers and channels maintained
 - 🖥️ **Servers** - Create and manage multiple servers with channels
   - ⚙️ Server settings for owners (rename, invites, permissions)
   - 🎫 Server-specific invite codes
@@ -18,10 +22,11 @@ A decentralized Discord-like chat server and client that is non-federated and se
   - 🌐 Peer-to-peer WebRTC connections for high-quality audio
 - 🔐 Username/password authentication
 - 🎟️ Invite code system for controlled access
-- 📜 Message history (last 100 messages per channel/DM)
+- 📜 Complete message history with database persistence
 - 🐳 Docker containerized for easy deployment
 - 🌐 Modern web-based interface with Discord-like layout
 - 🎨 Beautiful responsive UI design
+- 🔌 **REST API** - HTTP REST API for desktop app integration
 
 ## Quick Start
 
@@ -43,7 +48,7 @@ cd decentra
 docker-compose up --build
 ```
 
-This will start the chat server on port 8765.
+This will start the chat server on port 8765 with persistent data storage in a Docker volume.
 
 3. Open your web browser and navigate to:
 ```
@@ -52,17 +57,24 @@ http://localhost:8765
 
 4. Create an account or log in to start chatting!
 
-5. To stop the server:
+5. To stop the server (data will persist):
 ```bash
 docker-compose down
 ```
+
+6. To completely remove all data and start fresh:
+```bash
+docker-compose down -v
+```
+
+**Note**: Your data (users, messages, servers) is stored in a Docker volume named `decentra-data` and will persist across container restarts.
 
 ### Running Manually with Docker
 
 ```bash
 cd server
 docker build -t decentra-server .
-docker run -p 8765:8765 decentra-server
+docker run -p 8765:8765 -v decentra-data:/data -e DB_PATH=/data/decentra.db decentra-server
 ```
 
 Then open your browser to `http://localhost:8765`
@@ -258,6 +270,40 @@ Then access the web interface at `http://localhost:8080`
 
 The web-based client supports unlimited simultaneous users. Simply have each user open the URL in their browser and log in or sign up.
 
+### Data Persistence
+
+All application data is stored in an SQLite database:
+- **With Docker**: Data is stored in a Docker volume (`decentra-data`) and persists across container restarts
+- **Local Development**: Database file is created as `decentra.db` in the server directory
+
+The database stores:
+- User accounts and passwords (hashed with bcrypt)
+- Friendships and friend requests
+- Servers, channels, and memberships
+- All message history
+- Invite codes
+
+To backup your data, backup the database file or Docker volume.
+
+## REST API
+
+Decentra includes a REST API for desktop application integration. The API provides HTTP endpoints for:
+- User authentication
+- Fetching servers and channels
+- Retrieving message history
+- Managing friends and direct messages
+
+See [API.md](API.md) for complete API documentation.
+
+**API Base URL**: `http://localhost:8765/api`
+
+**Example**: Get user's servers
+```bash
+curl "http://localhost:8765/api/servers?username=myusername"
+```
+
+For real-time messaging and updates, desktop applications should use the WebSocket endpoint at `ws://localhost:8765/ws` in combination with the REST API.
+
 ## Development
 
 ### Project Structure
@@ -266,19 +312,23 @@ The web-based client supports unlimited simultaneous users. Simply have each use
 decentra/
 ├── server/
 │   ├── server.py          # HTTP and WebSocket server
+│   ├── database.py        # SQLite database layer
+│   ├── api.py             # REST API endpoints
 │   ├── static/            # Web client files
 │   │   ├── index.html     # Login/signup page
 │   │   ├── chat.html      # Chat interface
 │   │   ├── styles.css     # Application styles
 │   │   ├── auth.js        # Authentication logic
-│   │   └── chat.js        # Chat and WebSocket client
+│   │   ├── chat.js        # Chat and WebSocket client
+│   │   └── voice.js       # WebRTC voice chat
 │   ├── Dockerfile         # Server container config
 │   └── requirements.txt   # Server dependencies
 ├── client/                # Legacy terminal client (deprecated)
 │   ├── client.py          
 │   ├── Dockerfile         
 │   └── requirements.txt   
-├── docker-compose.yml     # Docker orchestration
+├── docker-compose.yml     # Docker orchestration with volumes
+├── API.md                 # REST API documentation
 ├── .dockerignore         # Files to exclude from Docker builds
 ├── .gitignore            # Files to exclude from git
 ├── README.md             # This file

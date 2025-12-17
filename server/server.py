@@ -16,6 +16,11 @@ from aiohttp import web
 import os
 import base64
 import hashlib
+from database import Database
+from api import setup_api_routes
+
+# Initialize database
+db = Database(os.getenv('DB_PATH', 'decentra.db'))
 
 # Store connected clients: {websocket: username}
 clients = {}
@@ -24,28 +29,15 @@ messages = []
 MAX_HISTORY = 100
 MAX_AVATAR_SIZE = 2 * 1024 * 1024  # 2MB
 
-# Store user accounts: {username: {password_hash, created_at, friends: set(), friend_requests_sent: set(), friend_requests_received: set(), avatar: str, avatar_type: 'emoji'|'image', avatar_data: str}}
-users = {}
-# Store active invite codes: {code: creator_username}
-invite_codes = {}
-
-# Store servers: {
-#   server_id: {
-#     name, owner, members: set(),
-#     permissions: {username: {can_create_channel, can_edit_channel, can_delete_channel}},
-#     invite_codes: {code: creator},
-#     channels: {channel_id: {name, type: 'text'|'voice', messages: [], voice_members: set()}}
-#   }
-# }
-servers = {}
-# Store direct messages: {dm_id: {participants: set(), messages: []}}
-direct_messages = {}
+# Runtime-only data structures (not persisted)
 # Store voice calls: {call_id: {participants: set(), type: 'direct'|'channel', server_id: str, channel_id: str}}
 voice_calls = {}
 # Store voice state: {username: {in_voice: bool, channel_id: str, server_id: str, muted: bool, video: bool, screen_sharing: bool}}
 voice_states = {}
+# Store voice members per channel: {server_id/channel_id: set(usernames)}
+voice_members = {}
 
-# Helper counters for IDs
+# Helper counters for IDs (load from database on startup)
 server_counter = 0
 channel_counter = 0
 dm_counter = 0
@@ -88,6 +80,36 @@ def get_next_dm_id():
     return f"dm_{dm_counter}"
 
 
+def init_counters_from_db():
+    """Initialize ID counters from database."""
+    global server_counter, channel_counter, dm_counter
+    
+    # Get highest server ID
+    servers = db.get_all_servers()
+    if servers:
+        max_server = max([int(s['server_id'].split('_')[1]) for s in servers] + [0])
+        server_counter = max_server
+    
+    # Get highest channel ID
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT channel_id FROM channels')
+        channel_ids = [row[0] for row in cursor.fetchall()]
+        if channel_ids:
+            max_channel = max([int(c.split('_')[1]) for c in channel_ids] + [0])
+            channel_counter = max_channel
+    
+    # Get highest DM ID
+    dms = db.get_user_dms('')  # Empty string won't match, but we get all DMs
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT dm_id FROM direct_messages')
+        dm_ids = [row[0] for row in cursor.fetchall()]
+        if dm_ids:
+            max_dm = max([int(d.split('_')[1]) for d in dm_ids] + [0])
+            dm_counter = max_dm
+
+
 def get_next_call_id():
     """Get next voice call ID."""
     return f"call_{random.randint(100000, 999999)}"
@@ -95,26 +117,23 @@ def get_next_call_id():
 
 def get_or_create_dm(user1, user2):
     """Get existing DM or create new one between two users."""
-    participants = {user1, user2}
-    # Find existing DM
-    for dm_id, dm_data in direct_messages.items():
-        if dm_data['participants'] == participants:
-            return dm_id
+    # Check if DM exists in database
+    dm_id = db.get_dm(user1, user2)
+    if dm_id:
+        return dm_id
+    
     # Create new DM
     dm_id = get_next_dm_id()
-    direct_messages[dm_id] = {
-        'participants': participants,
-        'messages': []
-    }
+    db.create_dm(dm_id, user1, user2)
     return dm_id
 
 
 def get_avatar_data(username):
     """Get avatar data for a user."""
-    if username not in users:
+    user = db.get_user(username)
+    if not user:
         return {'avatar': '👤', 'avatar_type': 'emoji', 'avatar_data': None}
     
-    user = users[username]
     return {
         'avatar': user.get('avatar', '👤'),
         'avatar_type': user.get('avatar_type', 'emoji'),
@@ -127,18 +146,19 @@ def has_permission(server_id, username, permission):
     Owner always has all permissions.
     Permission can be: 'can_create_channel', 'can_edit_channel', 'can_delete_channel'
     """
-    if server_id not in servers:
+    server = db.get_server(server_id)
+    if not server:
         return False
-    
-    server = servers[server_id]
     
     # Owner has all permissions
     if server['owner'] == username:
         return True
     
-    # Check user's specific permissions
-    if username in server.get('permissions', {}):
-        return server['permissions'][username].get(permission, False)
+    # Check user's specific permissions from database
+    members = db.get_server_members(server_id)
+    for member in members:
+        if member['username'] == username:
+            return member.get(permission, 0) == 1
     
     # Default: no permission
     return False
@@ -166,10 +186,9 @@ async def broadcast(message, exclude=None):
 
 async def broadcast_to_server(server_id, message, exclude=None):
     """Broadcast a message to all members of a server."""
-    if server_id not in servers:
-        return
+    server_members_data = db.get_server_members(server_id)
+    server_members = {m['username'] for m in server_members_data}
     
-    server_members = servers[server_id]['members']
     tasks = []
     for client_ws, client_username in clients.items():
         if client_username in server_members and client_ws != exclude:
@@ -220,7 +239,7 @@ async def handler(websocket):
                     }))
                     continue
                 
-                if username in users:
+                if db.get_user(username):
                     await websocket.send_str(json.dumps({
                         'type': 'auth_error',
                         'message': 'Username already exists'
@@ -228,34 +247,32 @@ async def handler(websocket):
                     continue
                 
                 # Check invite code (required if users exist)
-                if users and invite_code not in invite_codes:
+                all_users = db.get_all_users()
+                invite_data = db.get_invite_code(invite_code) if invite_code else None
+                if all_users and not invite_data:
                     await websocket.send_str(json.dumps({
                         'type': 'auth_error',
                         'message': 'Valid invite code required'
                     }))
                     continue
                 
-                # Create user account
-                users[username] = {
-                    'password_hash': hash_password(password),
-                    'created_at': datetime.now().isoformat(),
-                    'friends': set(),
-                    'friend_requests_sent': set(),
-                    'friend_requests_received': set(),
-                    'avatar': '👤',  # Default avatar emoji
-                    'avatar_type': 'emoji',  # 'emoji' or 'image'
-                    'avatar_data': None  # Base64 image data for custom avatars
-                }
+                # Create user account in database
+                if not db.create_user(username, hash_password(password)):
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'Failed to create account'
+                    }))
+                    continue
                 
                 # Auto-friend inviter if signing up with invite code
                 inviter_username = None
-                if invite_code in invite_codes:
-                    inviter_username = invite_codes[invite_code]
+                if invite_data:
+                    inviter_username = invite_data['creator']
                     # Add mutual friendship
-                    users[username]['friends'].add(inviter_username)
-                    users[inviter_username]['friends'].add(username)
+                    db.add_friend_request(inviter_username, username)
+                    db.accept_friend_request(inviter_username, username)
                     # Remove used invite code
-                    del invite_codes[invite_code]
+                    db.delete_invite_code(invite_code)
                 
                 await websocket.send_str(json.dumps({
                     'type': 'auth_success',
@@ -286,14 +303,15 @@ async def handler(websocket):
                     }))
                     continue
                 
-                if username not in users:
+                user = db.get_user(username)
+                if not user:
                     await websocket.send_str(json.dumps({
                         'type': 'auth_error',
                         'message': 'Invalid username or password'
                     }))
                     continue
                 
-                if not verify_password(password, users[username]['password_hash']):
+                if not verify_password(password, user['password_hash']):
                     await websocket.send_str(json.dumps({
                         'type': 'auth_error',
                         'message': 'Invalid username or password'
@@ -316,36 +334,47 @@ async def handler(websocket):
         
         # Send user data to authenticated client
         user_servers = []
-        for server_id, server_data in servers.items():
-            if username in server_data['members']:
+        user_server_ids = db.get_user_servers(username)
+        for server_id in user_server_ids:
+            server_data = db.get_server(server_id)
+            if server_data:
+                channels = db.get_server_channels(server_id)
                 server_info = {
                     'id': server_id,
                     'name': server_data['name'],
                     'owner': server_data['owner'],
                     'channels': [
-                        {'id': ch_id, 'name': ch_data['name'], 'type': ch_data.get('type', 'text')}
-                        for ch_id, ch_data in server_data['channels'].items()
+                        {'id': ch['channel_id'], 'name': ch['name'], 'type': ch.get('type', 'text')}
+                        for ch in channels
                     ]
                 }
                 # Add permissions if user is not owner
                 if username != server_data['owner']:
-                    server_info['permissions'] = server_data.get('permissions', {}).get(username, get_default_permissions())
+                    members = db.get_server_members(server_id)
+                    for member in members:
+                        if member['username'] == username:
+                            server_info['permissions'] = {
+                                'can_create_channel': member.get('can_create_channel', 0) == 1,
+                                'can_edit_channel': member.get('can_edit_channel', 0) == 1,
+                                'can_delete_channel': member.get('can_delete_channel', 0) == 1
+                            }
+                            break
                 user_servers.append(server_info)
         
         user_dms = []
-        for dm_id, dm_data in direct_messages.items():
-            if username in dm_data['participants']:
-                other_user = list(dm_data['participants'] - {username})[0]
-                avatar_data = get_avatar_data(other_user)
-                user_dms.append({
-                    'id': dm_id,
-                    'username': other_user,
-                    **avatar_data
-                })
+        dm_list = db.get_user_dms(username)
+        for dm in dm_list:
+            other_user = dm['user2'] if dm['user1'] == username else dm['user1']
+            avatar_data = get_avatar_data(other_user)
+            user_dms.append({
+                'id': dm['dm_id'],
+                'username': other_user,
+                **avatar_data
+            })
         
         # Build friends list with avatars
         friends_list = []
-        for friend in users[username]['friends']:
+        for friend in db.get_friends(username):
             avatar_data = get_avatar_data(friend)
             friends_list.append({
                 'username': friend,
@@ -354,22 +383,20 @@ async def handler(websocket):
         
         # Build friend requests lists
         friend_requests_sent = []
-        for requested_user in users[username].get('friend_requests_sent', set()):
-            if requested_user in users:
-                avatar_data = get_avatar_data(requested_user)
-                friend_requests_sent.append({
-                    'username': requested_user,
-                    **avatar_data
-                })
+        for requested_user in db.get_friend_requests_sent(username):
+            avatar_data = get_avatar_data(requested_user)
+            friend_requests_sent.append({
+                'username': requested_user,
+                **avatar_data
+            })
         
         friend_requests_received = []
-        for requester_user in users[username].get('friend_requests_received', set()):
-            if requester_user in users:
-                avatar_data = get_avatar_data(requester_user)
-                friend_requests_received.append({
-                    'username': requester_user,
-                    **avatar_data
-                })
+        for requester_user in db.get_friend_requests_received(username):
+            avatar_data = get_avatar_data(requester_user)
+            friend_requests_received.append({
+                'username': requester_user,
+                **avatar_data
+            })
         
         current_avatar = get_avatar_data(username)
         user_data = json.dumps({
@@ -427,30 +454,35 @@ async def handler(websocket):
                             # Server channel message
                             if '/' in context_id:
                                 server_id, channel_id = context_id.split('/', 1)
-                                if server_id in servers and channel_id in servers[server_id]['channels']:
-                                    if username in servers[server_id]['members']:
-                                        # Store in channel history
-                                        servers[server_id]['channels'][channel_id]['messages'].append(msg_obj)
-                                        if len(servers[server_id]['channels'][channel_id]['messages']) > MAX_HISTORY:
-                                            servers[server_id]['channels'][channel_id]['messages'].pop(0)
+                                # Verify server and channel exist and user is member
+                                server = db.get_server(server_id)
+                                if server:
+                                    members = db.get_server_members(server_id)
+                                    member_usernames = {m['username'] for m in members}
+                                    if username in member_usernames:
+                                        # Save message to database
+                                        db.save_message(username, msg_content, 'server', context_id)
                                         
                                         # Broadcast to server members
                                         await broadcast_to_server(server_id, json.dumps(msg_obj))
                                         print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} in {server_id}/{channel_id}: {msg_content}")
                         
                         elif context == 'dm' and context_id:
-                            # Direct message
-                            if context_id in direct_messages:
-                                if username in direct_messages[context_id]['participants']:
-                                    # Store in DM history
-                                    direct_messages[context_id]['messages'].append(msg_obj)
-                                    if len(direct_messages[context_id]['messages']) > MAX_HISTORY:
-                                        direct_messages[context_id]['messages'].pop(0)
-                                    
-                                    # Send to both participants
-                                    for participant in direct_messages[context_id]['participants']:
-                                        await send_to_user(participant, json.dumps(msg_obj))
-                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] DM {username}: {msg_content}")
+                            # Direct message - verify DM exists and user is participant
+                            dm_users = db.get_user_dms(username)
+                            dm_ids = [dm['dm_id'] for dm in dm_users]
+                            if context_id in dm_ids:
+                                # Save message to database
+                                db.save_message(username, msg_content, 'dm', context_id)
+                                
+                                # Get participants and send to both
+                                for dm in dm_users:
+                                    if dm['dm_id'] == context_id:
+                                        participants = [dm['user1'], dm['user2']]
+                                        for participant in participants:
+                                            await send_to_user(participant, json.dumps(msg_obj))
+                                        break
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] DM {username}: {msg_content}")
                         
                         else:
                             # Global chat (backward compatibility)
@@ -466,21 +498,10 @@ async def handler(websocket):
                             server_id = get_next_server_id()
                             channel_id = get_next_channel_id()
                             
-                            servers[server_id] = {
-                                'name': server_name,
-                                'owner': username,
-                                'members': {username},
-                                'permissions': {},  # Permissions for non-owners
-                                'invite_codes': {},  # Server-specific invite codes
-                                'channels': {
-                                    channel_id: {
-                                        'name': 'general',
-                                        'type': 'text',
-                                        'messages': [],
-                                        'voice_members': set()
-                                    }
-                                }
-                            }
+                            # Create server in database
+                            db.create_server(server_id, server_name, username)
+                            # Create default general channel
+                            db.create_channel(channel_id, server_id, 'general', 'text')
                             
                             await websocket.send_str(json.dumps({
                                 'type': 'server_created',
@@ -515,33 +536,45 @@ async def handler(websocket):
                         server_id = data.get('server_id', '')
                         channel_id = data.get('channel_id', '')
                         
-                        if server_id in servers and channel_id in servers[server_id]['channels']:
-                            if username in servers[server_id]['members']:
-                                channel_messages = servers[server_id]['channels'][channel_id]['messages']
-                                await websocket.send_str(json.dumps({
-                                    'type': 'channel_history',
-                                    'server_id': server_id,
-                                    'channel_id': channel_id,
-                                    'messages': channel_messages[-MAX_HISTORY:]
-                                }))
+                        # Verify user is member of server
+                        members = db.get_server_members(server_id)
+                        member_usernames = {m['username'] for m in members}
+                        if username in member_usernames:
+                            # Get messages from database
+                            context_id = f"{server_id}/{channel_id}"
+                            channel_messages = db.get_messages('server', context_id, MAX_HISTORY)
+                            await websocket.send_str(json.dumps({
+                                'type': 'channel_history',
+                                'server_id': server_id,
+                                'channel_id': channel_id,
+                                'messages': channel_messages
+                            }))
                     
                     elif data.get('type') == 'get_dm_history':
                         dm_id = data.get('dm_id', '')
                         
-                        if dm_id in direct_messages:
-                            if username in direct_messages[dm_id]['participants']:
-                                dm_messages = direct_messages[dm_id]['messages']
-                                await websocket.send_str(json.dumps({
-                                    'type': 'dm_history',
-                                    'dm_id': dm_id,
-                                    'messages': dm_messages[-MAX_HISTORY:]
-                                }))
+                        # Verify user is participant in DM
+                        user_dms = db.get_user_dms(username)
+                        dm_ids = [dm['dm_id'] for dm in user_dms]
+                        if dm_id in dm_ids:
+                            # Get messages from database
+                            dm_messages = db.get_messages('dm', dm_id, MAX_HISTORY)
+                            await websocket.send_str(json.dumps({
+                                'type': 'dm_history',
+                                'dm_id': dm_id,
+                                'messages': dm_messages
+                            }))
                     
                     elif data.get('type') == 'search_users':
                         query = data.get('query', '').strip().lower()
                         results = []
                         if query:
-                            for user in users.keys():
+                            all_users = db.get_all_users()
+                            friends = set(db.get_friends(username))
+                            requests_sent = set(db.get_friend_requests_sent(username))
+                            requests_received = set(db.get_friend_requests_received(username))
+                            
+                            for user in all_users:
                                 if query in user.lower() and user != username:
                                     avatar_data = get_avatar_data(user)
                                     results.append({
@@ -561,26 +594,27 @@ async def handler(websocket):
                         # Send friend request
                         friend_username = data.get('username', '').strip()
                         
-                        if friend_username in users and friend_username != username:
+                        if db.get_user(friend_username) and friend_username != username:
+                            friends = set(db.get_friends(username))
+                            requests_sent = set(db.get_friend_requests_sent(username))
+                            requests_received = set(db.get_friend_requests_received(username))
+                            
                             # Check if already friends
-                            if friend_username in users[username]['friends']:
+                            if friend_username in friends:
                                 await websocket.send_str(json.dumps({
                                     'type': 'error',
                                     'message': 'Already friends with this user'
                                 }))
                             # Check if request already sent
-                            elif friend_username in users[username].get('friend_requests_sent', set()):
+                            elif friend_username in requests_sent:
                                 await websocket.send_str(json.dumps({
                                     'type': 'error',
                                     'message': 'Friend request already sent'
                                 }))
                             # Check if they already sent you a request (auto-accept in this case)
-                            elif friend_username in users[username].get('friend_requests_received', set()):
+                            elif friend_username in requests_received:
                                 # Auto-accept their pending request
-                                users[username].setdefault('friend_requests_received', set()).discard(friend_username)
-                                users[friend_username].setdefault('friend_requests_sent', set()).discard(username)
-                                users[username]['friends'].add(friend_username)
-                                users[friend_username]['friends'].add(username)
+                                db.accept_friend_request(friend_username, username)
                                 
                                 friend_avatar = get_avatar_data(friend_username)
                                 await websocket.send_str(json.dumps({
@@ -599,8 +633,7 @@ async def handler(websocket):
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} and {friend_username} are now friends (mutual request)")
                             else:
                                 # Send friend request
-                                users[username].setdefault('friend_requests_sent', set()).add(friend_username)
-                                users[friend_username].setdefault('friend_requests_received', set()).add(username)
+                                db.add_friend_request(username, friend_username)
                                 
                                 friend_avatar = get_avatar_data(friend_username)
                                 await websocket.send_str(json.dumps({
@@ -621,9 +654,9 @@ async def handler(websocket):
                     elif data.get('type') == 'remove_friend':
                         friend_username = data.get('username', '').strip()
                         
-                        if friend_username in users[username]['friends']:
-                            users[username]['friends'].discard(friend_username)
-                            users[friend_username]['friends'].discard(username)
+                        friends = set(db.get_friends(username))
+                        if friend_username in friends:
+                            db.remove_friendship(username, friend_username)
                             
                             await websocket.send_str(json.dumps({
                                 'type': 'friend_removed',
@@ -634,14 +667,10 @@ async def handler(websocket):
                         # Approve a friend request
                         requester_username = data.get('username', '').strip()
                         
-                        if requester_username in users[username].get('friend_requests_received', set()):
-                            # Remove from requests
-                            users[username].setdefault('friend_requests_received', set()).discard(requester_username)
-                            users[requester_username].setdefault('friend_requests_sent', set()).discard(username)
-                            
-                            # Add as friends
-                            users[username]['friends'].add(requester_username)
-                            users[requester_username]['friends'].add(username)
+                        requests_received = set(db.get_friend_requests_received(username))
+                        if requester_username in requests_received:
+                            # Accept the request
+                            db.accept_friend_request(requester_username, username)
                             
                             requester_avatar = get_avatar_data(requester_username)
                             await websocket.send_str(json.dumps({
@@ -663,10 +692,10 @@ async def handler(websocket):
                         # Deny a friend request
                         requester_username = data.get('username', '').strip()
                         
-                        if requester_username in users[username].get('friend_requests_received', set()):
-                            # Remove from requests
-                            users[username].setdefault('friend_requests_received', set()).discard(requester_username)
-                            users[requester_username].setdefault('friend_requests_sent', set()).discard(username)
+                        requests_received = set(db.get_friend_requests_received(username))
+                        if requester_username in requests_received:
+                            # Remove the request
+                            db.remove_friendship(requester_username, username)
                             
                             await websocket.send_str(json.dumps({
                                 'type': 'friend_request_denied',
@@ -680,10 +709,10 @@ async def handler(websocket):
                         # Cancel a sent friend request
                         friend_username = data.get('username', '').strip()
                         
-                        if friend_username in users[username].get('friend_requests_sent', set()):
-                            # Remove from requests
-                            users[username].setdefault('friend_requests_sent', set()).discard(friend_username)
-                            users[friend_username].setdefault('friend_requests_received', set()).discard(username)
+                        requests_sent = set(db.get_friend_requests_sent(username))
+                        if friend_username in requests_sent:
+                            # Remove the request
+                            db.remove_friendship(username, friend_username)
                             
                             await websocket.send_str(json.dumps({
                                 'type': 'friend_request_cancelled',
@@ -700,7 +729,8 @@ async def handler(websocket):
                     elif data.get('type') == 'start_dm':
                         friend_username = data.get('username', '').strip()
                         
-                        if friend_username in users and friend_username in users[username]['friends']:
+                        friends = set(db.get_friends(username))
+                        if db.get_user(friend_username) and friend_username in friends:
                             dm_id = get_or_create_dm(username, friend_username)
                             
                             friend_avatar = get_avatar_data(friend_username)
@@ -728,7 +758,7 @@ async def handler(websocket):
                     elif data.get('type') == 'generate_invite':
                         # Generate a new invite code
                         invite_code = generate_invite_code()
-                        invite_codes[invite_code] = username
+                        db.create_invite_code(invite_code, username, 'global')
                         
                         await websocket.send_str(json.dumps({
                             'type': 'invite_code',
@@ -742,10 +772,11 @@ async def handler(websocket):
                         server_id = data.get('server_id', '')
                         new_name = data.get('name', '').strip()
                         
-                        if server_id in servers and new_name:
-                            if username == servers[server_id]['owner']:
-                                old_name = servers[server_id]['name']
-                                servers[server_id]['name'] = new_name
+                        server = db.get_server(server_id)
+                        if server and new_name:
+                            if username == server['owner']:
+                                old_name = server['name']
+                                db.update_server_name(server_id, new_name)
                                 
                                 # Notify all server members
                                 await broadcast_to_server(server_id, json.dumps({
@@ -763,63 +794,68 @@ async def handler(websocket):
                     elif data.get('type') == 'generate_server_invite':
                         server_id = data.get('server_id', '')
                         
-                        if server_id in servers:
-                            if username in servers[server_id]['members']:
-                                invite_code = generate_invite_code()
-                                servers[server_id]['invite_codes'][invite_code] = username
-                                
-                                await websocket.send_str(json.dumps({
-                                    'type': 'server_invite_code',
-                                    'server_id': server_id,
-                                    'code': invite_code,
-                                    'message': f'Server invite code generated: {invite_code}'
-                                }))
-                                print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} generated invite for server {server_id}: {invite_code}")
+                        # Check if user is member of server
+                        members = db.get_server_members(server_id)
+                        member_usernames = {m['username'] for m in members}
+                        if username in member_usernames:
+                            invite_code = generate_invite_code()
+                            db.create_invite_code(invite_code, username, 'server', server_id)
+                            
+                            await websocket.send_str(json.dumps({
+                                'type': 'server_invite_code',
+                                'server_id': server_id,
+                                'code': invite_code,
+                                'message': f'Server invite code generated: {invite_code}'
+                            }))
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} generated invite for server {server_id}: {invite_code}")
                     
                     elif data.get('type') == 'join_server_with_invite':
                         invite_code = data.get('invite_code', '').strip()
                         
                         # Find server with this invite code
-                        for server_id, server_data in servers.items():
-                            if invite_code in server_data.get('invite_codes', {}):
-                                if username not in server_data['members']:
-                                    server_data['members'].add(username)
-                                    
-                                    # Initialize default permissions (none)
-                                    if 'permissions' not in server_data:
-                                        server_data['permissions'] = {}
-                                    server_data['permissions'][username] = get_default_permissions()
-                                    
-                                    # Remove used invite code
-                                    del server_data['invite_codes'][invite_code]
-                                    
-                                    await websocket.send_str(json.dumps({
-                                        'type': 'server_joined',
-                                        'server': {
-                                            'id': server_id,
-                                            'name': server_data['name'],
-                                            'owner': server_data['owner'],
-                                            'channels': [
-                                                {'id': ch_id, 'name': ch_data['name'], 'type': ch_data.get('type', 'text')}
-                                                for ch_id, ch_data in server_data['channels'].items()
-                                            ]
-                                        }
-                                    }))
-                                    
-                                    # Notify other server members
-                                    await broadcast_to_server(server_id, json.dumps({
-                                        'type': 'member_joined',
-                                        'server_id': server_id,
-                                        'username': username
-                                    }), exclude=websocket)
-                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} joined server {server_id} via invite")
-                                    break
-                                else:
-                                    await websocket.send_str(json.dumps({
-                                        'type': 'error',
-                                        'message': 'You are already a member of this server'
-                                    }))
-                                    break
+                        invite_data = db.get_invite_code(invite_code)
+                        if invite_data and invite_data['code_type'] == 'server':
+                            server_id = invite_data['server_id']
+                            server = db.get_server(server_id)
+                            
+                            # Check if user is already a member
+                            members = db.get_server_members(server_id)
+                            member_usernames = {m['username'] for m in members}
+                            
+                            if username not in member_usernames:
+                                # Add user to server
+                                db.add_server_member(server_id, username)
+                                
+                                # Remove used invite code
+                                db.delete_invite_code(invite_code)
+                                
+                                # Get channels for response
+                                channels = db.get_server_channels(server_id)
+                                await websocket.send_str(json.dumps({
+                                    'type': 'server_joined',
+                                    'server': {
+                                        'id': server_id,
+                                        'name': server['name'],
+                                        'owner': server['owner'],
+                                        'channels': [
+                                            {'id': ch['channel_id'], 'name': ch['name'], 'type': ch.get('type', 'text')}
+                                            for ch in channels
+                                        ]
+                                    }
+                                }))
+                                
+                                # Notify other server members
+                                await broadcast_to_server(server_id, json.dumps({
+                                    'type': 'member_joined',
+                                    'server_id': server_id,
+                                    'username': username
+                                }), exclude=websocket)
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} joined server {server_id} via invite")
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'You are already a member of this server'
+                                }))
                         else:
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
@@ -831,23 +867,22 @@ async def handler(websocket):
                         target_username = data.get('username', '')
                         permissions = data.get('permissions', {})
                         
-                        if server_id in servers and target_username:
-                            if username == servers[server_id]['owner']:
-                                if target_username in servers[server_id]['members'] and target_username != servers[server_id]['owner']:
-                                    # Update permissions
-                                    if 'permissions' not in servers[server_id]:
-                                        servers[server_id]['permissions'] = {}
-                                    servers[server_id]['permissions'][target_username] = {
-                                        'can_create_channel': permissions.get('can_create_channel', False),
-                                        'can_edit_channel': permissions.get('can_edit_channel', False),
-                                        'can_delete_channel': permissions.get('can_delete_channel', False)
-                                    }
+                        server = db.get_server(server_id)
+                        if server and target_username:
+                            if username == server['owner']:
+                                # Verify target user is a member
+                                members = db.get_server_members(server_id)
+                                member_usernames = {m['username'] for m in members}
+                                
+                                if target_username in member_usernames and target_username != server['owner']:
+                                    # Update permissions in database
+                                    db.update_member_permissions(server_id, target_username, permissions)
                                     
                                     # Notify the user whose permissions were updated
                                     await send_to_user(target_username, json.dumps({
                                         'type': 'permissions_updated',
                                         'server_id': server_id,
-                                        'permissions': servers[server_id]['permissions'][target_username]
+                                        'permissions': permissions
                                     }))
                                     
                                     # Confirm to the owner
@@ -855,7 +890,7 @@ async def handler(websocket):
                                         'type': 'permissions_updated_success',
                                         'server_id': server_id,
                                         'username': target_username,
-                                        'permissions': servers[server_id]['permissions'][target_username]
+                                        'permissions': permissions
                                     }))
                                     print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} updated permissions for {target_username} in server {server_id}")
                                 else:
@@ -872,22 +907,31 @@ async def handler(websocket):
                     elif data.get('type') == 'get_server_members':
                         server_id = data.get('server_id', '')
                         
-                        if server_id in servers:
-                            if username in servers[server_id]['members']:
-                                members = []
-                                for member in servers[server_id]['members']:
+                        server = db.get_server(server_id)
+                        if server:
+                            # Verify user is a member
+                            members = db.get_server_members(server_id)
+                            member_usernames = {m['username'] for m in members}
+                            
+                            if username in member_usernames:
+                                members_list = []
+                                for member in members:
                                     member_data = {
-                                        'username': member,
-                                        'is_owner': member == servers[server_id]['owner']
+                                        'username': member['username'],
+                                        'is_owner': member['username'] == server['owner']
                                     }
-                                    if member != servers[server_id]['owner']:
-                                        member_data['permissions'] = servers[server_id].get('permissions', {}).get(member, get_default_permissions())
-                                    members.append(member_data)
+                                    if member['username'] != server['owner']:
+                                        member_data['permissions'] = {
+                                            'can_create_channel': member.get('can_create_channel', 0) == 1,
+                                            'can_edit_channel': member.get('can_edit_channel', 0) == 1,
+                                            'can_delete_channel': member.get('can_delete_channel', 0) == 1
+                                        }
+                                    members_list.append(member_data)
                                 
                                 await websocket.send_str(json.dumps({
                                     'type': 'server_members',
                                     'server_id': server_id,
-                                    'members': members
+                                    'members': members_list
                                 }))
                     
                     # Channel creation handlers
@@ -896,15 +940,10 @@ async def handler(websocket):
                         channel_name = data.get('name', '').strip()
                         channel_type = data.get('channel_type', 'text')  # Default to text channel
                         
-                        if server_id in servers and channel_name:
+                        if db.get_server(server_id) and channel_name:
                             if has_permission(server_id, username, 'can_create_channel'):
                                 channel_id = get_next_channel_id()
-                                servers[server_id]['channels'][channel_id] = {
-                                    'name': channel_name,
-                                    'type': channel_type,
-                                    'messages': [],
-                                    'voice_members': set()
-                                }
+                                db.create_channel(channel_id, server_id, channel_name, channel_type)
                                 
                                 # Notify all server members
                                 channel_info = json.dumps({
@@ -925,15 +964,10 @@ async def handler(websocket):
                         server_id = data.get('server_id', '')
                         channel_name = data.get('name', '').strip()
                         
-                        if server_id in servers and channel_name:
+                        if db.get_server(server_id) and channel_name:
                             if has_permission(server_id, username, 'can_create_channel'):
                                 channel_id = get_next_channel_id()
-                                servers[server_id]['channels'][channel_id] = {
-                                    'name': channel_name,
-                                    'type': 'voice',
-                                    'messages': [],
-                                    'voice_members': set()
-                                }
+                                db.create_channel(channel_id, server_id, channel_name, 'voice')
                                 
                                 # Notify all server members (use unified message type)
                                 channel_info = json.dumps({
@@ -953,10 +987,18 @@ async def handler(websocket):
                         server_id = data.get('server_id', '')
                         channel_id = data.get('channel_id', '')
                         
-                        if server_id in servers and channel_id in servers[server_id]['channels']:
-                            if username in servers[server_id]['members']:
-                                # Add to voice channel
-                                servers[server_id]['channels'][channel_id]['voice_members'].add(username)
+                        # Verify server and channel exist and user is member
+                        server = db.get_server(server_id)
+                        if server:
+                            members = db.get_server_members(server_id)
+                            member_usernames = {m['username'] for m in members}
+                            if username in member_usernames:
+                                # Add to voice channel (runtime tracking)
+                                voice_key = f"{server_id}/{channel_id}"
+                                if voice_key not in voice_members:
+                                    voice_members[voice_key] = set()
+                                voice_members[voice_key].add(username)
+                                
                                 voice_states[username] = {
                                     'in_voice': True,
                                     'channel_id': channel_id,
@@ -967,11 +1009,11 @@ async def handler(websocket):
                                 }
                                 
                                 # Get current voice members with state details
-                                voice_members = []
-                                for member in servers[server_id]['channels'][channel_id]['voice_members']:
+                                voice_members_list = []
+                                for member in voice_members.get(voice_key, set()):
                                     member_state = voice_states.get(member, {})
                                     member_avatar = get_avatar_data(member)
-                                    voice_members.append({
+                                    voice_members_list.append({
                                         'username': member,
                                         **member_avatar,
                                         'muted': member_state.get('muted', False),
@@ -988,7 +1030,7 @@ async def handler(websocket):
                                     'username': username,
                                     **user_avatar,
                                     'state': 'joined',
-                                    'voice_members': voice_members
+                                    'voice_members': voice_members_list
                                 }))
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} joined voice channel {channel_id}")
                     
@@ -999,15 +1041,16 @@ async def handler(websocket):
                             channel_id = state.get('channel_id')
                             
                             if server_id and channel_id:
-                                if server_id in servers and channel_id in servers[server_id]['channels']:
-                                    servers[server_id]['channels'][channel_id]['voice_members'].discard(username)
+                                voice_key = f"{server_id}/{channel_id}"
+                                if voice_key in voice_members:
+                                    voice_members[voice_key].discard(username)
                                     
                                     # Get current voice members with state details
-                                    voice_members = []
-                                    for member in servers[server_id]['channels'][channel_id]['voice_members']:
+                                    voice_members_list = []
+                                    for member in voice_members.get(voice_key, set()):
                                         member_state = voice_states.get(member, {})
                                         member_avatar = get_avatar_data(member)
-                                        voice_members.append({
+                                        voice_members_list.append({
                                             'username': member,
                                             **member_avatar,
                                             'muted': member_state.get('muted', False),
@@ -1046,12 +1089,11 @@ async def handler(websocket):
                         # Update user avatar (emoji or image upload)
                         avatar_type = data.get('avatar_type', 'emoji')
                         
-                        if username in users:
+                        user = db.get_user(username)
+                        if user:
                             if avatar_type == 'emoji':
                                 avatar = data.get('avatar', '👤').strip()
-                                users[username]['avatar'] = avatar
-                                users[username]['avatar_type'] = 'emoji'
-                                users[username]['avatar_data'] = None
+                                db.update_user_avatar(username, avatar, 'emoji', None)
                             elif avatar_type == 'image':
                                 # Handle image upload via base64
                                 avatar_data = data.get('avatar_data', '')
@@ -1064,15 +1106,13 @@ async def handler(websocket):
                                     }))
                                     continue
                                 
-                                users[username]['avatar'] = None
-                                users[username]['avatar_type'] = 'image'
-                                users[username]['avatar_data'] = avatar_data
+                                db.update_user_avatar(username, None, 'image', avatar_data)
                             
                             # Get full avatar data to broadcast
                             avatar_update = get_avatar_data(username)
                             
                             # Notify all friends about avatar change
-                            for friend_username in users[username]['friends']:
+                            for friend_username in db.get_friends(username):
                                 await send_to_user(friend_username, json.dumps({
                                     'type': 'avatar_update',
                                     'username': username,
@@ -1080,13 +1120,12 @@ async def handler(websocket):
                                 }))
                             
                             # Notify all servers the user is in
-                            for server_id, server_data in servers.items():
-                                if username in server_data['members']:
-                                    await broadcast_to_server(server_id, json.dumps({
-                                        'type': 'avatar_update',
-                                        'username': username,
-                                        **avatar_update
-                                    }))
+                            for server_id in db.get_user_servers(username):
+                                await broadcast_to_server(server_id, json.dumps({
+                                    'type': 'avatar_update',
+                                    'username': username,
+                                    **avatar_update
+                                }))
                             
                             await websocket.send_str(json.dumps({
                                 'type': 'avatar_updated',
@@ -1215,15 +1254,16 @@ async def handler(websocket):
                 channel_id = state.get('channel_id')
                 
                 if server_id and channel_id:
-                    if server_id in servers and channel_id in servers[server_id]['channels']:
-                        servers[server_id]['channels'][channel_id]['voice_members'].discard(username)
+                    voice_key = f"{server_id}/{channel_id}"
+                    if voice_key in voice_members:
+                        voice_members[voice_key].discard(username)
                         
                         # Get current voice members with state details
-                        voice_members = []
-                        for member in servers[server_id]['channels'][channel_id]['voice_members']:
+                        voice_members_list = []
+                        for member in voice_members.get(voice_key, set()):
                             member_state = voice_states.get(member, {})
                             member_avatar = get_avatar_data(member)
-                            voice_members.append({
+                            voice_members_list.append({
                                 'username': member,
                                 **member_avatar,
                                 'muted': member_state.get('muted', False),
@@ -1309,11 +1349,18 @@ async def main():
     print("Starting WebSocket server on ws://0.0.0.0:8765")
     print("=" * 50)
     
+    # Initialize database counters from existing data
+    init_counters_from_db()
+    print(f"Initialized counters from database (servers: {server_counter}, channels: {channel_counter}, dms: {dm_counter})")
+    
     # Create aiohttp application
     app = web.Application()
     app.router.add_get('/', http_handler)
     app.router.add_get('/static/{path:.*}', http_handler)
     app.router.add_get('/ws', websocket_handler)
+    
+    # Setup REST API routes
+    setup_api_routes(app)
     
     # Run the server
     runner = web.AppRunner(app)
@@ -1323,6 +1370,8 @@ async def main():
     
     print("Server started successfully!")
     print("Access the web client at http://localhost:8765")
+    print(f"Database: {db.db_path}")
+    print("REST API available at http://localhost:8765/api/*")
     
     # Keep running
     await asyncio.Future()

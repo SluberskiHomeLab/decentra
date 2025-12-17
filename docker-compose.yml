@@ -8,9 +8,17 @@ services:
     container_name: decentra-server
     ports:
       - "8765:8765"
+    volumes:
+      - decentra-data:/data
+    environment:
+      - DB_PATH=/data/decentra.db
     networks:
       - decentra-network
     restart: unless-stopped
+
+volumes:
+  decentra-data:
+    driver: local
 
 networks:
   decentra-network:
