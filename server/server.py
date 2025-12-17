@@ -577,8 +577,8 @@ async def handler(websocket):
                             # Check if they already sent you a request (auto-accept in this case)
                             elif friend_username in users[username].get('friend_requests_received', set()):
                                 # Auto-accept their pending request
-                                users[username]['friend_requests_received'].discard(friend_username)
-                                users[friend_username]['friend_requests_sent'].discard(username)
+                                users[username].setdefault('friend_requests_received', set()).discard(friend_username)
+                                users[friend_username].setdefault('friend_requests_sent', set()).discard(username)
                                 users[username]['friends'].add(friend_username)
                                 users[friend_username]['friends'].add(username)
                                 
@@ -599,12 +599,14 @@ async def handler(websocket):
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} and {friend_username} are now friends (mutual request)")
                             else:
                                 # Send friend request
-                                users[username]['friend_requests_sent'].add(friend_username)
-                                users[friend_username]['friend_requests_received'].add(username)
+                                users[username].setdefault('friend_requests_sent', set()).add(friend_username)
+                                users[friend_username].setdefault('friend_requests_received', set()).add(username)
                                 
+                                friend_avatar = get_avatar_data(friend_username)
                                 await websocket.send_str(json.dumps({
                                     'type': 'friend_request_sent',
-                                    'username': friend_username
+                                    'username': friend_username,
+                                    **friend_avatar
                                 }))
                                 
                                 # Notify the other user
@@ -634,8 +636,8 @@ async def handler(websocket):
                         
                         if requester_username in users[username].get('friend_requests_received', set()):
                             # Remove from requests
-                            users[username]['friend_requests_received'].discard(requester_username)
-                            users[requester_username]['friend_requests_sent'].discard(username)
+                            users[username].setdefault('friend_requests_received', set()).discard(requester_username)
+                            users[requester_username].setdefault('friend_requests_sent', set()).discard(username)
                             
                             # Add as friends
                             users[username]['friends'].add(requester_username)
@@ -663,8 +665,8 @@ async def handler(websocket):
                         
                         if requester_username in users[username].get('friend_requests_received', set()):
                             # Remove from requests
-                            users[username]['friend_requests_received'].discard(requester_username)
-                            users[requester_username]['friend_requests_sent'].discard(username)
+                            users[username].setdefault('friend_requests_received', set()).discard(requester_username)
+                            users[requester_username].setdefault('friend_requests_sent', set()).discard(username)
                             
                             await websocket.send_str(json.dumps({
                                 'type': 'friend_request_denied',
@@ -680,8 +682,8 @@ async def handler(websocket):
                         
                         if friend_username in users[username].get('friend_requests_sent', set()):
                             # Remove from requests
-                            users[username]['friend_requests_sent'].discard(friend_username)
-                            users[friend_username]['friend_requests_received'].discard(username)
+                            users[username].setdefault('friend_requests_sent', set()).discard(friend_username)
+                            users[friend_username].setdefault('friend_requests_received', set()).discard(username)
                             
                             await websocket.send_str(json.dumps({
                                 'type': 'friend_request_cancelled',

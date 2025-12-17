@@ -313,7 +313,12 @@
             case 'friend_request_sent':
                 // Add to sent requests list
                 if (!friendRequestsSent.find(r => r.username === data.username)) {
-                    friendRequestsSent.push({ username: data.username });
+                    friendRequestsSent.push({
+                        username: data.username,
+                        avatar: data.avatar || '👤',
+                        avatar_type: data.avatar_type || 'emoji',
+                        avatar_data: data.avatar_data
+                    });
                     updateFriendsList();
                 }
                 break;
