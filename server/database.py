@@ -8,6 +8,7 @@ import psycopg2
 import psycopg2.extras
 import json
 import os
+import time
 from datetime import datetime
 from contextlib import contextmanager
 from typing import List, Dict, Set, Optional, Tuple
@@ -38,120 +39,142 @@ class Database:
             conn.close()
     
     def init_database(self):
-        """Initialize database schema."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Users table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    username VARCHAR(255) PRIMARY KEY,
-                    password_hash VARCHAR(255) NOT NULL,
-                    created_at TIMESTAMP NOT NULL,
-                    avatar VARCHAR(255) DEFAULT '👤',
-                    avatar_type VARCHAR(50) DEFAULT 'emoji',
-                    avatar_data TEXT
-                )
-            ''')
-            
-            # Servers table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS servers (
-                    server_id VARCHAR(255) PRIMARY KEY,
-                    name VARCHAR(255) NOT NULL,
-                    owner VARCHAR(255) NOT NULL,
-                    FOREIGN KEY (owner) REFERENCES users(username)
-                )
-            ''')
-            
-            # Channels table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS channels (
-                    channel_id VARCHAR(255) PRIMARY KEY,
-                    server_id VARCHAR(255) NOT NULL,
-                    name VARCHAR(255) NOT NULL,
-                    type VARCHAR(50) DEFAULT 'text',
-                    FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
-                )
-            ''')
-            
-            # Server members table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS server_members (
-                    server_id VARCHAR(255) NOT NULL,
-                    username VARCHAR(255) NOT NULL,
-                    can_create_channel BOOLEAN DEFAULT FALSE,
-                    can_edit_channel BOOLEAN DEFAULT FALSE,
-                    can_delete_channel BOOLEAN DEFAULT FALSE,
-                    PRIMARY KEY (server_id, username),
-                    FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
-                    FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
-                )
-            ''')
-            
-            # Messages table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS messages (
-                    id SERIAL PRIMARY KEY,
-                    username VARCHAR(255) NOT NULL,
-                    content TEXT NOT NULL,
-                    timestamp TIMESTAMP NOT NULL,
-                    context_type VARCHAR(50) NOT NULL,
-                    context_id VARCHAR(255),
-                    FOREIGN KEY (username) REFERENCES users(username)
-                )
-            ''')
-            
-            # Create index for faster message retrieval
-            cursor.execute('''
-                CREATE INDEX IF NOT EXISTS idx_messages_context 
-                ON messages(context_type, context_id, timestamp)
-            ''')
-            
-            # Friendships table
-            # Note: user1 and user2 are stored in sorted order (user1 < user2)
-            # to ensure consistent ordering and prevent duplicate entries.
-            # The CHECK constraint enforces this at the database level.
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS friendships (
-                    user1 VARCHAR(255) NOT NULL,
-                    user2 VARCHAR(255) NOT NULL,
-                    status VARCHAR(50) DEFAULT 'pending',
-                    requester VARCHAR(255) NOT NULL,
-                    created_at TIMESTAMP NOT NULL,
-                    PRIMARY KEY (user1, user2),
-                    FOREIGN KEY (user1) REFERENCES users(username) ON DELETE CASCADE,
-                    FOREIGN KEY (user2) REFERENCES users(username) ON DELETE CASCADE,
-                    CHECK (user1 < user2)
-                )
-            ''')
-            
-            # Direct messages table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS direct_messages (
-                    dm_id VARCHAR(255) PRIMARY KEY,
-                    user1 VARCHAR(255) NOT NULL,
-                    user2 VARCHAR(255) NOT NULL,
-                    created_at TIMESTAMP NOT NULL,
-                    FOREIGN KEY (user1) REFERENCES users(username) ON DELETE CASCADE,
-                    FOREIGN KEY (user2) REFERENCES users(username) ON DELETE CASCADE
-                )
-            ''')
-            
-            # Invite codes table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS invite_codes (
-                    code VARCHAR(255) PRIMARY KEY,
-                    creator VARCHAR(255) NOT NULL,
-                    code_type VARCHAR(50) DEFAULT 'global',
-                    server_id VARCHAR(255),
-                    created_at TIMESTAMP NOT NULL,
-                    FOREIGN KEY (creator) REFERENCES users(username) ON DELETE CASCADE,
-                    FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
-                )
-            ''')
-            
-            conn.commit()
+        """Initialize database schema with retry logic."""
+        max_retries = 5
+        retry_delay = 1  # Initial delay in seconds
+        
+        for attempt in range(max_retries):
+            try:
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    
+                    # Users table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS users (
+                            username VARCHAR(255) PRIMARY KEY,
+                            password_hash VARCHAR(255) NOT NULL,
+                            created_at TIMESTAMP NOT NULL,
+                            avatar VARCHAR(255) DEFAULT '👤',
+                            avatar_type VARCHAR(50) DEFAULT 'emoji',
+                            avatar_data TEXT
+                        )
+                    ''')
+                    
+                    # Servers table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS servers (
+                            server_id VARCHAR(255) PRIMARY KEY,
+                            name VARCHAR(255) NOT NULL,
+                            owner VARCHAR(255) NOT NULL,
+                            FOREIGN KEY (owner) REFERENCES users(username)
+                        )
+                    ''')
+                    
+                    # Channels table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS channels (
+                            channel_id VARCHAR(255) PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            name VARCHAR(255) NOT NULL,
+                            type VARCHAR(50) DEFAULT 'text',
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Server members table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS server_members (
+                            server_id VARCHAR(255) NOT NULL,
+                            username VARCHAR(255) NOT NULL,
+                            can_create_channel BOOLEAN DEFAULT FALSE,
+                            can_edit_channel BOOLEAN DEFAULT FALSE,
+                            can_delete_channel BOOLEAN DEFAULT FALSE,
+                            PRIMARY KEY (server_id, username),
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Messages table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS messages (
+                            id SERIAL PRIMARY KEY,
+                            username VARCHAR(255) NOT NULL,
+                            content TEXT NOT NULL,
+                            timestamp TIMESTAMP NOT NULL,
+                            context_type VARCHAR(50) NOT NULL,
+                            context_id VARCHAR(255),
+                            FOREIGN KEY (username) REFERENCES users(username)
+                        )
+                    ''')
+                    
+                    # Create index for faster message retrieval
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_messages_context 
+                        ON messages(context_type, context_id, timestamp)
+                    ''')
+                    
+                    # Friendships table
+                    # Note: user1 and user2 are stored in sorted order (user1 < user2)
+                    # to ensure consistent ordering and prevent duplicate entries.
+                    # The CHECK constraint enforces this at the database level.
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS friendships (
+                            user1 VARCHAR(255) NOT NULL,
+                            user2 VARCHAR(255) NOT NULL,
+                            status VARCHAR(50) DEFAULT 'pending',
+                            requester VARCHAR(255) NOT NULL,
+                            created_at TIMESTAMP NOT NULL,
+                            PRIMARY KEY (user1, user2),
+                            FOREIGN KEY (user1) REFERENCES users(username) ON DELETE CASCADE,
+                            FOREIGN KEY (user2) REFERENCES users(username) ON DELETE CASCADE,
+                            CHECK (user1 < user2)
+                        )
+                    ''')
+                    
+                    # Direct messages table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS direct_messages (
+                            dm_id VARCHAR(255) PRIMARY KEY,
+                            user1 VARCHAR(255) NOT NULL,
+                            user2 VARCHAR(255) NOT NULL,
+                            created_at TIMESTAMP NOT NULL,
+                            FOREIGN KEY (user1) REFERENCES users(username) ON DELETE CASCADE,
+                            FOREIGN KEY (user2) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Invite codes table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS invite_codes (
+                            code VARCHAR(255) PRIMARY KEY,
+                            creator VARCHAR(255) NOT NULL,
+                            code_type VARCHAR(50) DEFAULT 'global',
+                            server_id VARCHAR(255),
+                            created_at TIMESTAMP NOT NULL,
+                            FOREIGN KEY (creator) REFERENCES users(username) ON DELETE CASCADE,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    conn.commit()
+                
+                # If we get here, connection was successful
+                print(f"Database connection established successfully")
+                return
+                
+            except psycopg2.OperationalError as e:
+                if attempt < max_retries - 1:
+                    print(f"Database connection attempt {attempt + 1}/{max_retries} failed: {e}")
+                    print(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    print(f"Failed to connect to database after {max_retries} attempts")
+                    raise
+            except Exception as e:
+                print(f"Unexpected error during database initialization: {e}")
+                raise
     
     # User operations
     def create_user(self, username: str, password_hash: str) -> bool:
