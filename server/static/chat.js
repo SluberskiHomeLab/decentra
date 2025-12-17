@@ -121,6 +121,7 @@
     const deviceSettingsModal = document.getElementById('device-settings-modal');
     const microphoneSelect = document.getElementById('microphone-select');
     const speakerSelect = document.getElementById('speaker-select');
+    const cameraSelect = document.getElementById('camera-select');
     const closeDeviceSettingsModalBtn = document.getElementById('close-device-settings-modal');
     
     // Right sidebar (members list) elements
@@ -1793,6 +1794,12 @@
         }
     });
     
+    cameraSelect.addEventListener('change', async (e) => {
+        if (voiceChat) {
+            await voiceChat.setCamera(e.target.value);
+        }
+    });
+    
     // Close voice participants panel
     closeParticipantsBtn.addEventListener('click', () => {
         voiceParticipants.classList.add('hidden');
@@ -1802,11 +1809,12 @@
     async function populateDeviceSelects() {
         if (!voiceChat) return;
         
-        const devices = await voiceChat.getAudioDevices();
+        const devices = await voiceChat.getMediaDevices();
         
         // Clear existing options (except default)
         microphoneSelect.innerHTML = '<option value="">Default</option>';
         speakerSelect.innerHTML = '<option value="">Default</option>';
+        cameraSelect.innerHTML = '<option value="">Default</option>';
         
         // Add microphones
         devices.microphones.forEach(device => {
@@ -1828,6 +1836,17 @@
                 option.selected = true;
             }
             speakerSelect.appendChild(option);
+        });
+        
+        // Add cameras
+        devices.cameras.forEach(device => {
+            const option = document.createElement('option');
+            option.value = device.deviceId;
+            option.textContent = device.label || `Camera ${device.deviceId.substring(0, 8)}`;
+            if (device.deviceId === voiceChat.selectedCameraId) {
+                option.selected = true;
+            }
+            cameraSelect.appendChild(option);
         });
     }
     
