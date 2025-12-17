@@ -50,6 +50,19 @@ class VoiceChat {
     
     async getAudioDevices() {
         try {
+            // Request permission first to get device labels
+            // This is required because enumerateDevices() only returns labels after permission is granted
+            if (!this.localStream) {
+                try {
+                    const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                    // Stop the temporary stream immediately
+                    tempStream.getTracks().forEach(track => track.stop());
+                } catch (permError) {
+                    console.warn('Could not get permission for device enumeration:', permError);
+                    // Continue anyway - devices will be returned but without labels
+                }
+            }
+            
             const devices = await navigator.mediaDevices.enumerateDevices();
             return {
                 microphones: devices.filter(d => d.kind === 'audioinput'),
@@ -108,11 +121,16 @@ class VoiceChat {
         this.selectedSpeakerId = deviceId;
         
         // Update audio output for all remote audio elements
+        // Note: setSinkId is not supported in all browsers (e.g., Safari, Firefox)
         this.peerConnections.forEach(pc => {
-            if (pc.remoteAudio && pc.remoteAudio.setSinkId) {
-                pc.remoteAudio.setSinkId(deviceId).catch(error => {
-                    console.error('Error setting speaker:', error);
-                });
+            if (pc.remoteAudio) {
+                if (typeof pc.remoteAudio.setSinkId === 'function') {
+                    pc.remoteAudio.setSinkId(deviceId).catch(error => {
+                        console.error('Error setting speaker:', error);
+                    });
+                } else {
+                    console.warn('setSinkId is not supported in this browser');
+                }
             }
         });
     }
@@ -460,8 +478,8 @@ class VoiceChat {
                 const remoteAudio = new Audio();
                 remoteAudio.srcObject = event.streams[0];
                 
-                // Set speaker if selected
-                if (this.selectedSpeakerId && remoteAudio.setSinkId) {
+                // Set speaker if selected and supported
+                if (this.selectedSpeakerId && typeof remoteAudio.setSinkId === 'function') {
                     remoteAudio.setSinkId(this.selectedSpeakerId).catch(error => {
                         console.error('Error setting speaker:', error);
                     });
