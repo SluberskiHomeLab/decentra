@@ -5,6 +5,7 @@ Simple test script to verify database persistence
 
 import os
 import sys
+import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
 
 from database import Database
@@ -17,10 +18,9 @@ def test_database():
     print("Testing Decentra Database Persistence")
     print("=" * 50)
     
-    # Use a test database
-    db_path = "/tmp/test_decentra.db"
-    if os.path.exists(db_path):
-        os.remove(db_path)
+    # Use a temporary test database (cross-platform compatible)
+    temp_dir = tempfile.mkdtemp()
+    db_path = os.path.join(temp_dir, "test_decentra.db")
     
     db = Database(db_path)
     print("✓ Database created successfully")
@@ -144,6 +144,7 @@ def test_database():
     
     # Cleanup
     os.remove(db_path)
+    os.rmdir(temp_dir)
     
     print("\n" + "=" * 50)
     print("All tests passed! ✓")

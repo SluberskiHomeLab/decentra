@@ -106,6 +106,9 @@ class Database:
             ''')
             
             # Friendships table
+            # Note: user1 and user2 are stored in sorted order (user1 < user2)
+            # to ensure consistent ordering and prevent duplicate entries.
+            # The CHECK constraint enforces this at the database level.
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS friendships (
                     user1 TEXT NOT NULL,
