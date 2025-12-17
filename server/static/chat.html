@@ -40,7 +40,6 @@
                     <button id="menu-avatar-btn" class="menu-item">Set Avatar</button>
                     <button id="menu-friends-btn" class="menu-item">Friends</button>
                     <button id="menu-create-server-btn" class="menu-item">Create Server</button>
-                    <button id="menu-create-voice-channel-btn" class="menu-item">Create Voice Channel</button>
                     <button id="menu-invite-btn" class="menu-item">Generate Invite</button>
                     <div class="menu-divider"></div>
                     <button id="menu-logout-btn" class="menu-item menu-item-danger">Logout</button>
@@ -191,6 +190,22 @@
         </div>
     </div>
     
+    <div id="create-text-channel-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Create Text Channel</h3>
+            <form id="create-text-channel-form">
+                <div class="form-group">
+                    <label for="text-channel-name-input">Text Channel Name</label>
+                    <input type="text" id="text-channel-name-input" required>
+                </div>
+                <div class="button-group">
+                    <button type="submit" class="btn btn-primary">Create</button>
+                    <button type="button" id="cancel-text-channel-btn" class="btn btn-secondary">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
     <div id="search-users-modal" class="modal hidden">
         <div class="modal-content">
             <h3>Search Users</h3>
@@ -209,6 +224,7 @@
             <h3>Server Settings</h3>
             <div class="settings-tabs">
                 <button class="settings-tab active" data-tab="general">General</button>
+                <button class="settings-tab" data-tab="channels">Channels</button>
                 <button class="settings-tab" data-tab="invites">Invites</button>
                 <button class="settings-tab" data-tab="permissions">Permissions</button>
             </div>
@@ -224,6 +240,15 @@
                         <button type="submit" class="btn btn-primary">Rename Server</button>
                     </div>
                 </form>
+            </div>
+            
+            <div id="settings-tab-channels" class="settings-tab-content hidden">
+                <h4>Create Channels</h4>
+                <p>Create new text or voice channels for this server.</p>
+                <div class="button-group">
+                    <button id="create-text-channel-btn" class="btn btn-primary">Create Text Channel</button>
+                    <button id="create-voice-channel-btn" class="btn btn-primary">Create Voice Channel</button>
+                </div>
             </div>
             
             <div id="settings-tab-invites" class="settings-tab-content hidden">

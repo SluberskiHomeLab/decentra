@@ -48,7 +48,6 @@
     const userMenuBtn = document.getElementById('user-menu-btn');
     const userMenu = document.getElementById('user-menu');
     const menuCreateServerBtn = document.getElementById('menu-create-server-btn');
-    const menuCreateVoiceChannelBtn = document.getElementById('menu-create-voice-channel-btn');
     const menuInviteBtn = document.getElementById('menu-invite-btn');
     const menuLogoutBtn = document.getElementById('menu-logout-btn');
     const menuFriendsBtn = document.getElementById('menu-friends-btn');
@@ -69,6 +68,11 @@
     const voiceChannelNameInput = document.getElementById('voice-channel-name-input');
     const cancelVoiceChannelBtn = document.getElementById('cancel-voice-channel-btn');
     
+    const createTextChannelModal = document.getElementById('create-text-channel-modal');
+    const createTextChannelForm = document.getElementById('create-text-channel-form');
+    const textChannelNameInput = document.getElementById('text-channel-name-input');
+    const cancelTextChannelBtn = document.getElementById('cancel-text-channel-btn');
+    
     const searchUsersModal = document.getElementById('search-users-modal');
     const searchUsersInput = document.getElementById('search-users-input');
     const searchResults = document.getElementById('search-results');
@@ -83,6 +87,8 @@
     const serverInviteDisplay = document.getElementById('server-invite-display');
     const serverInviteCodeText = document.getElementById('server-invite-code-text');
     const serverMembersList = document.getElementById('server-members-list');
+    const createTextChannelBtn = document.getElementById('create-text-channel-btn');
+    const createVoiceChannelBtn = document.getElementById('create-voice-channel-btn');
     
     // Voice elements
     const voiceControls = document.getElementById('voice-controls');
@@ -369,6 +375,17 @@
                 
             case 'error':
                 alert(data.message);
+                break;
+                
+            // Channel creation messages
+            case 'channel_created':
+                const createdServer = servers.find(s => s.id === data.server_id);
+                if (createdServer) {
+                    createdServer.channels.push(data.channel);
+                    if (currentContext && currentContext.type === 'server' && currentContext.serverId === data.server_id) {
+                        updateChannelsForServer(data.server_id);
+                    }
+                }
                 break;
                 
             // Voice chat messages
@@ -884,10 +901,53 @@
         serverNameInput.value = '';
     });
     
-    // Create voice channel (from menu)
-    menuCreateVoiceChannelBtn.addEventListener('click', () => {
-        userMenu.classList.add('hidden');
+    // Create text channel (from server settings)
+    createTextChannelBtn.addEventListener('click', () => {
+        if (!currentlySelectedServer) {
+            alert('Please select a server first');
+            return;
+        }
         
+        const server = servers.find(s => s.id === currentlySelectedServer);
+        if (!server) return;
+        
+        // Check if user has permission (owner or has can_create_channel permission)
+        const hasPermission = server.owner === username || 
+                            (server.permissions && server.permissions.can_create_channel);
+        
+        if (!hasPermission) {
+            alert('You do not have permission to create channels');
+            return;
+        }
+        
+        createTextChannelModal.classList.remove('hidden');
+        textChannelNameInput.focus();
+    });
+    
+    createTextChannelForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        
+        const channelName = textChannelNameInput.value.trim();
+        if (!channelName || !currentlySelectedServer) return;
+        
+        ws.send(JSON.stringify({
+            type: 'create_channel',
+            server_id: currentlySelectedServer,
+            name: channelName,
+            channel_type: 'text'
+        }));
+        
+        createTextChannelModal.classList.add('hidden');
+        textChannelNameInput.value = '';
+    });
+    
+    cancelTextChannelBtn.addEventListener('click', () => {
+        createTextChannelModal.classList.add('hidden');
+        textChannelNameInput.value = '';
+    });
+    
+    // Create voice channel (from server settings)
+    createVoiceChannelBtn.addEventListener('click', () => {
         if (!currentlySelectedServer) {
             alert('Please select a server first');
             return;
@@ -916,9 +976,10 @@
         if (!channelName || !currentlySelectedServer) return;
         
         ws.send(JSON.stringify({
-            type: 'create_voice_channel',
+            type: 'create_channel',
             server_id: currentlySelectedServer,
-            name: channelName
+            name: channelName,
+            channel_type: 'voice'
         }));
         
         createVoiceChannelModal.classList.add('hidden');
@@ -1243,6 +1304,13 @@
         if (e.target === createVoiceChannelModal) {
             createVoiceChannelModal.classList.add('hidden');
             voiceChannelNameInput.value = '';
+        }
+    });
+    
+    createTextChannelModal.addEventListener('click', (e) => {
+        if (e.target === createTextChannelModal) {
+            createTextChannelModal.classList.add('hidden');
+            textChannelNameInput.value = '';
         }
     });
     
