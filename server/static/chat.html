@@ -124,6 +124,17 @@
                 </div>
             </div>
         </div>
+        
+        <!-- Right Sidebar: Server Members -->
+        <div id="right-sidebar" class="right-sidebar hidden">
+            <div class="sidebar-header">
+                <h3>Members</h3>
+                <button id="toggle-members-btn" class="btn btn-small btn-icon" title="Collapse">◀</button>
+            </div>
+            <div id="server-members-display" class="items-list">
+                <!-- Server members will be added here -->
+            </div>
+        </div>
     </div>
     
     <!-- Modals -->
@@ -239,29 +250,50 @@
     <div id="avatar-settings-modal" class="modal hidden">
         <div class="modal-content">
             <h3>Choose Your Avatar</h3>
-            <p>Select an emoji to represent you in voice chats</p>
-            <div id="avatar-picker" class="avatar-picker">
-                <button class="avatar-option" data-avatar="👤">👤</button>
-                <button class="avatar-option" data-avatar="😀">😀</button>
-                <button class="avatar-option" data-avatar="😎">😎</button>
-                <button class="avatar-option" data-avatar="🤖">🤖</button>
-                <button class="avatar-option" data-avatar="👨">👨</button>
-                <button class="avatar-option" data-avatar="👩">👩</button>
-                <button class="avatar-option" data-avatar="🧑">🧑</button>
-                <button class="avatar-option" data-avatar="👦">👦</button>
-                <button class="avatar-option" data-avatar="👧">👧</button>
-                <button class="avatar-option" data-avatar="🐶">🐶</button>
-                <button class="avatar-option" data-avatar="🐱">🐱</button>
-                <button class="avatar-option" data-avatar="🐼">🐼</button>
-                <button class="avatar-option" data-avatar="🦊">🦊</button>
-                <button class="avatar-option" data-avatar="🐻">🐻</button>
-                <button class="avatar-option" data-avatar="🐯">🐯</button>
-                <button class="avatar-option" data-avatar="🦁">🦁</button>
-                <button class="avatar-option" data-avatar="🐸">🐸</button>
-                <button class="avatar-option" data-avatar="🐵">🐵</button>
-                <button class="avatar-option" data-avatar="🦄">🦄</button>
-                <button class="avatar-option" data-avatar="🐉">🐉</button>
+            <div class="avatar-tabs">
+                <button class="avatar-tab active" data-tab="emoji">Emoji</button>
+                <button class="avatar-tab" data-tab="upload">Upload Image</button>
             </div>
+            
+            <div id="avatar-tab-emoji" class="avatar-tab-content">
+                <p>Select an emoji to represent you</p>
+                <div id="avatar-picker" class="avatar-picker">
+                    <button class="avatar-option" data-avatar="👤">👤</button>
+                    <button class="avatar-option" data-avatar="😀">😀</button>
+                    <button class="avatar-option" data-avatar="😎">😎</button>
+                    <button class="avatar-option" data-avatar="🤖">🤖</button>
+                    <button class="avatar-option" data-avatar="👨">👨</button>
+                    <button class="avatar-option" data-avatar="👩">👩</button>
+                    <button class="avatar-option" data-avatar="🧑">🧑</button>
+                    <button class="avatar-option" data-avatar="👦">👦</button>
+                    <button class="avatar-option" data-avatar="👧">👧</button>
+                    <button class="avatar-option" data-avatar="🐶">🐶</button>
+                    <button class="avatar-option" data-avatar="🐱">🐱</button>
+                    <button class="avatar-option" data-avatar="🐼">🐼</button>
+                    <button class="avatar-option" data-avatar="🦊">🦊</button>
+                    <button class="avatar-option" data-avatar="🐻">🐻</button>
+                    <button class="avatar-option" data-avatar="🐯">🐯</button>
+                    <button class="avatar-option" data-avatar="🦁">🦁</button>
+                    <button class="avatar-option" data-avatar="🐸">🐸</button>
+                    <button class="avatar-option" data-avatar="🐵">🐵</button>
+                    <button class="avatar-option" data-avatar="🦄">🦄</button>
+                    <button class="avatar-option" data-avatar="🐉">🐉</button>
+                </div>
+            </div>
+            
+            <div id="avatar-tab-upload" class="avatar-tab-content hidden">
+                <p>Upload a profile picture (PNG, JPG, GIF - Max 2MB)</p>
+                <div class="avatar-upload-area">
+                    <div id="avatar-preview" class="avatar-preview hidden">
+                        <img id="avatar-preview-img" src="" alt="Avatar preview">
+                    </div>
+                    <input type="file" id="avatar-file-input" accept="image/png,image/jpeg,image/jpg,image/gif" style="display: none;">
+                    <button id="select-file-btn" class="btn btn-primary">Select Image</button>
+                    <button id="upload-avatar-btn" class="btn btn-success hidden">Upload Avatar</button>
+                    <button id="remove-avatar-btn" class="btn btn-danger hidden">Remove Custom Avatar</button>
+                </div>
+            </div>
+            
             <button id="close-avatar-modal" class="btn btn-secondary">Close</button>
         </div>
     </div>

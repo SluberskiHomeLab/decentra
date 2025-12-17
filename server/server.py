@@ -14,14 +14,17 @@ import string
 import random
 from aiohttp import web
 import os
+import base64
+import hashlib
 
 # Store connected clients: {websocket: username}
 clients = {}
 # Store message history (deprecated - now per server/channel)
 messages = []
 MAX_HISTORY = 100
+MAX_AVATAR_SIZE = 2 * 1024 * 1024  # 2MB
 
-# Store user accounts: {username: {password_hash, created_at, friends: set(), avatar: str}}
+# Store user accounts: {username: {password_hash, created_at, friends: set(), avatar: str, avatar_type: 'emoji'|'image', avatar_data: str}}
 users = {}
 # Store active invite codes: {code: creator_username}
 invite_codes = {}
@@ -104,6 +107,19 @@ def get_or_create_dm(user1, user2):
         'messages': []
     }
     return dm_id
+
+
+def get_avatar_data(username):
+    """Get avatar data for a user."""
+    if username not in users:
+        return {'avatar': '👤', 'avatar_type': 'emoji', 'avatar_data': None}
+    
+    user = users[username]
+    return {
+        'avatar': user.get('avatar', '👤'),
+        'avatar_type': user.get('avatar_type', 'emoji'),
+        'avatar_data': user.get('avatar_data', None)
+    }
 
 
 def has_permission(server_id, username, permission):
@@ -224,7 +240,9 @@ async def handler(websocket):
                     'password_hash': hash_password(password),
                     'created_at': datetime.now().isoformat(),
                     'friends': set(),
-                    'avatar': '👤'  # Default avatar emoji
+                    'avatar': '👤',  # Default avatar emoji
+                    'avatar_type': 'emoji',  # 'emoji' or 'image'
+                    'avatar_data': None  # Base64 image data for custom avatars
                 }
                 
                 # Remove used invite code
@@ -301,24 +319,27 @@ async def handler(websocket):
         for dm_id, dm_data in direct_messages.items():
             if username in dm_data['participants']:
                 other_user = list(dm_data['participants'] - {username})[0]
+                avatar_data = get_avatar_data(other_user)
                 user_dms.append({
                     'id': dm_id,
                     'username': other_user,
-                    'avatar': users[other_user].get('avatar', '👤')
+                    **avatar_data
                 })
         
         # Build friends list with avatars
         friends_list = []
         for friend in users[username]['friends']:
+            avatar_data = get_avatar_data(friend)
             friends_list.append({
                 'username': friend,
-                'avatar': users[friend].get('avatar', '👤')
+                **avatar_data
             })
         
+        current_avatar = get_avatar_data(username)
         user_data = json.dumps({
             'type': 'init',
             'username': username,
-            'avatar': users[username].get('avatar', '👤'),
+            **current_avatar,
             'servers': user_servers,
             'dms': user_dms,
             'friends': friends_list
@@ -484,10 +505,11 @@ async def handler(websocket):
                         if query:
                             for user in users.keys():
                                 if query in user.lower() and user != username:
+                                    avatar_data = get_avatar_data(user)
                                     results.append({
                                         'username': user,
                                         'is_friend': user in users[username]['friends'],
-                                        'avatar': users[user].get('avatar', '👤')
+                                        **avatar_data
                                     })
                         
                         await websocket.send_str(json.dumps({
@@ -502,17 +524,19 @@ async def handler(websocket):
                             users[username]['friends'].add(friend_username)
                             users[friend_username]['friends'].add(username)
                             
+                            friend_avatar = get_avatar_data(friend_username)
                             await websocket.send_str(json.dumps({
                                 'type': 'friend_added',
                                 'username': friend_username,
-                                'avatar': users[friend_username].get('avatar', '👤')
+                                **friend_avatar
                             }))
                             
                             # Notify the other user
+                            user_avatar = get_avatar_data(username)
                             await send_to_user(friend_username, json.dumps({
                                 'type': 'friend_added',
                                 'username': username,
-                                'avatar': users[username].get('avatar', '👤')
+                                **user_avatar
                             }))
                             print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} added {friend_username} as friend")
                     
@@ -534,23 +558,25 @@ async def handler(websocket):
                         if friend_username in users and friend_username in users[username]['friends']:
                             dm_id = get_or_create_dm(username, friend_username)
                             
+                            friend_avatar = get_avatar_data(friend_username)
                             dm_info = {
                                 'type': 'dm_started',
                                 'dm': {
                                     'id': dm_id,
                                     'username': friend_username,
-                                    'avatar': users[friend_username].get('avatar', '👤')
+                                    **friend_avatar
                                 }
                             }
                             await websocket.send_str(json.dumps(dm_info))
                             
                             # Notify the other user
+                            user_avatar = get_avatar_data(username)
                             await send_to_user(friend_username, json.dumps({
                                 'type': 'dm_started',
                                 'dm': {
                                     'id': dm_id,
                                     'username': username,
-                                    'avatar': users[username].get('avatar', '👤')
+                                    **user_avatar
                                 }
                             }))
                     
@@ -769,21 +795,23 @@ async def handler(websocket):
                                 voice_members = []
                                 for member in servers[server_id]['channels'][channel_id]['voice_members']:
                                     member_state = voice_states.get(member, {})
+                                    member_avatar = get_avatar_data(member)
                                     voice_members.append({
                                         'username': member,
-                                        'avatar': users[member].get('avatar', '👤'),
+                                        **member_avatar,
                                         'muted': member_state.get('muted', False),
                                         'video': member_state.get('video', False),
                                         'screen_sharing': member_state.get('screen_sharing', False)
                                     })
                                 
                                 # Notify all server members about voice state change
+                                user_avatar = get_avatar_data(username)
                                 await broadcast_to_server(server_id, json.dumps({
                                     'type': 'voice_state_update',
                                     'server_id': server_id,
                                     'channel_id': channel_id,
                                     'username': username,
-                                    'avatar': users[username].get('avatar', '👤'),
+                                    **user_avatar,
                                     'state': 'joined',
                                     'voice_members': voice_members
                                 }))
@@ -803,9 +831,10 @@ async def handler(websocket):
                                     voice_members = []
                                     for member in servers[server_id]['channels'][channel_id]['voice_members']:
                                         member_state = voice_states.get(member, {})
+                                        member_avatar = get_avatar_data(member)
                                         voice_members.append({
                                             'username': member,
-                                            'avatar': users[member].get('avatar', '👤'),
+                                            **member_avatar,
                                             'muted': member_state.get('muted', False),
                                             'video': member_state.get('video', False),
                                             'screen_sharing': member_state.get('screen_sharing', False)
@@ -839,17 +868,40 @@ async def handler(websocket):
                                 }))
                     
                     elif data.get('type') == 'set_avatar':
-                        # Update user avatar
-                        avatar = data.get('avatar', '👤').strip()
+                        # Update user avatar (emoji or image upload)
+                        avatar_type = data.get('avatar_type', 'emoji')
+                        
                         if username in users:
-                            users[username]['avatar'] = avatar
+                            if avatar_type == 'emoji':
+                                avatar = data.get('avatar', '👤').strip()
+                                users[username]['avatar'] = avatar
+                                users[username]['avatar_type'] = 'emoji'
+                                users[username]['avatar_data'] = None
+                            elif avatar_type == 'image':
+                                # Handle image upload via base64
+                                avatar_data = data.get('avatar_data', '')
+                                
+                                # Validate size (base64 is ~33% larger than original)
+                                if len(avatar_data) > MAX_AVATAR_SIZE * 1.5:
+                                    await websocket.send_str(json.dumps({
+                                        'type': 'error',
+                                        'message': 'Avatar image too large. Maximum size is 2MB.'
+                                    }))
+                                    continue
+                                
+                                users[username]['avatar'] = None
+                                users[username]['avatar_type'] = 'image'
+                                users[username]['avatar_data'] = avatar_data
+                            
+                            # Get full avatar data to broadcast
+                            avatar_update = get_avatar_data(username)
                             
                             # Notify all friends about avatar change
                             for friend_username in users[username]['friends']:
                                 await send_to_user(friend_username, json.dumps({
                                     'type': 'avatar_update',
                                     'username': username,
-                                    'avatar': avatar
+                                    **avatar_update
                                 }))
                             
                             # Notify all servers the user is in
@@ -858,12 +910,12 @@ async def handler(websocket):
                                     await broadcast_to_server(server_id, json.dumps({
                                         'type': 'avatar_update',
                                         'username': username,
-                                        'avatar': avatar
+                                        **avatar_update
                                     }))
                             
                             await websocket.send_str(json.dumps({
                                 'type': 'avatar_updated',
-                                'avatar': avatar
+                                **avatar_update
                             }))
                     
                     elif data.get('type') == 'voice_video':
@@ -995,9 +1047,10 @@ async def handler(websocket):
                         voice_members = []
                         for member in servers[server_id]['channels'][channel_id]['voice_members']:
                             member_state = voice_states.get(member, {})
+                            member_avatar = get_avatar_data(member)
                             voice_members.append({
                                 'username': member,
-                                'avatar': users[member].get('avatar', '👤'),
+                                **member_avatar,
                                 'muted': member_state.get('muted', False),
                                 'video': member_state.get('video', False),
                                 'screen_sharing': member_state.get('screen_sharing', False)

@@ -115,9 +115,15 @@
     const speakerSelect = document.getElementById('speaker-select');
     const closeDeviceSettingsModalBtn = document.getElementById('close-device-settings-modal');
     
+    // Right sidebar (members list) elements
+    const rightSidebar = document.getElementById('right-sidebar');
+    const toggleMembersBtn = document.getElementById('toggle-members-btn');
+    const serverMembersDisplay = document.getElementById('server-members-display');
+    
     let incomingCallFrom = null;
     let currentlySelectedServer = null;
     let currentAvatar = '👤';
+    let isMembersSidebarCollapsed = false;
     
     // Connect to WebSocket
     function connect() {
@@ -145,6 +151,42 @@
                 setTimeout(connect, 3000);
             }
         };
+    }
+    
+    // Helper function to create avatar element
+    function createAvatarElement(avatarData, className = 'user-avatar') {
+        const avatarEl = document.createElement('span');
+        avatarEl.className = className;
+        
+        if (avatarData && avatarData.avatar_type === 'image' && avatarData.avatar_data) {
+            // Image avatar
+            const img = document.createElement('img');
+            img.src = avatarData.avatar_data;
+            img.alt = 'Avatar';
+            avatarEl.appendChild(img);
+        } else {
+            // Emoji avatar
+            avatarEl.textContent = (avatarData && avatarData.avatar) || '👤';
+        }
+        
+        return avatarEl;
+    }
+    
+    // Helper function to update avatar element
+    function updateAvatarElement(element, avatarData) {
+        // Clear existing content
+        element.innerHTML = '';
+        
+        if (avatarData && avatarData.avatar_type === 'image' && avatarData.avatar_data) {
+            // Image avatar
+            const img = document.createElement('img');
+            img.src = avatarData.avatar_data;
+            img.alt = 'Avatar';
+            element.appendChild(img);
+        } else {
+            // Emoji avatar
+            element.textContent = (avatarData && avatarData.avatar) || '👤';
+        }
     }
     
     // Authenticate with server
@@ -185,8 +227,7 @@
                 servers = data.servers || [];
                 dms = data.dms || [];
                 friends = data.friends || [];
-                currentAvatar = data.avatar || '👤';
-                currentUserAvatar.textContent = currentAvatar;
+                updateAvatarElement(currentUserAvatar, data);
                 updateServersList();
                 updateDMsList();
                 updateFriendsList();
@@ -293,6 +334,10 @@
                 
             case 'server_members':
                 displayServerMembers(data.members, data.server_id);
+                // Also update the sidebar if we're viewing this server
+                if (currentlySelectedServer === data.server_id) {
+                    displayServerMembersInSidebar(data.members);
+                }
                 break;
                 
             case 'permissions_updated':
@@ -381,8 +426,7 @@
                 break;
             
             case 'avatar_updated':
-                currentAvatar = data.avatar;
-                currentUserAvatar.textContent = currentAvatar;
+                updateAvatarElement(currentUserAvatar, data);
                 break;
             
             case 'voice_video_update':
@@ -488,9 +532,7 @@
             const dmItem = document.createElement('div');
             dmItem.className = 'dm-item';
             
-            const avatarSpan = document.createElement('span');
-            avatarSpan.className = 'dm-avatar';
-            avatarSpan.textContent = dm.avatar || '👤';
+            const avatarEl = createAvatarElement(dm, 'dm-avatar');
             
             const nameSpan = document.createElement('span');
             nameSpan.textContent = dm.username;
@@ -504,7 +546,7 @@
                 startVoiceCall(dm.username);
             };
             
-            dmItem.appendChild(avatarSpan);
+            dmItem.appendChild(avatarEl);
             dmItem.appendChild(nameSpan);
             dmItem.appendChild(callBtn);
             dmItem.onclick = () => selectDM(dm.id);
@@ -519,17 +561,14 @@
             const friendItem = document.createElement('div');
             friendItem.className = 'friend-item';
             
-            const avatarSpan = document.createElement('span');
-            avatarSpan.className = 'friend-avatar';
-            avatarSpan.textContent = typeof friend === 'object' ? (friend.avatar || '👤') : '👤';
+            const friendUsername = typeof friend === 'object' ? friend.username : friend;
+            const avatarEl = createAvatarElement(friend, 'friend-avatar');
             
             const nameSpan = document.createElement('span');
-            nameSpan.textContent = typeof friend === 'object' ? friend.username : friend;
+            nameSpan.textContent = friendUsername;
             
             const actionsDiv = document.createElement('div');
             actionsDiv.className = 'friend-actions';
-            
-            const friendUsername = typeof friend === 'object' ? friend.username : friend;
             
             const callBtn = document.createElement('button');
             callBtn.className = 'btn btn-small btn-success btn-icon';
@@ -544,7 +583,7 @@
             
             actionsDiv.appendChild(callBtn);
             actionsDiv.appendChild(dmBtn);
-            friendItem.appendChild(avatarSpan);
+            friendItem.appendChild(avatarEl);
             friendItem.appendChild(nameSpan);
             friendItem.appendChild(actionsDiv);
             friendsList.appendChild(friendItem);
@@ -587,6 +626,52 @@
         if (firstTextChannel) {
             selectChannel(serverId, firstTextChannel.id, firstTextChannel.name, firstTextChannel.type);
         }
+        
+        // Show and update members sidebar
+        updateServerMembers(serverId);
+        rightSidebar.classList.remove('hidden');
+    }
+    
+    // Update server members sidebar
+    function updateServerMembers(serverId) {
+        const server = servers.find(s => s.id === serverId);
+        if (!server) {
+            rightSidebar.classList.add('hidden');
+            return;
+        }
+        
+        serverMembersDisplay.innerHTML = '';
+        
+        // Get server members by checking who's in this server
+        // First, get owner
+        const membersList = new Set();
+        membersList.add(server.owner);
+        
+        // Add all members from server data if available
+        // Note: We'll need to request this from server
+        ws.send(JSON.stringify({
+            type: 'get_server_members',
+            server_id: serverId
+        }));
+    }
+    
+    // Display server members (called when we receive member data from server)
+    function displayServerMembersInSidebar(members) {
+        serverMembersDisplay.innerHTML = '';
+        
+        members.forEach(member => {
+            const memberItem = document.createElement('div');
+            memberItem.className = 'member-item';
+            
+            const avatarEl = createAvatarElement(member, 'member-avatar');
+            
+            const nameSpan = document.createElement('span');
+            nameSpan.textContent = member.username;
+            
+            memberItem.appendChild(avatarEl);
+            memberItem.appendChild(nameSpan);
+            serverMembersDisplay.appendChild(memberItem);
+        });
     }
     
     // Update channels list for a server
@@ -671,6 +756,9 @@
         
         channelsView.classList.add('hidden');
         friendsView.classList.add('hidden');
+        
+        // Hide members sidebar for DMs
+        rightSidebar.classList.add('hidden');
         
         chatTitle.textContent = `Direct Message - ${dm.username}`;
         
@@ -848,6 +936,9 @@
         channelsView.classList.add('hidden');
         friendsView.classList.remove('hidden');
         chatTitle.textContent = 'Friends';
+        
+        // Hide members sidebar for friends view
+        rightSidebar.classList.add('hidden');
         
         // Clear current context
         currentContext = null;
@@ -1069,15 +1160,13 @@
             const resultItem = document.createElement('div');
             resultItem.className = 'search-result-item';
             
-            const avatarSpan = document.createElement('span');
-            avatarSpan.className = 'search-result-avatar';
-            avatarSpan.textContent = result.avatar || '👤';
+            const avatarEl = createAvatarElement(result, 'search-result-avatar');
             
             const usernameSpan = document.createElement('span');
             usernameSpan.className = 'username';
             usernameSpan.textContent = result.username;
             
-            resultItem.appendChild(avatarSpan);
+            resultItem.appendChild(avatarEl);
             resultItem.appendChild(usernameSpan);
             
             if (result.is_friend) {
@@ -1305,7 +1394,30 @@
         }
     });
     
-    // Handle avatar selection
+    // Avatar tabs switching
+    const avatarTabs = document.querySelectorAll('.avatar-tab');
+    const avatarTabContents = document.querySelectorAll('.avatar-tab-content');
+    
+    avatarTabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            const tabName = tab.dataset.tab;
+            
+            // Update active tab
+            avatarTabs.forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            
+            // Show corresponding content
+            avatarTabContents.forEach(content => {
+                if (content.id === `avatar-tab-${tabName}`) {
+                    content.classList.remove('hidden');
+                } else {
+                    content.classList.add('hidden');
+                }
+            });
+        });
+    });
+    
+    // Handle emoji avatar selection
     avatarPicker.addEventListener('click', (e) => {
         if (e.target.classList.contains('avatar-option')) {
             const selectedAvatar = e.target.dataset.avatar;
@@ -1319,9 +1431,88 @@
             // Send to server
             ws.send(JSON.stringify({
                 type: 'set_avatar',
+                avatar_type: 'emoji',
                 avatar: selectedAvatar
             }));
         }
+    });
+    
+    // Handle custom image avatar upload
+    const avatarFileInput = document.getElementById('avatar-file-input');
+    const selectFileBtn = document.getElementById('select-file-btn');
+    const uploadAvatarBtn = document.getElementById('upload-avatar-btn');
+    const removeAvatarBtn = document.getElementById('remove-avatar-btn');
+    const avatarPreview = document.getElementById('avatar-preview');
+    const avatarPreviewImg = document.getElementById('avatar-preview-img');
+    
+    let selectedAvatarFile = null;
+    
+    selectFileBtn.addEventListener('click', () => {
+        avatarFileInput.click();
+    });
+    
+    avatarFileInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            // Validate file size (2MB max)
+            if (file.size > 2 * 1024 * 1024) {
+                alert('File too large. Maximum size is 2MB.');
+                return;
+            }
+            
+            // Validate file type
+            if (!file.type.match(/image\/(png|jpeg|jpg|gif)/)) {
+                alert('Invalid file type. Please select a PNG, JPG, or GIF image.');
+                return;
+            }
+            
+            selectedAvatarFile = file;
+            
+            // Show preview
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                avatarPreviewImg.src = e.target.result;
+                avatarPreview.classList.remove('hidden');
+                uploadAvatarBtn.classList.remove('hidden');
+            };
+            reader.readAsDataURL(file);
+        }
+    });
+    
+    uploadAvatarBtn.addEventListener('click', () => {
+        if (selectedAvatarFile) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const base64Data = e.target.result;
+                
+                // Send to server
+                ws.send(JSON.stringify({
+                    type: 'set_avatar',
+                    avatar_type: 'image',
+                    avatar_data: base64Data
+                }));
+                
+                uploadAvatarBtn.classList.add('hidden');
+                removeAvatarBtn.classList.remove('hidden');
+            };
+            reader.readAsDataURL(selectedAvatarFile);
+        }
+    });
+    
+    removeAvatarBtn.addEventListener('click', () => {
+        // Reset to default emoji avatar
+        ws.send(JSON.stringify({
+            type: 'set_avatar',
+            avatar_type: 'emoji',
+            avatar: '👤'
+        }));
+        
+        // Reset UI
+        avatarPreview.classList.add('hidden');
+        uploadAvatarBtn.classList.add('hidden');
+        removeAvatarBtn.classList.add('hidden');
+        avatarFileInput.value = '';
+        selectedAvatarFile = null;
     });
     
     // Device settings
@@ -1398,7 +1589,6 @@
         
         members.forEach(member => {
             const memberUsername = typeof member === 'object' ? member.username : member;
-            const memberAvatar = typeof member === 'object' ? (member.avatar || '👤') : '👤';
             const muted = typeof member === 'object' ? member.muted : false;
             const video = typeof member === 'object' ? member.video : false;
             const screenSharing = typeof member === 'object' ? member.screen_sharing : false;
@@ -1406,9 +1596,7 @@
             const participantItem = document.createElement('div');
             participantItem.className = 'participant-item';
             
-            const avatarSpan = document.createElement('span');
-            avatarSpan.className = 'participant-avatar';
-            avatarSpan.textContent = memberAvatar;
+            const avatarEl = createAvatarElement(member, 'participant-avatar');
             
             const infoDiv = document.createElement('div');
             infoDiv.className = 'participant-info';
@@ -1448,13 +1636,26 @@
             infoDiv.appendChild(nameSpan);
             infoDiv.appendChild(statusDiv);
             
-            participantItem.appendChild(avatarSpan);
+            participantItem.appendChild(avatarEl);
             participantItem.appendChild(infoDiv);
             
             participantsList.appendChild(participantItem);
         });
     }
     
+    // Toggle members sidebar
+    toggleMembersBtn.addEventListener('click', () => {
+        isMembersSidebarCollapsed = !isMembersSidebarCollapsed;
+        if (isMembersSidebarCollapsed) {
+            rightSidebar.classList.add('collapsed');
+            toggleMembersBtn.textContent = '▶';
+            toggleMembersBtn.title = 'Expand';
+        } else {
+            rightSidebar.classList.remove('collapsed');
+            toggleMembersBtn.textContent = '◀';
+            toggleMembersBtn.title = 'Collapse';
+        }
+    });
     // Handle remote video tracks
     window.onRemoteVideoTrack = function(username, stream) {
         // Remove existing video for this user
