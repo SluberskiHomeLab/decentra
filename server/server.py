@@ -745,7 +745,37 @@ async def handler(websocket):
                                     'members': members
                                 }))
                     
-                    # Voice chat handlers
+                    # Channel creation handlers
+                    elif data.get('type') == 'create_channel':
+                        server_id = data.get('server_id', '')
+                        channel_name = data.get('name', '').strip()
+                        channel_type = data.get('channel_type', 'text')  # Default to text channel
+                        
+                        if server_id in servers and channel_name:
+                            if has_permission(server_id, username, 'can_create_channel'):
+                                channel_id = get_next_channel_id()
+                                servers[server_id]['channels'][channel_id] = {
+                                    'name': channel_name,
+                                    'type': channel_type,
+                                    'messages': [],
+                                    'voice_members': set()
+                                }
+                                
+                                # Notify all server members
+                                channel_info = json.dumps({
+                                    'type': 'channel_created',
+                                    'server_id': server_id,
+                                    'channel': {'id': channel_id, 'name': channel_name, 'type': channel_type}
+                                })
+                                await broadcast_to_server(server_id, channel_info)
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} created {channel_type} channel: {channel_name}")
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'You do not have permission to create channels'
+                                }))
+                    
+                    # Voice chat handlers (legacy endpoint for backward compatibility)
                     elif data.get('type') == 'create_voice_channel':
                         server_id = data.get('server_id', '')
                         channel_name = data.get('name', '').strip()
@@ -760,9 +790,9 @@ async def handler(websocket):
                                     'voice_members': set()
                                 }
                                 
-                                # Notify all server members
+                                # Notify all server members (use unified message type)
                                 channel_info = json.dumps({
-                                    'type': 'voice_channel_created',
+                                    'type': 'channel_created',
                                     'server_id': server_id,
                                     'channel': {'id': channel_id, 'name': channel_name, 'type': 'voice'}
                                 })
