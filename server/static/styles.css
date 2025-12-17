@@ -426,6 +426,40 @@ body {
     gap: 5px;
 }
 
+.friends-section-header {
+    font-size: 12px;
+    text-transform: uppercase;
+    color: #8e9297;
+    font-weight: 600;
+    margin: 16px 12px 8px;
+    letter-spacing: 0.5px;
+}
+
+.friend-request-item {
+    background: rgba(88, 101, 242, 0.1);
+    border-left: 3px solid #5865f2;
+    margin-left: 8px;
+}
+
+.friend-request-sent-item {
+    background: rgba(79, 84, 92, 0.2);
+    opacity: 0.8;
+}
+
+.badge {
+    background: #43b581;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.badge-secondary {
+    background: #faa61a;
+}
+
 .btn-icon {
     padding: 4px 8px;
     font-size: 12px;

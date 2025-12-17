@@ -26,6 +26,8 @@
     let servers = [];
     let dms = [];
     let friends = [];
+    let friendRequestsSent = [];
+    let friendRequestsReceived = [];
     let voiceMembers = {}; // Track voice members by channel: {server_id/channel_id: [usernames]}
     
     // DOM elements
@@ -233,6 +235,8 @@
                 servers = data.servers || [];
                 dms = data.dms || [];
                 friends = data.friends || [];
+                friendRequestsSent = data.friend_requests_sent || [];
+                friendRequestsReceived = data.friend_requests_received || [];
                 updateAvatarElement(currentUserAvatar, data);
                 updateServersList();
                 updateDMsList();
@@ -303,6 +307,73 @@
                 
             case 'friend_removed':
                 friends = friends.filter(f => f !== data.username);
+                updateFriendsList();
+                break;
+                
+            case 'friend_request_sent':
+                // Add to sent requests list
+                if (!friendRequestsSent.find(r => r.username === data.username)) {
+                    friendRequestsSent.push({ username: data.username });
+                    updateFriendsList();
+                }
+                break;
+                
+            case 'friend_request_received':
+                // Add to received requests list
+                if (!friendRequestsReceived.find(r => r.username === data.username)) {
+                    friendRequestsReceived.push({
+                        username: data.username,
+                        avatar: data.avatar || '👤',
+                        avatar_type: data.avatar_type || 'emoji',
+                        avatar_data: data.avatar_data
+                    });
+                    updateFriendsList();
+                }
+                break;
+                
+            case 'friend_request_approved':
+                // Remove from received requests and add to friends
+                friendRequestsReceived = friendRequestsReceived.filter(r => r.username !== data.username);
+                if (!friends.find(f => f.username === data.username)) {
+                    friends.push({
+                        username: data.username,
+                        avatar: data.avatar || '👤',
+                        avatar_type: data.avatar_type || 'emoji',
+                        avatar_data: data.avatar_data
+                    });
+                }
+                updateFriendsList();
+                break;
+                
+            case 'friend_request_accepted':
+                // Your request was accepted - remove from sent and add to friends
+                friendRequestsSent = friendRequestsSent.filter(r => r.username !== data.username);
+                if (!friends.find(f => f.username === data.username)) {
+                    friends.push({
+                        username: data.username,
+                        avatar: data.avatar || '👤',
+                        avatar_type: data.avatar_type || 'emoji',
+                        avatar_data: data.avatar_data
+                    });
+                }
+                updateFriendsList();
+                break;
+                
+            case 'friend_request_denied':
+                // Remove from received requests
+                friendRequestsReceived = friendRequestsReceived.filter(r => r.username !== data.username);
+                updateFriendsList();
+                break;
+                
+            case 'friend_request_cancelled':
+                // Remove from sent requests
+                friendRequestsSent = friendRequestsSent.filter(r => r.username !== data.username);
+                updateFriendsList();
+                break;
+                
+            case 'friend_request_cancelled_by_sender':
+                // Someone cancelled their request to you
+                friendRequestsReceived = friendRequestsReceived.filter(r => r.username !== data.username);
                 updateFriendsList();
                 break;
                 
@@ -563,37 +634,118 @@
     // Update friends list
     function updateFriendsList() {
         friendsList.innerHTML = '';
-        friends.forEach(friend => {
-            const friendItem = document.createElement('div');
-            friendItem.className = 'friend-item';
+        
+        // Display incoming friend requests
+        if (friendRequestsReceived.length > 0) {
+            const requestsHeader = document.createElement('div');
+            requestsHeader.className = 'friends-section-header';
+            requestsHeader.textContent = 'Incoming Friend Requests';
+            friendsList.appendChild(requestsHeader);
             
-            const friendUsername = typeof friend === 'object' ? friend.username : friend;
-            const avatarEl = createAvatarElement(friend, 'friend-avatar');
+            friendRequestsReceived.forEach(request => {
+                const requestItem = document.createElement('div');
+                requestItem.className = 'friend-item friend-request-item';
+                
+                const avatarEl = createAvatarElement(request, 'friend-avatar');
+                
+                const nameSpan = document.createElement('span');
+                nameSpan.textContent = request.username;
+                
+                const actionsDiv = document.createElement('div');
+                actionsDiv.className = 'friend-actions';
+                
+                const approveBtn = document.createElement('button');
+                approveBtn.className = 'btn btn-small btn-success';
+                approveBtn.textContent = '✓';
+                approveBtn.title = 'Approve';
+                approveBtn.onclick = () => approveFriendRequest(request.username);
+                
+                const denyBtn = document.createElement('button');
+                denyBtn.className = 'btn btn-small btn-danger';
+                denyBtn.textContent = '✗';
+                denyBtn.title = 'Deny';
+                denyBtn.onclick = () => denyFriendRequest(request.username);
+                
+                actionsDiv.appendChild(approveBtn);
+                actionsDiv.appendChild(denyBtn);
+                requestItem.appendChild(avatarEl);
+                requestItem.appendChild(nameSpan);
+                requestItem.appendChild(actionsDiv);
+                friendsList.appendChild(requestItem);
+            });
+        }
+        
+        // Display outgoing friend requests
+        if (friendRequestsSent.length > 0) {
+            const sentHeader = document.createElement('div');
+            sentHeader.className = 'friends-section-header';
+            sentHeader.textContent = 'Pending Requests';
+            friendsList.appendChild(sentHeader);
             
-            const nameSpan = document.createElement('span');
-            nameSpan.textContent = friendUsername;
+            friendRequestsSent.forEach(request => {
+                const requestItem = document.createElement('div');
+                requestItem.className = 'friend-item friend-request-sent-item';
+                
+                const avatarEl = createAvatarElement(request, 'friend-avatar');
+                
+                const nameSpan = document.createElement('span');
+                nameSpan.textContent = request.username;
+                
+                const actionsDiv = document.createElement('div');
+                actionsDiv.className = 'friend-actions';
+                
+                const cancelBtn = document.createElement('button');
+                cancelBtn.className = 'btn btn-small btn-secondary';
+                cancelBtn.textContent = 'Cancel';
+                cancelBtn.onclick = () => cancelFriendRequest(request.username);
+                
+                actionsDiv.appendChild(cancelBtn);
+                requestItem.appendChild(avatarEl);
+                requestItem.appendChild(nameSpan);
+                requestItem.appendChild(actionsDiv);
+                friendsList.appendChild(requestItem);
+            });
+        }
+        
+        // Display friends
+        if (friends.length > 0) {
+            const friendsHeader = document.createElement('div');
+            friendsHeader.className = 'friends-section-header';
+            friendsHeader.textContent = 'Friends';
+            friendsList.appendChild(friendsHeader);
             
-            const actionsDiv = document.createElement('div');
-            actionsDiv.className = 'friend-actions';
-            
-            const callBtn = document.createElement('button');
-            callBtn.className = 'btn btn-small btn-success btn-icon';
-            callBtn.textContent = '📞';
-            callBtn.title = 'Voice Call';
-            callBtn.onclick = () => startVoiceCall(friendUsername);
-            
-            const dmBtn = document.createElement('button');
-            dmBtn.className = 'btn btn-small btn-primary btn-icon';
-            dmBtn.textContent = 'DM';
-            dmBtn.onclick = () => startDM(friendUsername);
-            
-            actionsDiv.appendChild(callBtn);
-            actionsDiv.appendChild(dmBtn);
-            friendItem.appendChild(avatarEl);
-            friendItem.appendChild(nameSpan);
-            friendItem.appendChild(actionsDiv);
-            friendsList.appendChild(friendItem);
-        });
+            friends.forEach(friend => {
+                const friendItem = document.createElement('div');
+                friendItem.className = 'friend-item';
+                
+                const friendUsername = typeof friend === 'object' ? friend.username : friend;
+                const avatarEl = createAvatarElement(friend, 'friend-avatar');
+                
+                const nameSpan = document.createElement('span');
+                nameSpan.textContent = friendUsername;
+                
+                const actionsDiv = document.createElement('div');
+                actionsDiv.className = 'friend-actions';
+                
+                const callBtn = document.createElement('button');
+                callBtn.className = 'btn btn-small btn-success btn-icon';
+                callBtn.textContent = '📞';
+                callBtn.title = 'Voice Call';
+                callBtn.onclick = () => startVoiceCall(friendUsername);
+                
+                const dmBtn = document.createElement('button');
+                dmBtn.className = 'btn btn-small btn-primary btn-icon';
+                dmBtn.textContent = 'DM';
+                dmBtn.onclick = () => startDM(friendUsername);
+                
+                actionsDiv.appendChild(callBtn);
+                actionsDiv.appendChild(dmBtn);
+                friendItem.appendChild(avatarEl);
+                friendItem.appendChild(nameSpan);
+                friendItem.appendChild(actionsDiv);
+                friendsList.appendChild(friendItem);
+            });
+        }
     }
     
     // Select server
@@ -1224,6 +1376,23 @@
                 badge.className = 'badge';
                 badge.textContent = 'Friend';
                 resultItem.appendChild(badge);
+            } else if (result.request_sent) {
+                const badge = document.createElement('span');
+                badge.className = 'badge badge-secondary';
+                badge.textContent = 'Request Sent';
+                resultItem.appendChild(badge);
+            } else if (result.request_received) {
+                const approveBtn = document.createElement('button');
+                approveBtn.className = 'btn btn-small btn-success';
+                approveBtn.textContent = 'Approve';
+                approveBtn.onclick = () => approveFriendRequest(result.username);
+                resultItem.appendChild(approveBtn);
+                
+                const denyBtn = document.createElement('button');
+                denyBtn.className = 'btn btn-small btn-danger';
+                denyBtn.textContent = 'Deny';
+                denyBtn.onclick = () => denyFriendRequest(result.username);
+                resultItem.appendChild(denyBtn);
             } else {
                 const addBtn = document.createElement('button');
                 addBtn.className = 'btn btn-small btn-primary';
@@ -1236,14 +1405,38 @@
         });
     }
     
-    // Add friend
+    // Add friend (send friend request)
     function addFriend(friendUsername, button) {
         ws.send(JSON.stringify({
             type: 'add_friend',
             username: friendUsername
         }));
         button.disabled = true;
-        button.textContent = 'Added!';
+        button.textContent = 'Request Sent';
+    }
+    
+    // Approve friend request
+    function approveFriendRequest(username) {
+        ws.send(JSON.stringify({
+            type: 'approve_friend_request',
+            username: username
+        }));
+    }
+    
+    // Deny friend request
+    function denyFriendRequest(username) {
+        ws.send(JSON.stringify({
+            type: 'deny_friend_request',
+            username: username
+        }));
+    }
+    
+    // Cancel friend request
+    function cancelFriendRequest(username) {
+        ws.send(JSON.stringify({
+            type: 'cancel_friend_request',
+            username: username
+        }));
     }
     
     // Generate invite code (from menu)

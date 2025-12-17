@@ -24,7 +24,7 @@ messages = []
 MAX_HISTORY = 100
 MAX_AVATAR_SIZE = 2 * 1024 * 1024  # 2MB
 
-# Store user accounts: {username: {password_hash, created_at, friends: set(), avatar: str, avatar_type: 'emoji'|'image', avatar_data: str}}
+# Store user accounts: {username: {password_hash, created_at, friends: set(), friend_requests_sent: set(), friend_requests_received: set(), avatar: str, avatar_type: 'emoji'|'image', avatar_data: str}}
 users = {}
 # Store active invite codes: {code: creator_username}
 invite_codes = {}
@@ -240,13 +240,21 @@ async def handler(websocket):
                     'password_hash': hash_password(password),
                     'created_at': datetime.now().isoformat(),
                     'friends': set(),
+                    'friend_requests_sent': set(),
+                    'friend_requests_received': set(),
                     'avatar': '👤',  # Default avatar emoji
                     'avatar_type': 'emoji',  # 'emoji' or 'image'
                     'avatar_data': None  # Base64 image data for custom avatars
                 }
                 
-                # Remove used invite code
+                # Auto-friend inviter if signing up with invite code
+                inviter_username = None
                 if invite_code in invite_codes:
+                    inviter_username = invite_codes[invite_code]
+                    # Add mutual friendship
+                    users[username]['friends'].add(inviter_username)
+                    users[inviter_username]['friends'].add(username)
+                    # Remove used invite code
                     del invite_codes[invite_code]
                 
                 await websocket.send_str(json.dumps({
@@ -256,6 +264,15 @@ async def handler(websocket):
                 authenticated = True
                 clients[websocket] = username
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] New user registered: {username}")
+                
+                # Notify inviter that they are now friends
+                if inviter_username:
+                    new_user_avatar = get_avatar_data(username)
+                    await send_to_user(inviter_username, json.dumps({
+                        'type': 'friend_added',
+                        'username': username,
+                        **new_user_avatar
+                    }))
             
             # Handle login
             elif auth_data.get('type') == 'login':
@@ -335,6 +352,25 @@ async def handler(websocket):
                 **avatar_data
             })
         
+        # Build friend requests lists
+        friend_requests_sent = []
+        for requested_user in users[username].get('friend_requests_sent', set()):
+            if requested_user in users:
+                avatar_data = get_avatar_data(requested_user)
+                friend_requests_sent.append({
+                    'username': requested_user,
+                    **avatar_data
+                })
+        
+        friend_requests_received = []
+        for requester_user in users[username].get('friend_requests_received', set()):
+            if requester_user in users:
+                avatar_data = get_avatar_data(requester_user)
+                friend_requests_received.append({
+                    'username': requester_user,
+                    **avatar_data
+                })
+        
         current_avatar = get_avatar_data(username)
         user_data = json.dumps({
             'type': 'init',
@@ -342,7 +378,9 @@ async def handler(websocket):
             **current_avatar,
             'servers': user_servers,
             'dms': user_dms,
-            'friends': friends_list
+            'friends': friends_list,
+            'friend_requests_sent': friend_requests_sent,
+            'friend_requests_received': friend_requests_received
         })
         await websocket.send_str(user_data)
         
@@ -509,6 +547,8 @@ async def handler(websocket):
                                     results.append({
                                         'username': user,
                                         'is_friend': user in users[username]['friends'],
+                                        'request_sent': user in users[username].get('friend_requests_sent', set()),
+                                        'request_received': user in users[username].get('friend_requests_received', set()),
                                         **avatar_data
                                     })
                         
@@ -518,27 +558,63 @@ async def handler(websocket):
                         }))
                     
                     elif data.get('type') == 'add_friend':
+                        # Send friend request
                         friend_username = data.get('username', '').strip()
                         
                         if friend_username in users and friend_username != username:
-                            users[username]['friends'].add(friend_username)
-                            users[friend_username]['friends'].add(username)
-                            
-                            friend_avatar = get_avatar_data(friend_username)
-                            await websocket.send_str(json.dumps({
-                                'type': 'friend_added',
-                                'username': friend_username,
-                                **friend_avatar
-                            }))
-                            
-                            # Notify the other user
-                            user_avatar = get_avatar_data(username)
-                            await send_to_user(friend_username, json.dumps({
-                                'type': 'friend_added',
-                                'username': username,
-                                **user_avatar
-                            }))
-                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} added {friend_username} as friend")
+                            # Check if already friends
+                            if friend_username in users[username]['friends']:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Already friends with this user'
+                                }))
+                            # Check if request already sent
+                            elif friend_username in users[username].get('friend_requests_sent', set()):
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Friend request already sent'
+                                }))
+                            # Check if they already sent you a request (auto-accept in this case)
+                            elif friend_username in users[username].get('friend_requests_received', set()):
+                                # Auto-accept their pending request
+                                users[username]['friend_requests_received'].discard(friend_username)
+                                users[friend_username]['friend_requests_sent'].discard(username)
+                                users[username]['friends'].add(friend_username)
+                                users[friend_username]['friends'].add(username)
+                                
+                                friend_avatar = get_avatar_data(friend_username)
+                                await websocket.send_str(json.dumps({
+                                    'type': 'friend_added',
+                                    'username': friend_username,
+                                    **friend_avatar
+                                }))
+                                
+                                # Notify the other user
+                                user_avatar = get_avatar_data(username)
+                                await send_to_user(friend_username, json.dumps({
+                                    'type': 'friend_added',
+                                    'username': username,
+                                    **user_avatar
+                                }))
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} and {friend_username} are now friends (mutual request)")
+                            else:
+                                # Send friend request
+                                users[username]['friend_requests_sent'].add(friend_username)
+                                users[friend_username]['friend_requests_received'].add(username)
+                                
+                                await websocket.send_str(json.dumps({
+                                    'type': 'friend_request_sent',
+                                    'username': friend_username
+                                }))
+                                
+                                # Notify the other user
+                                user_avatar = get_avatar_data(username)
+                                await send_to_user(friend_username, json.dumps({
+                                    'type': 'friend_request_received',
+                                    'username': username,
+                                    **user_avatar
+                                }))
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} sent friend request to {friend_username}")
                     
                     elif data.get('type') == 'remove_friend':
                         friend_username = data.get('username', '').strip()
@@ -551,6 +627,73 @@ async def handler(websocket):
                                 'type': 'friend_removed',
                                 'username': friend_username
                             }))
+                    
+                    elif data.get('type') == 'approve_friend_request':
+                        # Approve a friend request
+                        requester_username = data.get('username', '').strip()
+                        
+                        if requester_username in users[username].get('friend_requests_received', set()):
+                            # Remove from requests
+                            users[username]['friend_requests_received'].discard(requester_username)
+                            users[requester_username]['friend_requests_sent'].discard(username)
+                            
+                            # Add as friends
+                            users[username]['friends'].add(requester_username)
+                            users[requester_username]['friends'].add(username)
+                            
+                            requester_avatar = get_avatar_data(requester_username)
+                            await websocket.send_str(json.dumps({
+                                'type': 'friend_request_approved',
+                                'username': requester_username,
+                                **requester_avatar
+                            }))
+                            
+                            # Notify the requester
+                            user_avatar = get_avatar_data(username)
+                            await send_to_user(requester_username, json.dumps({
+                                'type': 'friend_request_accepted',
+                                'username': username,
+                                **user_avatar
+                            }))
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} approved friend request from {requester_username}")
+                    
+                    elif data.get('type') == 'deny_friend_request':
+                        # Deny a friend request
+                        requester_username = data.get('username', '').strip()
+                        
+                        if requester_username in users[username].get('friend_requests_received', set()):
+                            # Remove from requests
+                            users[username]['friend_requests_received'].discard(requester_username)
+                            users[requester_username]['friend_requests_sent'].discard(username)
+                            
+                            await websocket.send_str(json.dumps({
+                                'type': 'friend_request_denied',
+                                'username': requester_username
+                            }))
+                            
+                            # Optionally notify the requester (not doing this for privacy)
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} denied friend request from {requester_username}")
+                    
+                    elif data.get('type') == 'cancel_friend_request':
+                        # Cancel a sent friend request
+                        friend_username = data.get('username', '').strip()
+                        
+                        if friend_username in users[username].get('friend_requests_sent', set()):
+                            # Remove from requests
+                            users[username]['friend_requests_sent'].discard(friend_username)
+                            users[friend_username]['friend_requests_received'].discard(username)
+                            
+                            await websocket.send_str(json.dumps({
+                                'type': 'friend_request_cancelled',
+                                'username': friend_username
+                            }))
+                            
+                            # Notify the other user
+                            await send_to_user(friend_username, json.dumps({
+                                'type': 'friend_request_cancelled_by_sender',
+                                'username': username
+                            }))
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} cancelled friend request to {friend_username}")
                     
                     elif data.get('type') == 'start_dm':
                         friend_username = data.get('username', '').strip()
