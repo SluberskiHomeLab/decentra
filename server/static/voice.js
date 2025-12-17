@@ -16,6 +16,7 @@ class VoiceChat {
         this.isScreenSharing = false;
         this.selectedMicrophoneId = null;
         this.selectedSpeakerId = null;
+        this.setSinkIdWarningShown = false; // Track if setSinkId warning has been shown
         
         // ICE servers configuration (using public STUN servers)
         this.iceServers = {
@@ -128,8 +129,9 @@ class VoiceChat {
                     pc.remoteAudio.setSinkId(deviceId).catch(error => {
                         console.error('Error setting speaker:', error);
                     });
-                } else {
+                } else if (!this.setSinkIdWarningShown) {
                     console.warn('setSinkId is not supported in this browser');
+                    this.setSinkIdWarningShown = true;
                 }
             }
         });
