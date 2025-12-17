@@ -16,7 +16,12 @@ class VoiceChat {
         this.isScreenSharing = false;
         this.selectedMicrophoneId = null;
         this.selectedSpeakerId = null;
+        this.selectedCameraId = null;
         this.setSinkIdWarningShown = false; // Track if setSinkId warning has been shown
+        
+        // Video configuration constants
+        this.VIDEO_WIDTH = 640;
+        this.VIDEO_HEIGHT = 480;
         
         // ICE servers configuration (using public STUN servers)
         this.iceServers = {
@@ -53,7 +58,7 @@ class VoiceChat {
         try {
             // Request permission first to get device labels
             // This is required because enumerateDevices() only returns labels after permission is granted
-            if (!this.localStream) {
+            if (!this.localStream && !this.localVideoStream) {
                 try {
                     const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
                     // Stop the temporary stream immediately
@@ -72,6 +77,70 @@ class VoiceChat {
         } catch (error) {
             console.error('Error enumerating devices:', error);
             return { microphones: [], speakers: [] };
+        }
+    }
+    
+    async getCameraDevices() {
+        try {
+            // Request permission first to get device labels
+            // This is required because enumerateDevices() only returns labels after permission is granted
+            if (!this.localStream && !this.localVideoStream) {
+                try {
+                    const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                    // Stop the temporary stream immediately
+                    tempStream.getTracks().forEach(track => track.stop());
+                } catch (permError) {
+                    console.warn('Could not get camera permission for device enumeration:', permError);
+                    // Continue anyway - devices will be returned but without labels
+                }
+            }
+            
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            return devices.filter(d => d.kind === 'videoinput');
+        } catch (error) {
+            console.error('Error enumerating camera devices:', error);
+            return [];
+        }
+    }
+    
+    async getMediaDevices() {
+        try {
+            // Request permissions first to get device labels
+            // This is required because enumerateDevices() only returns labels after permission is granted
+            if (!this.localStream && !this.localVideoStream) {
+                try {
+                    // Request both audio and video permission to get all device labels
+                    const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+                    // Stop the temporary stream immediately
+                    tempStream.getTracks().forEach(track => track.stop());
+                } catch (permError) {
+                    console.warn('Could not get full permission for device enumeration:', permError);
+                    // Try audio only
+                    try {
+                        const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                        audioStream.getTracks().forEach(track => track.stop());
+                    } catch (audioError) {
+                        console.warn('Could not get audio permission:', audioError);
+                    }
+                    // Try video only
+                    try {
+                        const videoStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
+                        videoStream.getTracks().forEach(track => track.stop());
+                    } catch (videoError) {
+                        console.warn('Could not get video permission:', videoError);
+                    }
+                }
+            }
+            
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            return {
+                microphones: devices.filter(d => d.kind === 'audioinput'),
+                speakers: devices.filter(d => d.kind === 'audiooutput'),
+                cameras: devices.filter(d => d.kind === 'videoinput')
+            };
+        } catch (error) {
+            console.error('Error enumerating media devices:', error);
+            return { microphones: [], speakers: [], cameras: [] };
         }
     }
     
@@ -137,14 +206,61 @@ class VoiceChat {
         });
     }
     
+    async setCamera(deviceId) {
+        this.selectedCameraId = deviceId;
+        
+        // If video is currently enabled, restart the video stream with the new device
+        if (this.isVideoEnabled && this.localVideoStream) {
+            const oldStream = this.localVideoStream;
+            
+            // Get new stream
+            const constraints = { 
+                video: deviceId ? 
+                    { deviceId: { exact: deviceId }, width: this.VIDEO_WIDTH, height: this.VIDEO_HEIGHT } : 
+                    { width: this.VIDEO_WIDTH, height: this.VIDEO_HEIGHT }, 
+                audio: false 
+            };
+            
+            try {
+                this.localVideoStream = await navigator.mediaDevices.getUserMedia(constraints);
+                
+                // Replace video track in all peer connections
+                this.peerConnections.forEach(pc => {
+                    const senders = pc.getSenders();
+                    const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+                    if (videoSender && this.localVideoStream) {
+                        const newVideoTrack = this.localVideoStream.getVideoTracks()[0];
+                        videoSender.replaceTrack(newVideoTrack);
+                    }
+                });
+                
+                // Update local video display if it exists
+                if (window.onLocalVideoTrack) {
+                    window.onLocalVideoTrack(this.localVideoStream);
+                }
+                
+                // Only stop old stream after successfully creating and applying new stream
+                oldStream.getTracks().forEach(track => track.stop());
+            } catch (error) {
+                console.error('Error switching camera:', error);
+                // Restore old stream on error
+                this.localVideoStream = oldStream;
+                alert('Failed to switch camera. Please try again.');
+            }
+        }
+    }
+    
     async toggleVideo() {
         if (!this.isVideoEnabled) {
             // Start video
             try {
-                this.localVideoStream = await navigator.mediaDevices.getUserMedia({
-                    video: { width: 640, height: 480 },
+                const constraints = {
+                    video: this.selectedCameraId ? 
+                        { deviceId: { exact: this.selectedCameraId }, width: this.VIDEO_WIDTH, height: this.VIDEO_HEIGHT } : 
+                        { width: this.VIDEO_WIDTH, height: this.VIDEO_HEIGHT },
                     audio: false
-                });
+                };
+                this.localVideoStream = await navigator.mediaDevices.getUserMedia(constraints);
                 
                 this.isVideoEnabled = true;
                 
