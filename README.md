@@ -1,14 +1,15 @@
 # Decentra
 
-A decentralized Discord-like chat server and client that is non-federated and self-hostable. Built with Python and WebSockets, designed to run in Docker containers with persistent data storage.
+A decentralized Discord-like chat server and client that is non-federated and self-hostable. Built with Python and WebSockets, designed to run in Docker containers with persistent data storage using PostgreSQL.
 
 ## Features
 
 - 🚀 Real-time WebSocket-based messaging
-- 💾 **Persistent Data Storage** - All data stored in SQLite database
+- 💾 **Persistent Data Storage** - All data stored in PostgreSQL database
   - User accounts and friendships persist across restarts
   - Message history saved permanently
   - Servers and channels maintained
+  - Scalable and production-ready database
 - 🖥️ **Servers** - Create and manage multiple servers with channels
   - ⚙️ Server settings for owners (rename, invites, permissions)
   - 🎫 Server-specific invite codes
@@ -48,7 +49,7 @@ cd decentra
 docker-compose up --build
 ```
 
-This will start the chat server on port 8765 with persistent data storage in a Docker volume.
+This will start both the PostgreSQL database and the chat server on port 8765 with persistent data storage in a Docker volume.
 
 3. Open your web browser and navigate to:
 ```
@@ -67,20 +68,51 @@ docker-compose down
 docker-compose down -v
 ```
 
-**Note**: Your data (users, messages, servers) is stored in a Docker volume named `decentra-data` and will persist across container restarts.
+**Note**: Your data (users, messages, servers) is stored in a PostgreSQL database in the Docker volume named `decentra-data` and will persist across container restarts.
 
 ### Running Manually with Docker
 
+If you want to run the components separately:
+
+1. First, start PostgreSQL:
+```bash
+docker run -d --name decentra-postgres \
+  -e POSTGRES_DB=decentra \
+  -e POSTGRES_USER=decentra \
+  -e POSTGRES_PASSWORD=decentra \
+  -v decentra-data:/var/lib/postgresql/data \
+  postgres:16-alpine
+```
+
+2. Then, build and run the server:
 ```bash
 cd server
 docker build -t decentra-server .
-docker run -p 8765:8765 -v decentra-data:/data -e DB_PATH=/data/decentra.db decentra-server
+docker run -p 8765:8765 \
+  -e DATABASE_URL=postgresql://decentra:decentra@decentra-postgres:5432/decentra \
+  --link decentra-postgres \
+  decentra-server
 ```
 
 Then open your browser to `http://localhost:8765`
 
 ### Running Locally (without Docker)
 
+**Prerequisites**: PostgreSQL 12+ installed and running locally
+
+1. Create a PostgreSQL database:
+```bash
+createdb decentra
+# Or use psql:
+psql -c "CREATE DATABASE decentra;"
+```
+
+2. Set the database connection URL (optional, defaults to localhost):
+```bash
+export DATABASE_URL=postgresql://username:password@localhost:5432/decentra
+```
+
+3. Install dependencies and run the server:
 ```bash
 cd server
 pip install -r requirements.txt
@@ -104,6 +136,13 @@ Then open your browser to `http://localhost:8765`
   - Real-time WebSocket communication
   - WebRTC signaling for voice chat connections
   - Voice state management
+- **database.py**: PostgreSQL database layer for persistent storage
+  - User accounts and authentication
+  - Servers, channels, and memberships
+  - Messages and chat history
+  - Friendships and direct messages
+  - Invite codes
+- **api.py**: REST API endpoints for external integrations
 - **static/**: Web client files (HTML, CSS, JavaScript)
   - **index.html**: Login and signup page
   - **chat.html**: Main chat interface with servers, channels, DMs, friends, and voice controls
@@ -112,7 +151,14 @@ Then open your browser to `http://localhost:8765`
   - **chat.js**: Chat functionality, WebSocket client, and UI management
   - **voice.js**: WebRTC voice chat implementation and peer connection management
 - **Dockerfile**: Container configuration for the server
-- **requirements.txt**: Python dependencies (websockets, bcrypt, aiohttp)
+- **requirements.txt**: Python dependencies (websockets, bcrypt, aiohttp, psycopg2-binary)
+
+### Database
+
+The application uses PostgreSQL for persistent data storage:
+- **PostgreSQL 16**: Production-ready relational database
+- **Docker Volume**: Data stored in `decentra-data` volume for persistence
+- **Schema**: Automatically initialized on first run with all required tables
 
 ### Legacy Terminal Client (`client/`)
 
@@ -272,18 +318,28 @@ The web-based client supports unlimited simultaneous users. Simply have each use
 
 ### Data Persistence
 
-All application data is stored in an SQLite database:
-- **With Docker**: Data is stored in a Docker volume (`decentra-data`) and persists across container restarts
-- **Local Development**: Database file is created as `decentra.db` in the server directory
+All application data is stored in a PostgreSQL database:
+- **With Docker**: Data is stored in a Docker volume (`decentra-data`) that persists the PostgreSQL database across container restarts
+- **Local Development**: Connect to your local PostgreSQL instance using the DATABASE_URL environment variable
 
-The database stores:
+The PostgreSQL database stores:
 - User accounts and passwords (hashed with bcrypt)
 - Friendships and friend requests
 - Servers, channels, and memberships
-- All message history
+- All message history with timestamps
 - Invite codes
 
-To backup your data, backup the database file or Docker volume.
+To backup your data:
+- **Docker**: Back up the Docker volume or use PostgreSQL's `pg_dump` tool
+- **Local**: Use `pg_dump` to create database backups
+
+```bash
+# Backup database (Docker)
+docker exec decentra-postgres pg_dump -U decentra decentra > backup.sql
+
+# Restore database (Docker)
+docker exec -i decentra-postgres psql -U decentra decentra < backup.sql
+```
 
 ## REST API
 
