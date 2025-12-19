@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Decentra - Admin Configuration</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <style>
+        .admin-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+        
+        .admin-header {
+            background: #2c2f33;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+        
+        .admin-header h1 {
+            color: #ffffff;
+            margin: 0 0 10px 0;
+            font-size: 28px;
+        }
+        
+        .admin-header p {
+            color: #b9bbbe;
+            margin: 0;
+        }
+        
+        .admin-section {
+            background: #36393f;
+            padding: 30px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .admin-section h2 {
+            color: #ffffff;
+            margin: 0 0 20px 0;
+            font-size: 22px;
+            border-bottom: 2px solid #5865F2;
+            padding-bottom: 10px;
+        }
+        
+        .setting-item {
+            margin-bottom: 25px;
+            padding: 15px;
+            background: #2c2f33;
+            border-radius: 5px;
+        }
+        
+        .setting-item label {
+            display: block;
+            color: #ffffff;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        
+        .setting-item .description {
+            color: #b9bbbe;
+            font-size: 13px;
+            margin-bottom: 10px;
+        }
+        
+        .setting-item input[type="text"],
+        .setting-item input[type="number"],
+        .setting-item select {
+            width: 100%;
+            max-width: 500px;
+            padding: 10px;
+            background: #40444b;
+            border: 1px solid #202225;
+            color: #dcddde;
+            border-radius: 3px;
+            font-size: 14px;
+        }
+        
+        .setting-item input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
+        
+        .checkbox-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .save-button {
+            background: #5865F2;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 3px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            margin-top: 20px;
+        }
+        
+        .save-button:hover {
+            background: #4752C4;
+        }
+        
+        .back-link {
+            display: inline-block;
+            color: #5865F2;
+            text-decoration: none;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        
+        .back-link:hover {
+            text-decoration: underline;
+        }
+        
+        .status-message {
+            padding: 12px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        
+        .status-message.success {
+            background: rgba(67, 181, 129, 0.1);
+            border: 1px solid #43b581;
+            color: #43b581;
+        }
+        
+        .status-message.error {
+            background: rgba(240, 71, 71, 0.1);
+            border: 1px solid #f04747;
+            color: #f04747;
+        }
+    </style>
+</head>
+<body>
+    <div class="admin-container">
+        <a href="/static/chat.html" class="back-link">← Back to Chat</a>
+        
+        <div class="admin-header">
+            <h1>⚙️ Admin Configuration</h1>
+            <p>Site-wide settings for Decentra • Accessible only to the first user</p>
+        </div>
+        
+        <div id="status-message" class="status-message"></div>
+        
+        <div class="admin-section">
+            <h2>General Settings</h2>
+            
+            <div class="setting-item">
+                <label for="server-name">Server Name</label>
+                <div class="description">The display name for this Decentra instance</div>
+                <input type="text" id="server-name" placeholder="Decentra Chat">
+            </div>
+            
+            <div class="setting-item">
+                <label for="max-message-length">Maximum Message Length</label>
+                <div class="description">Maximum number of characters allowed in a single message</div>
+                <input type="number" id="max-message-length" min="100" max="10000" value="2000">
+            </div>
+            
+            <div class="setting-item">
+                <label for="allow-registrations">Allow New Registrations</label>
+                <div class="checkbox-wrapper">
+                    <input type="checkbox" id="allow-registrations" checked>
+                    <span class="description" style="margin: 0;">Allow new users to create accounts</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="admin-section">
+            <h2>Security Settings</h2>
+            
+            <div class="setting-item">
+                <label for="require-invite">Require Invite Code for Registration</label>
+                <div class="checkbox-wrapper">
+                    <input type="checkbox" id="require-invite" checked>
+                    <span class="description" style="margin: 0;">New users must have an invite code to register</span>
+                </div>
+            </div>
+            
+            <div class="setting-item">
+                <label for="session-timeout">Session Timeout (minutes)</label>
+                <div class="description">How long users stay logged in (0 = no timeout)</div>
+                <input type="number" id="session-timeout" min="0" max="10080" value="0" placeholder="0 (disabled)">
+            </div>
+        </div>
+        
+        <div class="admin-section">
+            <h2>File & Media Settings</h2>
+            
+            <div class="setting-item">
+                <label for="max-file-size">Maximum File Upload Size (MB)</label>
+                <div class="description">Maximum size for file uploads (future feature)</div>
+                <input type="number" id="max-file-size" min="1" max="100" value="10">
+            </div>
+            
+            <div class="setting-item">
+                <label for="allow-embeds">Allow URL Embeds</label>
+                <div class="checkbox-wrapper">
+                    <input type="checkbox" id="allow-embeds" checked>
+                    <span class="description" style="margin: 0;">Automatically embed images and videos from URLs</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="admin-section">
+            <h2>Server Limits</h2>
+            
+            <div class="setting-item">
+                <label for="max-servers-per-user">Max Servers Per User</label>
+                <div class="description">Maximum number of servers a user can create (0 = unlimited)</div>
+                <input type="number" id="max-servers-per-user" min="0" max="100" value="0" placeholder="0 (unlimited)">
+            </div>
+            
+            <div class="setting-item">
+                <label for="max-channels-per-server">Max Channels Per Server</label>
+                <div class="description">Maximum number of channels in a server (0 = unlimited)</div>
+                <input type="number" id="max-channels-per-server" min="0" max="500" value="0" placeholder="0 (unlimited)">
+            </div>
+        </div>
+        
+        <button id="save-settings" class="save-button">Save Settings</button>
+    </div>
+    
+    <script>
+        // Check authentication and admin status
+        const username = sessionStorage.getItem('username');
+        const password = sessionStorage.getItem('password');
+        
+        if (!username || !password) {
+            window.location.href = '/static/index.html';
+        }
+        
+        // Connect to WebSocket to verify admin status
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
+        const ws = new WebSocket(wsUrl);
+        
+        ws.onopen = () => {
+            ws.send(JSON.stringify({
+                type: 'login',
+                username: username,
+                password: password
+            }));
+        };
+        
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            
+            if (data.type === 'auth_failed') {
+                window.location.href = '/static/index.html';
+            } else if (data.type === 'auth_success') {
+                // Verify admin status
+                ws.send(JSON.stringify({
+                    type: 'check_admin'
+                }));
+            } else if (data.type === 'admin_status') {
+                if (!data.is_admin) {
+                    showStatus('Access denied. Only the first user can access this page.', 'error');
+                    setTimeout(() => {
+                        window.location.href = '/static/chat.html';
+                    }, 2000);
+                } else {
+                    // Load settings
+                    ws.send(JSON.stringify({
+                        type: 'get_admin_settings'
+                    }));
+                }
+            } else if (data.type === 'admin_settings') {
+                loadSettings(data.settings);
+            } else if (data.type === 'settings_saved') {
+                showStatus('Settings saved successfully!', 'success');
+            } else if (data.type === 'error') {
+                showStatus(data.message, 'error');
+            }
+        };
+        
+        function loadSettings(settings) {
+            if (!settings) return;
+            
+            document.getElementById('server-name').value = settings.server_name || 'Decentra Chat';
+            document.getElementById('max-message-length').value = settings.max_message_length || 2000;
+            document.getElementById('allow-registrations').checked = settings.allow_registrations !== false;
+            document.getElementById('require-invite').checked = settings.require_invite !== false;
+            document.getElementById('session-timeout').value = settings.session_timeout || 0;
+            document.getElementById('max-file-size').value = settings.max_file_size || 10;
+            document.getElementById('allow-embeds').checked = settings.allow_embeds !== false;
+            document.getElementById('max-servers-per-user').value = settings.max_servers_per_user || 0;
+            document.getElementById('max-channels-per-server').value = settings.max_channels_per_server || 0;
+        }
+        
+        function showStatus(message, type) {
+            const statusEl = document.getElementById('status-message');
+            statusEl.textContent = message;
+            statusEl.className = `status-message ${type}`;
+            statusEl.style.display = 'block';
+            
+            setTimeout(() => {
+                statusEl.style.display = 'none';
+            }, 5000);
+        }
+        
+        document.getElementById('save-settings').addEventListener('click', () => {
+            const settings = {
+                server_name: document.getElementById('server-name').value,
+                max_message_length: parseInt(document.getElementById('max-message-length').value),
+                allow_registrations: document.getElementById('allow-registrations').checked,
+                require_invite: document.getElementById('require-invite').checked,
+                session_timeout: parseInt(document.getElementById('session-timeout').value),
+                max_file_size: parseInt(document.getElementById('max-file-size').value),
+                allow_embeds: document.getElementById('allow-embeds').checked,
+                max_servers_per_user: parseInt(document.getElementById('max-servers-per-user').value),
+                max_channels_per-server: parseInt(document.getElementById('max-channels-per-server').value)
+            };
+            
+            ws.send(JSON.stringify({
+                type: 'save_admin_settings',
+                settings: settings
+            }));
+        });
+    </script>
+</body>
+</html>

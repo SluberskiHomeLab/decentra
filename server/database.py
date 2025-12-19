@@ -217,6 +217,20 @@ class Database:
                 WHERE username = %s
             ''', (avatar, avatar_type, avatar_data, username))
     
+    def get_first_user(self) -> Optional[str]:
+        """Get the first user (admin) username."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT username FROM users 
+                ORDER BY created_at ASC 
+                LIMIT 1
+            ''')
+            row = cursor.fetchone()
+            if row:
+                return row['username']
+            return None
+    
     # Server operations
     def create_server(self, server_id: str, name: str, owner: str) -> bool:
         """Create a new server."""

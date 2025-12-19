@@ -55,6 +55,7 @@
     const menuLogoutBtn = document.getElementById('menu-logout-btn');
     const menuFriendsBtn = document.getElementById('menu-friends-btn');
     const searchUsersBtn = document.getElementById('search-users-btn');
+    const menuAdminBtn = document.getElementById('menu-admin-btn');
     
     // Modal elements
     const inviteModal = document.getElementById('invite-modal');
@@ -237,6 +238,8 @@
                 sessionStorage.removeItem('inviteCode');
                 // Initialize voice chat
                 voiceChat = new VoiceChat(ws, username);
+                // Check if user is admin
+                ws.send(JSON.stringify({type: 'check_admin'}));
                 break;
                 
             case 'auth_error':
@@ -474,6 +477,15 @@
                     joinServerError.classList.remove('hidden');
                 } else {
                     alert(data.message);
+                }
+                break;
+            
+            case 'admin_status':
+                // Show or hide admin config menu item based on admin status
+                if (data.is_admin) {
+                    menuAdminBtn.classList.remove('hidden');
+                } else {
+                    menuAdminBtn.classList.add('hidden');
                 }
                 break;
                 
@@ -1553,6 +1565,11 @@
     
     // Logout (from menu)
     menuLogoutBtn.addEventListener('click', logout);
+    
+    // Admin config (from menu)
+    menuAdminBtn.addEventListener('click', () => {
+        window.location.href = '/static/adminconfig.html';
+    });
     
     function logout() {
         // Clean up voice chat

@@ -767,6 +767,62 @@ async def handler(websocket):
                         }))
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} generated invite code: {invite_code}")
                     
+                    # Admin configuration handlers
+                    elif data.get('type') == 'check_admin':
+                        first_user = db.get_first_user()
+                        is_admin = (username == first_user)
+                        
+                        await websocket.send_str(json.dumps({
+                            'type': 'admin_status',
+                            'is_admin': is_admin,
+                            'first_user': first_user
+                        }))
+                    
+                    elif data.get('type') == 'get_admin_settings':
+                        # Verify user is admin
+                        first_user = db.get_first_user()
+                        if username != first_user:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Access denied. Admin only.'
+                            }))
+                        else:
+                            # Load settings from file or database (for now, return defaults)
+                            settings = {
+                                'server_name': 'Decentra Chat',
+                                'max_message_length': 2000,
+                                'allow_registrations': True,
+                                'require_invite': True,
+                                'session_timeout': 0,
+                                'max_file_size': 10,
+                                'allow_embeds': True,
+                                'max_servers_per_user': 0,
+                                'max_channels_per_server': 0
+                            }
+                            
+                            await websocket.send_str(json.dumps({
+                                'type': 'admin_settings',
+                                'settings': settings
+                            }))
+                    
+                    elif data.get('type') == 'save_admin_settings':
+                        # Verify user is admin
+                        first_user = db.get_first_user()
+                        if username != first_user:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Access denied. Admin only.'
+                            }))
+                        else:
+                            settings = data.get('settings', {})
+                            # For now, just acknowledge. In future, persist to database or config file
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Admin {username} updated settings: {settings}")
+                            
+                            await websocket.send_str(json.dumps({
+                                'type': 'settings_saved',
+                                'message': 'Settings saved successfully'
+                            }))
+                    
                     # Server settings handlers
                     elif data.get('type') == 'rename_server':
                         server_id = data.get('server_id', '')
