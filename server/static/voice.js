@@ -34,21 +34,35 @@ class VoiceChat {
     
     async initLocalStream() {
         try {
+            // Check if mediaDevices is supported
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                alert('Your browser does not support audio calls. Please use a modern browser like Chrome, Firefox, or Edge.');
+                return false;
+            }
+
             const constraints = { 
                 audio: this.selectedMicrophoneId ? 
                     { deviceId: { exact: this.selectedMicrophoneId } } : true, 
                 video: false 
             };
+            
+            console.log('Requesting microphone access with constraints:', constraints);
             this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
+            console.log('Microphone access granted, stream:', this.localStream);
             return true;
         } catch (error) {
             console.error('Error accessing microphone:', error);
-            if (error.name === 'NotAllowedError') {
-                alert('Microphone access denied. Please grant permission in your browser settings.');
+            if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+                alert('Microphone access denied. Please:\n1. Click the lock icon in your browser address bar\n2. Allow microphone access\n3. Refresh the page and try again');
             } else if (error.name === 'NotFoundError') {
-                alert('No microphone found. Please connect a microphone and try again.');
+                alert('No microphone found. Please:\n1. Connect a microphone to your computer\n2. Refresh the page\n3. Try again');
+            } else if (error.name === 'NotReadableError') {
+                alert('Microphone is in use by another application. Please:\n1. Close other apps using the microphone\n2. Try again');
+            } else if (error.name === 'OverconstrainedError') {
+                alert('Selected microphone is not available. Please:\n1. Select a different microphone\n2. Try again');
+                this.selectedMicrophoneId = null; // Reset selection
             } else {
-                alert('Cannot access microphone. Please check your permissions and device.');
+                alert('Cannot access microphone: ' + error.message + '\nPlease check your browser permissions and device settings.');
             }
             return false;
         }
@@ -56,11 +70,19 @@ class VoiceChat {
     
     async getAudioDevices() {
         try {
+            // Check if mediaDevices is supported
+            if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+                console.warn('enumerateDevices not supported');
+                return { microphones: [], speakers: [] };
+            }
+
             // Request permission first to get device labels
             // This is required because enumerateDevices() only returns labels after permission is granted
             if (!this.localStream && !this.localVideoStream) {
                 try {
+                    console.log('Requesting temporary audio access for device enumeration');
                     const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                    console.log('Temporary access granted, stopping stream');
                     // Stop the temporary stream immediately
                     tempStream.getTracks().forEach(track => track.stop());
                 } catch (permError) {
@@ -70,6 +92,7 @@ class VoiceChat {
             }
             
             const devices = await navigator.mediaDevices.enumerateDevices();
+            console.log('Enumerated devices:', devices);
             return {
                 microphones: devices.filter(d => d.kind === 'audioinput'),
                 speakers: devices.filter(d => d.kind === 'audiooutput')
@@ -434,21 +457,30 @@ class VoiceChat {
     }
     
     async joinVoiceChannel(serverId, channelId) {
+        console.log(`Attempting to join voice channel: ${serverId}/${channelId}`);
+        
         // Initialize local stream if not already done
         if (!this.localStream) {
+            console.log('No local stream, requesting microphone access...');
             const success = await this.initLocalStream();
-            if (!success) return;
+            if (!success) {
+                console.error('Failed to initialize local stream');
+                throw new Error('Microphone access denied or unavailable');
+            }
+            console.log('Local stream initialized successfully');
         }
         
         this.currentVoiceServer = serverId;
         this.currentVoiceChannel = channelId;
         
         // Notify server
+        console.log('Sending join_voice_channel message to server');
         this.ws.send(JSON.stringify({
             type: 'join_voice_channel',
             server_id: serverId,
             channel_id: channelId
         }));
+        console.log('Join request sent');
     }
     
     leaveVoiceChannel() {
@@ -490,16 +522,24 @@ class VoiceChat {
     }
     
     async startDirectCall(friendUsername) {
+        console.log(`Starting direct call with ${friendUsername}`);
+        
         // Initialize local stream if not already done
         if (!this.localStream) {
+            console.log('No local stream, requesting microphone access...');
             const success = await this.initLocalStream();
-            if (!success) return;
+            if (!success) {
+                console.error('Failed to initialize local stream for call');
+                throw new Error('Microphone access denied or unavailable');
+            }
+            console.log('Local stream initialized successfully');
         }
         
         this.inDirectCall = true;
         this.directCallPeer = friendUsername;
         
         // Notify server to signal the friend
+        console.log(`Sending call request to ${friendUsername}`);
         this.ws.send(JSON.stringify({
             type: 'start_voice_call',
             username: friendUsername
@@ -563,12 +603,27 @@ class VoiceChat {
     }
     
     async createPeerConnection(targetUsername, isInitiator = true) {
+        console.log(`Creating peer connection with ${targetUsername}, isInitiator: ${isInitiator}`);
+        
+        // Verify we have a local stream
+        if (!this.localStream) {
+            console.error('No local stream available for peer connection');
+            const success = await this.initLocalStream();
+            if (!success) {
+                console.error('Failed to initialize local stream');
+                return null;
+            }
+        }
+        
         const pc = new RTCPeerConnection(this.iceServers);
         this.peerConnections.set(targetUsername, pc);
+        
+        console.log(`Local stream tracks: ${this.localStream.getTracks().length}`);
         
         // Add local audio stream tracks
         if (this.localStream) {
             this.localStream.getTracks().forEach(track => {
+                console.log(`Adding ${track.kind} track to peer connection`);
                 pc.addTrack(track, this.localStream);
             });
         }
@@ -604,10 +659,23 @@ class VoiceChat {
                 }
                 
                 // Handle play promise to avoid unhandled rejection
-                remoteAudio.play().catch(error => {
-                    console.warn('Audio autoplay failed:', error);
-                    // Audio will play when user interacts with the page
-                });
+                const playPromise = remoteAudio.play();
+                if (playPromise !== undefined) {
+                    playPromise.then(() => {
+                        console.log(`Audio playing from ${targetUsername}`);
+                    }).catch(error => {
+                        console.warn('Audio autoplay blocked:', error);
+                        console.warn('User interaction required to play audio. Click anywhere on the page.');
+                        // Try playing on next user interaction
+                        const playOnInteraction = () => {
+                            remoteAudio.play().then(() => {
+                                console.log('Audio started after user interaction');
+                                document.removeEventListener('click', playOnInteraction);
+                            }).catch(e => console.error('Still cannot play:', e));
+                        };
+                        document.addEventListener('click', playOnInteraction, { once: true });
+                    });
+                }
                 
                 // Store audio element for later control
                 pc.remoteAudio = remoteAudio;
@@ -622,18 +690,29 @@ class VoiceChat {
         // Handle ICE candidates
         pc.onicecandidate = (event) => {
             if (event.candidate) {
+                console.log(`Sending ICE candidate to ${targetUsername}:`, event.candidate.type);
                 this.ws.send(JSON.stringify({
                     type: 'webrtc_ice_candidate',
                     target: targetUsername,
                     candidate: event.candidate
                 }));
+            } else {
+                console.log(`ICE gathering complete for ${targetUsername}`);
             }
+        };
+        
+        // Handle ICE connection state changes
+        pc.oniceconnectionstatechange = () => {
+            console.log(`ICE connection state with ${targetUsername}:`, pc.iceConnectionState);
         };
         
         // Handle connection state changes
         pc.onconnectionstatechange = () => {
-            console.log('Connection state with', targetUsername, ':', pc.connectionState);
-            if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+            console.log(`Connection state with ${targetUsername}:`, pc.connectionState);
+            if (pc.connectionState === 'connected') {
+                console.log(`✓ Successfully connected to ${targetUsername}`);
+            } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+                console.warn(`Connection ${pc.connectionState} with ${targetUsername}`);
                 this.handlePeerDisconnected(targetUsername);
             }
         };
@@ -641,8 +720,10 @@ class VoiceChat {
         // If initiator, create and send offer
         if (isInitiator) {
             try {
+                console.log(`Creating offer for ${targetUsername}`);
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
+                console.log(`Offer created and set as local description for ${targetUsername}`);
                 
                 this.ws.send(JSON.stringify({
                     type: 'webrtc_offer',
@@ -653,8 +734,10 @@ class VoiceChat {
                         channel_id: this.currentVoiceChannel
                     }
                 }));
+                console.log(`Offer sent to ${targetUsername}`);
             } catch (error) {
-                console.error('Error creating offer:', error);
+                console.error(`Error creating offer for ${targetUsername}:`, error);
+                alert(`Failed to establish connection with ${targetUsername}: ${error.message}`);
             }
         }
         
@@ -662,43 +745,58 @@ class VoiceChat {
     }
     
     async handleOffer(fromUsername, offer, context) {
-        console.log('Received offer from', fromUsername);
+        console.log(`Received offer from ${fromUsername}`);
         
         // Create peer connection if it doesn't exist
         let pc = this.peerConnections.get(fromUsername);
         if (!pc) {
+            console.log(`No existing peer connection, creating one for ${fromUsername}`);
             pc = await this.createPeerConnection(fromUsername, false);
+            if (!pc) {
+                console.error(`Failed to create peer connection for ${fromUsername}`);
+                return;
+            }
         } else if (pc.signalingState === 'have-local-offer') {
             // Handle glare condition: both peers sent offers simultaneously
-            console.log('Glare detected with', fromUsername, '- ignoring offer');
+            console.log(`Glare detected with ${fromUsername} - ignoring offer`);
             return;
         }
         
         try {
+            console.log(`Setting remote description for ${fromUsername}`);
             await pc.setRemoteDescription(new RTCSessionDescription(offer));
+            console.log(`Creating answer for ${fromUsername}`);
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
+            console.log(`Sending answer to ${fromUsername}`);
             
             this.ws.send(JSON.stringify({
                 type: 'webrtc_answer',
                 target: fromUsername,
                 answer: pc.localDescription
             }));
+            console.log(`Answer sent to ${fromUsername}`);
         } catch (error) {
-            console.error('Error handling offer:', error);
+            console.error(`Error handling offer from ${fromUsername}:`, error);
+            alert(`Failed to process call from ${fromUsername}: ${error.message}`);
         }
     }
     
     async handleAnswer(fromUsername, answer) {
-        console.log('Received answer from', fromUsername);
+        console.log(`Received answer from ${fromUsername}`);
         
         const pc = this.peerConnections.get(fromUsername);
         if (pc) {
             try {
+                console.log(`Setting remote description (answer) for ${fromUsername}`);
                 await pc.setRemoteDescription(new RTCSessionDescription(answer));
+                console.log(`Answer processed for ${fromUsername}`);
             } catch (error) {
-                console.error('Error handling answer:', error);
+                console.error(`Error handling answer from ${fromUsername}:`, error);
+                alert(`Failed to complete connection with ${fromUsername}: ${error.message}`);
             }
+        } else {
+            console.warn(`Received answer from ${fromUsername} but no peer connection exists`);
         }
     }
     

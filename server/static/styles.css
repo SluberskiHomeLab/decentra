@@ -6,25 +6,68 @@
 
 body {
     font-family: 'gg sans', 'Noto Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
-    background: #5865F2;
+    background: url('/static/login-background.png') no-repeat center center fixed;
+    background-size: cover;
     min-height: 100vh;
     display: flex;
     align-items: center;
     justify-content: center;
+    position: relative;
+}
+
+body::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: 
+        radial-gradient(circle at 20% 50%, rgba(255, 255, 255, 0.05) 0%, transparent 50%),
+        radial-gradient(circle at 80% 80%, rgba(255, 255, 255, 0.03) 0%, transparent 50%);
+    pointer-events: none;
+    z-index: 0;
 }
 
 .container {
     width: 100%;
     max-width: 400px;
     padding: 20px;
+    position: relative;
+    z-index: 1;
 }
 
 .auth-box {
-    background: #36393f;
+    background: rgba(54, 57, 63, 0.35);
     border-radius: 5px;
     padding: 32px;
-    box-shadow: 0 2px 10px 0 rgba(0, 0, 0, 0.2);
+    box-shadow: 0 8px 24px 0 rgba(0, 0, 0, 0.3);
     width: 100%;
+    backdrop-filter: blur(10px);
+    position: relative;
+    overflow: hidden;
+}
+
+.auth-box::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -10%;
+    width: 120%;
+    height: 60%;
+    background: radial-gradient(ellipse at center, rgba(88, 101, 242, 0.08) 0%, transparent 70%);
+    pointer-events: none;
+}
+
+.auth-box::after {
+    content: '';
+    position: absolute;
+    bottom: -30%;
+    right: -10%;
+    width: 80%;
+    height: 50%;
+    background: radial-gradient(ellipse at center, rgba(88, 101, 242, 0.05) 0%, transparent 70%);
+    pointer-events: none;
 }
 
 .auth-box h1 {
@@ -33,6 +76,8 @@ body {
     margin-bottom: 8px;
     font-size: 24px;
     font-weight: 600;
+    position: relative;
+    z-index: 1;
 }
 
 .subtitle {
@@ -41,10 +86,14 @@ body {
     margin-bottom: 20px;
     font-size: 16px;
     font-weight: 400;
+    position: relative;
+    z-index: 1;
 }
 
 .form-group {
     margin-bottom: 20px;
+    position: relative;
+    z-index: 1;
 }
 
 .form-group label {
@@ -60,11 +109,11 @@ body {
 .form-group input {
     width: 100%;
     padding: 10px;
-    border: 1px solid #202225;
+    border: 1px solid rgba(0, 0, 0, 0.35);
     border-radius: 3px;
     font-size: 16px;
-    transition: border-color 0.15s ease;
-    background-color: #202225;
+    transition: all 0.15s ease;
+    background-color: rgba(0, 0, 0, 0.35);
     color: #dcddde;
 }
 
@@ -77,6 +126,8 @@ body {
     display: flex;
     gap: 10px;
     margin-top: 30px;
+    position: relative;
+    z-index: 1;
 }
 
 .btn {
@@ -91,21 +142,21 @@ body {
 }
 
 .btn-primary {
-    background: #5865F2;
+    background: #167DFF;
     color: white;
 }
 
 .btn-primary:hover {
-    background: #4752C4;
+    background: #1266CC;
 }
 
 .btn-secondary {
-    background: transparent;
+    background: rgba(22, 125, 255, 0.12);
     color: #ffffff;
 }
 
 .btn-secondary:hover {
-    background: rgba(88, 101, 242, 0.1);
+    background: rgba(22, 125, 255, 0.2);
     text-decoration: underline;
 }
 
@@ -131,6 +182,8 @@ body {
     margin-bottom: 20px;
     font-size: 14px;
     border: 1px solid rgba(240, 71, 71, 0.3);
+    position: relative;
+    z-index: 1;
 }
 
 .hidden {

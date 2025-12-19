@@ -1296,6 +1296,7 @@ async def handler(websocket):
 async def http_handler(request):
     """Handle HTTP requests and serve static files."""
     path = request.path
+    print(f"[HTTP_HANDLER ENTRY] Received request for path: {path}")
     
     # Redirect root to index.html
     if path == '/':
@@ -1314,18 +1315,57 @@ async def http_handler(request):
             raise web.HTTPNotFound()
         
         if os.path.isfile(full_path):
-            # Determine content type
+            # Determine content type and whether file is binary
+            is_binary = False
             content_type = 'text/html'
+            
             if full_path.endswith('.css'):
                 content_type = 'text/css'
             elif full_path.endswith('.js'):
                 content_type = 'application/javascript'
             elif full_path.endswith('.json'):
                 content_type = 'application/json'
+            elif full_path.endswith('.png'):
+                content_type = 'image/png'
+                is_binary = True
+            elif full_path.endswith('.jpg') or full_path.endswith('.jpeg'):
+                content_type = 'image/jpeg'
+                is_binary = True
+            elif full_path.endswith('.gif'):
+                content_type = 'image/gif'
+                is_binary = True
+            elif full_path.endswith('.svg'):
+                content_type = 'image/svg+xml'
+            elif full_path.endswith('.ico'):
+                content_type = 'image/x-icon'
+                is_binary = True
+            elif full_path.endswith('.webp'):
+                content_type = 'image/webp'
+                is_binary = True
             
-            with open(full_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            return web.Response(text=content, content_type=content_type)
+            # Read file
+            with open(full_path, 'rb') as f:
+                binary_content = f.read()
+            
+            # Decode text files only
+            if not is_binary:
+                content = binary_content.decode('utf-8')
+                print(f"[HTTP_HANDLER] Serving text {full_path}, size: {len(content)} chars")
+            else:
+                print(f"[HTTP_HANDLER] Serving binary {full_path}, size: {len(binary_content)} bytes")
+            
+            # Add cache control headers to prevent browser caching during development
+            headers = {
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache',
+                'Expires': '0'
+            }
+            
+            # Return appropriate response based on file type
+            if is_binary:
+                return web.Response(body=binary_content, content_type=content_type, headers=headers)
+            else:
+                return web.Response(text=content, content_type=content_type, headers=headers)
     
     raise web.HTTPNotFound()
 

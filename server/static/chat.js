@@ -123,6 +123,8 @@
     const speakerSelect = document.getElementById('speaker-select');
     const cameraSelect = document.getElementById('camera-select');
     const closeDeviceSettingsModalBtn = document.getElementById('close-device-settings-modal');
+    const testMicrophoneBtn = document.getElementById('test-microphone-btn');
+    const micTestStatus = document.getElementById('mic-test-status');
     
     // Right sidebar (members list) elements
     const rightSidebar = document.getElementById('right-sidebar');
@@ -1524,27 +1526,43 @@
     }
     
     // Voice chat functions
-    function joinVoiceChannel(serverId, channelId, channelName) {
+    async function joinVoiceChannel(serverId, channelId, channelName) {
         if (!voiceChat) return;
         
-        voiceChat.joinVoiceChannel(serverId, channelId);
-        showVoiceControls(`Voice: ${channelName}`);
+        // Show loading status
+        showVoiceControls(`Connecting to ${channelName}...`);
         
-        // Update UI - keep current text channel selected if available
-        const server = servers.find(s => s.id === serverId);
-        if (server) {
-            const firstTextChannel = server.channels.find(ch => ch.type === 'text');
-            if (firstTextChannel && (!currentContext || currentContext.type !== 'server' || currentContext.serverId !== serverId)) {
-                selectChannel(serverId, firstTextChannel.id, firstTextChannel.name, firstTextChannel.type);
+        try {
+            await voiceChat.joinVoiceChannel(serverId, channelId);
+            showVoiceControls(`Voice: ${channelName}`);
+            
+            // Update UI - keep current text channel selected if available
+            const server = servers.find(s => s.id === serverId);
+            if (server) {
+                const firstTextChannel = server.channels.find(ch => ch.type === 'text');
+                if (firstTextChannel && (!currentContext || currentContext.type !== 'server' || currentContext.serverId !== serverId)) {
+                    selectChannel(serverId, firstTextChannel.id, firstTextChannel.name, firstTextChannel.type);
+                }
             }
+        } catch (error) {
+            console.error('Failed to join voice channel:', error);
+            hideVoiceControls();
+            alert('Failed to join voice channel. Please check your microphone permissions.');
         }
     }
     
-    function startVoiceCall(friendUsername) {
+    async function startVoiceCall(friendUsername) {
         if (!voiceChat) return;
         
-        voiceChat.startDirectCall(friendUsername);
         showVoiceControls(`Calling ${friendUsername}...`);
+        
+        try {
+            await voiceChat.startDirectCall(friendUsername);
+        } catch (error) {
+            console.error('Failed to start voice call:', error);
+            hideVoiceControls();
+            alert('Failed to start call. Please check your microphone permissions.');
+        }
     }
     
     function handleIncomingCall(fromUsername) {
@@ -1778,6 +1796,37 @@
     // Device settings
     closeDeviceSettingsModalBtn.addEventListener('click', () => {
         deviceSettingsModal.classList.add('hidden');
+    });
+    
+    testMicrophoneBtn.addEventListener('click', async () => {
+        micTestStatus.textContent = 'Testing microphone...';
+        micTestStatus.style.color = '#7289da';
+        
+        try {
+            const constraints = {
+                audio: microphoneSelect.value ? { deviceId: { exact: microphoneSelect.value } } : true
+            };
+            
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            micTestStatus.textContent = '✓ Microphone working! Permission granted.';
+            micTestStatus.style.color = '#43b581';
+            
+            // Stop the test stream
+            stream.getTracks().forEach(track => track.stop());
+            
+            // Refresh device list in case permissions just granted
+            await populateDeviceSelects();
+        } catch (error) {
+            console.error('Microphone test failed:', error);
+            micTestStatus.textContent = `✗ Error: ${error.name} - ${error.message}`;
+            micTestStatus.style.color = '#f04747';
+            
+            if (error.name === 'NotAllowedError') {
+                micTestStatus.textContent = '✗ Permission denied. Click the lock icon in your address bar to allow microphone access.';
+            } else if (error.name === 'NotFoundError') {
+                micTestStatus.textContent = '✗ No microphone found. Please connect a microphone.';
+            }
+        }
     });
     
     deviceSettingsModal.addEventListener('click', (e) => {
