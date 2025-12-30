@@ -28,6 +28,7 @@ A decentralized Discord-like chat server and client that is non-federated and se
 - 🌐 Modern web-based interface with Discord-like layout
 - 🎨 Beautiful responsive UI design
 - 🔌 **REST API** - HTTP REST API for desktop app integration
+- 📱 **Android Application** - Native Android app with Material Design 3
 
 ## Quick Start
 
@@ -360,6 +361,29 @@ curl "http://localhost:8765/api/servers?username=myusername"
 
 For real-time messaging and updates, desktop applications should use the WebSocket endpoint at `ws://localhost:8765/ws` in combination with the REST API.
 
+## Android Application
+
+Decentra includes a native Android application built with Kotlin and Jetpack Compose.
+
+### Features
+- 📱 Modern Material Design 3 UI
+- 🔐 User authentication
+- 💬 Real-time messaging via WebSocket
+- 🖥️ Server and channel browsing
+- 💌 Direct messaging support
+
+### Setup
+
+The Android app is located in the `android/` directory. See [android/README.md](android/README.md) for detailed setup instructions.
+
+**Quick Start:**
+
+1. Open the `android/` directory in Android Studio
+2. Update the server URL in the login screen (default: `http://10.0.2.2:8765` for emulator)
+3. Build and run the app
+
+**For physical devices**, update the server URL to your machine's IP address (e.g., `http://192.168.1.100:8765`).
+
 ## Development
 
 ### Project Structure
@@ -368,7 +392,7 @@ For real-time messaging and updates, desktop applications should use the WebSock
 decentra/
 ├── server/
 │   ├── server.py          # HTTP and WebSocket server
-│   ├── database.py        # SQLite database layer
+│   ├── database.py        # PostgreSQL database layer
 │   ├── api.py             # REST API endpoints
 │   ├── static/            # Web client files
 │   │   ├── index.html     # Login/signup page
@@ -379,6 +403,11 @@ decentra/
 │   │   └── voice.js       # WebRTC voice chat
 │   ├── Dockerfile         # Server container config
 │   └── requirements.txt   # Server dependencies
+├── android/               # Android application
+│   ├── app/              # Main Android app module
+│   │   └── src/main/     # Source code and resources
+│   ├── build.gradle.kts  # Build configuration
+│   └── README.md         # Android app documentation
 ├── client/                # Legacy terminal client (deprecated)
 │   ├── client.py          
 │   ├── Dockerfile         
