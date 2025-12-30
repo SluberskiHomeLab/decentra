@@ -512,13 +512,17 @@ async def handler(websocket):
                             continue
                         
                         # Create message object
+                        user_profile = db.get_user(username)
                         msg_obj = {
                             'type': 'message',
                             'username': username,
                             'content': msg_content,
                             'timestamp': datetime.now().isoformat(),
                             'context': context,
-                            'context_id': context_id
+                            'context_id': context_id,
+                            'avatar': user_profile.get('avatar', '👤') if user_profile else '👤',
+                            'avatar_type': user_profile.get('avatar_type', 'emoji') if user_profile else 'emoji',
+                            'avatar_data': user_profile.get('avatar_data') if user_profile else None
                         }
                         
                         # Route message based on context

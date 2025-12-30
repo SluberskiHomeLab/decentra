@@ -97,6 +97,13 @@
     const generateServerInviteBtn = document.getElementById('generate-server-invite-btn');
     const serverInviteDisplay = document.getElementById('server-invite-display');
     const serverInviteCodeText = document.getElementById('server-invite-code-text');
+    const serverInviteLinkText = document.getElementById('server-invite-link-text');
+    const copyInviteLinkBtn = document.getElementById('copy-invite-link-btn');
+    const sendInviteToFriendsBtn = document.getElementById('send-invite-to-friends-btn');
+    const sendInviteModal = document.getElementById('send-invite-modal');
+    const closeSendInviteModalBtn = document.getElementById('close-send-invite-modal');
+    const inviteFriendsList = document.getElementById('invite-friends-list');
+    const sendSelectedInvitesBtn = document.getElementById('send-selected-invites-btn');
     const serverMembersList = document.getElementById('server-members-list');
     const createTextChannelBtn = document.getElementById('create-text-channel-btn');
     const createVoiceChannelBtn = document.getElementById('create-voice-channel-btn');
@@ -311,9 +318,15 @@
                 break;
                 
             case 'message':
+                console.log('Received message:', data);
+                console.log('Current context:', currentContext);
+                console.log('Is for current context:', isMessageForCurrentContext(data));
                 if (isMessageForCurrentContext(data)) {
+                    console.log('Appending message to chat');
                     appendMessage(data);
                     scrollToBottom();
+                } else {
+                    console.log('Message not for current context, ignoring');
                 }
                 break;
                 
@@ -1067,6 +1080,7 @@
     
     // Append a message to the chat
     function appendMessage(msg) {
+        console.log('appendMessage called with:', msg);
         const messageDiv = document.createElement('div');
         messageDiv.className = 'message';
         
@@ -1082,7 +1096,23 @@
             minute: '2-digit'
         });
         
-        messageDiv.innerHTML = `
+        // Create avatar element with fallback
+        console.log('Creating avatar with data:', {
+            avatar: msg.avatar || '👤',
+            avatar_type: msg.avatar_type || 'emoji',
+            avatar_data: msg.avatar_data || null
+        });
+        const avatarEl = createAvatarElement({
+            avatar: msg.avatar || '👤',
+            avatar_type: msg.avatar_type || 'emoji',
+            avatar_data: msg.avatar_data || null
+        }, 'message-avatar');
+        
+        console.log('Avatar element created:', avatarEl);
+        
+        const contentWrapper = document.createElement('div');
+        contentWrapper.className = 'message-content-wrapper';
+        contentWrapper.innerHTML = `
             <div class="message-header">
                 <span class="message-username ${isOwnMessage ? 'own' : 'other'}">${escapeHtml(msg.username)}</span>
                 <span class="message-time">${timestamp}</span>
@@ -1090,7 +1120,10 @@
             <div class="message-content">${escapeHtml(msg.content)}</div>
         `;
         
+        messageDiv.appendChild(avatarEl);
+        messageDiv.appendChild(contentWrapper);
         messagesContainer.appendChild(messageDiv);
+        console.log('Message appended to container');
     }
     
     // Append system message
@@ -1108,6 +1141,7 @@
         
         const message = messageInput.value.trim();
         if (!message || !authenticated) {
+            console.log('Cannot send message - empty or not authenticated');
             return;
         }
         
@@ -1126,6 +1160,7 @@
             msgData.context = 'global';
         }
         
+        console.log('Sending message:', msgData);
         ws.send(JSON.stringify(msgData));
         messageInput.value = '';
     });
@@ -1399,9 +1434,102 @@
         }));
     });
     
+    // Copy invite link to clipboard
+    copyInviteLinkBtn.addEventListener('click', async () => {
+        const inviteLink = serverInviteLinkText.textContent;
+        try {
+            await navigator.clipboard.writeText(inviteLink);
+            const originalText = copyInviteLinkBtn.textContent;
+            copyInviteLinkBtn.textContent = '✓ Copied!';
+            setTimeout(() => {
+                copyInviteLinkBtn.textContent = originalText;
+            }, 2000);
+        } catch (err) {
+            console.error('Failed to copy invite link:', err);
+            alert('Failed to copy link to clipboard');
+        }
+    });
+    
+    // Open send invite to friends modal
+    sendInviteToFriendsBtn.addEventListener('click', () => {
+        if (friends.length === 0) {
+            alert('You have no friends to send invites to. Add some friends first!');
+            return;
+        }
+        
+        // Populate friends list with checkboxes
+        inviteFriendsList.innerHTML = '';
+        friends.forEach(friend => {
+            const friendItem = document.createElement('div');
+            friendItem.className = 'invite-friend-item';
+            
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.id = `invite-friend-${friend.username}`;
+            checkbox.value = friend.username;
+            checkbox.className = 'friend-checkbox';
+            
+            const avatarEl = createAvatarElement(friend, 'friend-avatar-small');
+            
+            const label = document.createElement('label');
+            label.htmlFor = checkbox.id;
+            label.textContent = friend.username;
+            
+            friendItem.appendChild(checkbox);
+            friendItem.appendChild(avatarEl);
+            friendItem.appendChild(label);
+            inviteFriendsList.appendChild(friendItem);
+        });
+        
+        sendInviteModal.classList.remove('hidden');
+    });
+    
+    // Send invites to selected friends
+    sendSelectedInvitesBtn.addEventListener('click', () => {
+        const selectedFriends = Array.from(document.querySelectorAll('.friend-checkbox:checked'))
+            .map(cb => cb.value);
+        
+        if (selectedFriends.length === 0) {
+            alert('Please select at least one friend to send the invite to.');
+            return;
+        }
+        
+        const inviteCode = serverInviteDisplay.dataset.currentInviteCode;
+        const inviteLink = `${window.location.origin}/static/index.html?invite=${inviteCode}`;
+        const serverName = servers.find(s => s.id === currentlySelectedServer)?.name || 'a server';
+        
+        selectedFriends.forEach(friendUsername => {
+            ws.send(JSON.stringify({
+                type: 'send_dm',
+                to_user: friendUsername,
+                content: `🎉 You've been invited to join **${serverName}**!\n\nClick here to join: ${inviteLink}\n\nOr use invite code: ${inviteCode}`
+            }));
+        });
+        
+        alert(`Invite sent to ${selectedFriends.length} friend(s)!`);
+        sendInviteModal.classList.add('hidden');
+    });
+    
+    // Close send invite modal
+    closeSendInviteModalBtn.addEventListener('click', () => {
+        sendInviteModal.classList.add('hidden');
+    });
+    
+    sendInviteModal.addEventListener('click', (e) => {
+        if (e.target === sendInviteModal) {
+            sendInviteModal.classList.add('hidden');
+        }
+    });
+
+    
     function showServerInviteCode(code) {
         serverInviteCodeText.textContent = code;
+        const inviteLink = `${window.location.origin}/static/index.html?invite=${code}`;
+        serverInviteLinkText.textContent = inviteLink;
         serverInviteDisplay.classList.remove('hidden');
+        
+        // Store the current invite code for later use
+        serverInviteDisplay.dataset.currentInviteCode = code;
     }
     
     function displayServerMembers(members, serverId) {

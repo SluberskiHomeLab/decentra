@@ -276,7 +276,18 @@
                 <p>Generate invite codes to invite others to this server.</p>
                 <button id="generate-server-invite-btn" class="btn btn-primary">Generate Invite Code</button>
                 <div id="server-invite-display" class="invite-code-display hidden">
-                    <code id="server-invite-code-text"></code>
+                    <div class="invite-display-header">
+                        <label>Invite Code:</label>
+                        <code id="server-invite-code-text"></code>
+                    </div>
+                    <div class="invite-display-header">
+                        <label>Invite Link:</label>
+                        <code id="server-invite-link-text"></code>
+                    </div>
+                    <div class="invite-actions">
+                        <button id="copy-invite-link-btn" class="btn btn-secondary">📋 Copy Link</button>
+                        <button id="send-invite-to-friends-btn" class="btn btn-primary">📤 Send to Friends</button>
+                    </div>
                 </div>
             </div>
             
@@ -504,6 +515,21 @@
                 <!-- Available members will be listed here -->
             </div>
             <button id="close-assign-modal" class="btn btn-secondary">Close</button>
+        </div>
+    </div>
+    
+    <!-- Send Invite to Friends Modal -->
+    <div id="send-invite-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Send Server Invite</h3>
+            <p>Select friends to send the invite link to:</p>
+            <div id="invite-friends-list" class="invite-friends-list">
+                <!-- Friends will be listed here -->
+            </div>
+            <div class="modal-actions">
+                <button id="send-selected-invites-btn" class="btn btn-primary">Send Invites</button>
+                <button id="close-send-invite-modal" class="btn btn-secondary">Cancel</button>
+            </div>
         </div>
     </div>
     
