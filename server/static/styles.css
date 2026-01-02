@@ -1339,10 +1339,6 @@ body::before {
     grid-template-columns: repeat(3, 1fr);
 }
 
-.video-grid.grid-4 {
-    grid-template-columns: repeat(2, 1fr);
-}
-
 .video-container {
     position: relative;
     background: #000;

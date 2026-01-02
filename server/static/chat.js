@@ -2835,7 +2835,7 @@
         const videoCount = videoGrid.querySelectorAll('.video-container:not(.screen-share)').length;
         
         // Remove all grid classes
-        videoGrid.classList.remove('grid-2', 'grid-3', 'grid-4');
+        videoGrid.classList.remove('grid-2', 'grid-3');
         
         // Add appropriate grid class based on count
         if (videoCount >= 5) {
