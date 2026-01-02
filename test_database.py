@@ -126,14 +126,40 @@ def test_database():
     assert bob_member['can_create_channel'] == 1, "Permission not updated"
     print("✓ Member permissions updated")
     
-    # Test 13: Persistence check - close and reopen database
-    print("\nTest 13: Testing persistence...")
+    # Test 13: Update notification mode
+    print("\nTest 13: Testing notification mode...")
+    # Default should be 'all'
+    alice = db.get_user("alice")
+    assert alice['notification_mode'] == 'all', "Default notification mode should be 'all'"
+    print("✓ Default notification mode is 'all'")
+    
+    # Update to 'mentions'
+    db.update_notification_mode("alice", "mentions")
+    alice = db.get_user("alice")
+    assert alice['notification_mode'] == 'mentions', "Notification mode not updated to 'mentions'"
+    print("✓ Notification mode updated to 'mentions'")
+    
+    # Update to 'none'
+    db.update_notification_mode("alice", "none")
+    alice = db.get_user("alice")
+    assert alice['notification_mode'] == 'none', "Notification mode not updated to 'none'"
+    print("✓ Notification mode updated to 'none'")
+    
+    # Update back to 'all'
+    db.update_notification_mode("alice", "all")
+    alice = db.get_user("alice")
+    assert alice['notification_mode'] == 'all', "Notification mode not updated back to 'all'"
+    print("✓ Notification mode updated back to 'all'")
+    
+    # Test 14: Persistence check - close and reopen database
+    print("\nTest 14: Testing persistence...")
     del db  # Close database
     db = Database(db_path)  # Reopen
     
     # Verify data persists
     alice = db.get_user("alice")
     assert alice is not None, "User data lost after restart"
+    assert alice['notification_mode'] == 'all', "Notification mode not persisted"
     server = db.get_server("server_1")
     assert server is not None, "Server data lost after restart"
     friends = db.get_friends("alice")

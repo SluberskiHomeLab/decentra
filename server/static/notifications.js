@@ -20,6 +20,8 @@ class NotificationManager {
         
         // Store current username for mention detection
         this.currentUsername = null;
+        // Cache the mention regex for performance
+        this.mentionRegex = null;
     }
 
     async init() {
@@ -41,6 +43,13 @@ class NotificationManager {
     
     setCurrentUsername(username) {
         this.currentUsername = username;
+        // Cache the mention regex when username is set for better performance
+        if (username) {
+            const escapedUsername = username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            this.mentionRegex = new RegExp(`\\b@${escapedUsername}\\b`, 'i');
+        } else {
+            this.mentionRegex = null;
+        }
     }
 
     setNotificationsEnabled(enabled) {
@@ -322,13 +331,10 @@ class NotificationManager {
             return; // No notifications
         }
         
-        // Check if this is a mention using word boundary regex
+        // Check if this is a mention using cached regex
         let isMention = false;
-        if (this.currentUsername) {
-            // Escape special regex characters in username
-            const escapedUsername = this.currentUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const mentionRegex = new RegExp(`\\b@${escapedUsername}\\b`, 'i');
-            isMention = mentionRegex.test(message);
+        if (this.mentionRegex) {
+            isMention = this.mentionRegex.test(message);
         }
         
         // If mode is 'mentions' and this is not a mention, skip notification
