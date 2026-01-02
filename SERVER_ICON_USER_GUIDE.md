@@ -57,7 +57,7 @@
 - Other members can be granted this permission by the owner
 
 ### File Requirements
-- **Supported formats**: PNG, JPG, GIF, WebP
+- **Supported formats**: PNG, JPG, GIF (other image formats are not officially supported)
 - **Maximum size**: 2MB (configurable by admin)
 - **Display size**: 24x24 pixels in server list
 
