@@ -213,6 +213,19 @@ class Database:
                         )
                     ''')
                     
+                    # Add notification_mode column if it doesn't exist (migration)
+                    cursor.execute('''
+                        DO $$ 
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'users' AND column_name = 'notification_mode'
+                            ) THEN
+                                ALTER TABLE users ADD COLUMN notification_mode VARCHAR(50) DEFAULT 'all';
+                            END IF;
+                        END $$;
+                    ''')
+                    
                     conn.commit()
                 
                 # If we get here, connection was successful

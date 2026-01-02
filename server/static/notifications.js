@@ -322,8 +322,12 @@ class NotificationManager {
             return; // No notifications
         }
         
-        // Check if this is a mention
-        const isMention = this.currentUsername && message.includes(`@${this.currentUsername}`);
+        // Check if this is a mention using word boundary regex
+        let isMention = false;
+        if (this.currentUsername) {
+            const mentionRegex = new RegExp(`@${this.currentUsername}\\b`, 'i');
+            isMention = mentionRegex.test(message);
+        }
         
         // If mode is 'mentions' and this is not a mention, skip notification
         if (this.notificationMode === 'mentions' && !isMention) {
