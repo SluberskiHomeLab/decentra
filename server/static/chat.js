@@ -534,6 +534,10 @@
                     updatedServer.icon_type = data.icon_type;
                     updatedServer.icon_data = data.icon_data;
                     updateServersList();
+                    // Show notification only for the current server
+                    if (data.server_id === currentlySelectedServer) {
+                        showNotification('Server icon updated successfully!');
+                    }
                 }
                 break;
                 

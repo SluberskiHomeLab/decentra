@@ -1527,6 +1527,14 @@ async def handler(websocket):
                         server_id = data.get('server_id', '')
                         icon_type = data.get('icon_type', 'emoji')
                         
+                        # Validate icon_type
+                        if icon_type not in ['emoji', 'image']:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid icon type. Must be "emoji" or "image".'
+                            }))
+                            continue
+                        
                         # Verify user has permission to change server icon
                         server = db.get_server(server_id)
                         if not server:
@@ -1550,10 +1558,23 @@ async def handler(websocket):
                         
                         if icon_type == 'emoji':
                             icon = data.get('icon', '🏠').strip()
-                            db.update_server_icon(server_id, icon, 'emoji', None)
+                            if not db.update_server_icon(server_id, icon, 'emoji', None):
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Failed to update server icon'
+                                }))
+                                continue
                         elif icon_type == 'image':
                             # Handle image upload via base64
                             icon_data = data.get('icon_data', '')
+                            
+                            # Validate icon_data is not empty
+                            if not icon_data:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Icon image data is required'
+                                }))
+                                continue
                             
                             # Validate size (base64 is ~33% larger than original)
                             if len(icon_data) > max_file_size * 1.5:
@@ -1563,7 +1584,12 @@ async def handler(websocket):
                                 }))
                                 continue
                             
-                            db.update_server_icon(server_id, None, 'image', icon_data)
+                            if not db.update_server_icon(server_id, None, 'image', icon_data):
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Failed to update server icon'
+                                }))
+                                continue
                         
                         # Get updated server data
                         updated_server = db.get_server(server_id)
