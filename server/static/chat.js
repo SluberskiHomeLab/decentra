@@ -677,6 +677,13 @@
                             if (voiceChat) {
                                 voiceChat.remoteScreenSharing.set(data.username, data.screen_sharing);
                             }
+                            // When screen sharing stops, remove any existing screen share video element
+                            if (!data.screen_sharing) {
+                                const screenShareVideo = document.getElementById(`video-${data.username}`);
+                                if (screenShareVideo) {
+                                    screenShareVideo.remove();
+                                }
+                            }
                             updateVoiceParticipants(voiceMembers[currentKey]);
                         }
                     }
