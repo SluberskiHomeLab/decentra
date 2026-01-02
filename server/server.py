@@ -1533,6 +1533,11 @@ async def handler(websocket):
                                 'type': 'notification_mode_updated',
                                 'notification_mode': notification_mode
                             }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'User not found'
+                            }))
                     
                     elif data.get('type') == 'voice_video':
                         # Toggle video state
