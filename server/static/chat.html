@@ -446,6 +446,42 @@
         </div>
     </div>
     
+    <!-- Screen Share Settings Modal -->
+    <div id="screen-share-settings-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Screen Share Settings</h3>
+            
+            <div class="form-group">
+                <label for="screen-resolution-select">Resolution</label>
+                <select id="screen-resolution-select" class="device-select">
+                    <option value="1080">1920x1080 (1080p)</option>
+                    <option value="720" selected>1280x720 (720p)</option>
+                    <option value="480">854x480 (480p)</option>
+                </select>
+                <p style="font-size: 12px; color: #b9bbbe; margin-top: 5px;">
+                    Higher resolutions require more bandwidth
+                </p>
+            </div>
+            
+            <div class="form-group">
+                <label for="screen-framerate-select">Frame Rate</label>
+                <select id="screen-framerate-select" class="device-select">
+                    <option value="60">60 FPS</option>
+                    <option value="30" selected>30 FPS</option>
+                    <option value="15">15 FPS</option>
+                </select>
+                <p style="font-size: 12px; color: #b9bbbe; margin-top: 5px;">
+                    Higher frame rates provide smoother motion but use more bandwidth
+                </p>
+            </div>
+            
+            <div class="button-group">
+                <button id="start-screen-share-btn" class="btn btn-primary">Share Screen</button>
+                <button id="cancel-screen-share-btn" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+    
     <!-- Roles Management Modal -->
     <div id="roles-modal" class="modal hidden">
         <div class="modal-content modal-content-large">

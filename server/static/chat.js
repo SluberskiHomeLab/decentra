@@ -147,6 +147,13 @@
     const remoteVideos = document.getElementById('remote-videos');
     const closeParticipantsBtn = document.getElementById('close-participants-btn');
     
+    // Screen share settings modal
+    const screenShareSettingsModal = document.getElementById('screen-share-settings-modal');
+    const screenResolutionSelect = document.getElementById('screen-resolution-select');
+    const screenFramerateSelect = document.getElementById('screen-framerate-select');
+    const startScreenShareBtn = document.getElementById('start-screen-share-btn');
+    const cancelScreenShareBtn = document.getElementById('cancel-screen-share-btn');
+    
     // Avatar and device modals
     const avatarSettingsModal = document.getElementById('avatar-settings-modal');
     const avatarPicker = document.getElementById('avatar-picker');
@@ -177,6 +184,9 @@
     const rightSidebar = document.getElementById('right-sidebar');
     const toggleMembersBtn = document.getElementById('toggle-members-btn');
     const serverMembersDisplay = document.getElementById('server-members-display');
+    
+    // Main container for layout changes
+    const mainContainer = document.querySelector('.main-container');
     
     // Mention autocomplete elements
     const mentionAutocomplete = document.getElementById('mention-autocomplete');
@@ -2089,10 +2099,37 @@
     function showVoiceControls(statusText) {
         voiceStatusText.textContent = statusText;
         voiceControls.classList.remove('hidden');
+        
+        // Apply layout changes for call UI
+        mainContainer.classList.add('in-voice-call');
+        voiceParticipants.classList.add('active');
+        voiceParticipants.classList.remove('hidden');
+        
+        // Collapse members sidebar if visible
+        if (!rightSidebar.classList.contains('hidden')) {
+            rightSidebar.classList.add('collapsed');
+            toggleMembersBtn.textContent = '▶';
+            toggleMembersBtn.title = 'Expand';
+        }
     }
     
     function hideVoiceControls() {
         voiceControls.classList.add('hidden');
+        
+        // Remove layout changes
+        mainContainer.classList.remove('in-voice-call');
+        voiceParticipants.classList.remove('active');
+        voiceParticipants.classList.add('hidden');
+        
+        // Restore members sidebar if it was visible
+        if (currentlySelectedServer && !rightSidebar.classList.contains('hidden')) {
+            rightSidebar.classList.remove('collapsed');
+            toggleMembersBtn.textContent = '◀';
+            toggleMembersBtn.title = 'Collapse';
+        }
+        
+        // Clear video elements
+        remoteVideos.innerHTML = '';
     }
     
     // Voice control event listeners
@@ -2114,9 +2151,15 @@
     
     screenShareBtn.addEventListener('click', async () => {
         if (voiceChat) {
-            const sharing = await voiceChat.toggleScreenShare();
-            screenShareBtn.textContent = sharing ? '🖥️✓' : '🖥️';
-            screenShareBtn.title = sharing ? 'Stop Sharing' : 'Share Screen';
+            if (voiceChat.isScreenSharing) {
+                // Stop sharing
+                const sharing = await voiceChat.toggleScreenShare();
+                screenShareBtn.textContent = sharing ? '🖥️✓' : '🖥️';
+                screenShareBtn.title = sharing ? 'Stop Sharing' : 'Share Screen';
+            } else {
+                // Show settings modal before starting
+                screenShareSettingsModal.classList.remove('hidden');
+            }
         }
     });
     
@@ -2447,9 +2490,40 @@
         }
     });
     
+    // Screen share settings modal handlers
+    startScreenShareBtn.addEventListener('click', async () => {
+        if (voiceChat) {
+            const resolution = screenResolutionSelect.value;
+            const framerate = screenFramerateSelect.value;
+            
+            // Store settings in voiceChat
+            voiceChat.screenShareResolution = parseInt(resolution);
+            voiceChat.screenShareFramerate = parseInt(framerate);
+            
+            // Start screen sharing with selected settings
+            const sharing = await voiceChat.toggleScreenShare(resolution, framerate);
+            screenShareBtn.textContent = sharing ? '🖥️✓' : '🖥️';
+            screenShareBtn.title = sharing ? 'Stop Sharing' : 'Share Screen';
+            
+            // Close modal
+            screenShareSettingsModal.classList.add('hidden');
+        }
+    });
+    
+    cancelScreenShareBtn.addEventListener('click', () => {
+        screenShareSettingsModal.classList.add('hidden');
+    });
+    
+    screenShareSettingsModal.addEventListener('click', (e) => {
+        if (e.target === screenShareSettingsModal) {
+            screenShareSettingsModal.classList.add('hidden');
+        }
+    });
+    
     // Close voice participants panel
     closeParticipantsBtn.addEventListener('click', () => {
         voiceParticipants.classList.add('hidden');
+        voiceParticipants.classList.remove('active');
     });
     
     // Populate device selects
@@ -2578,7 +2652,7 @@
         }
     });
     // Handle remote video tracks
-    window.onRemoteVideoTrack = function(username, stream) {
+    window.onRemoteVideoTrack = function(username, stream, isScreenShare = false) {
         // Remove existing video for this user
         const existingVideo = document.getElementById(`video-${username}`);
         if (existingVideo) {
@@ -2590,6 +2664,11 @@
         videoContainer.className = 'remote-video-container';
         videoContainer.id = `video-${username}`;
         
+        // Mark as screen share for priority display
+        if (isScreenShare) {
+            videoContainer.classList.add('screen-share');
+        }
+        
         const video = document.createElement('video');
         video.srcObject = stream;
         video.autoplay = true;
@@ -2597,11 +2676,23 @@
         
         const label = document.createElement('div');
         label.className = 'remote-video-label';
-        label.textContent = username;
+        label.textContent = isScreenShare ? `${username} (Screen)` : username;
         
         videoContainer.appendChild(video);
         videoContainer.appendChild(label);
-        remoteVideos.appendChild(videoContainer);
+        
+        // Insert screen shares at the beginning for priority
+        if (isScreenShare) {
+            remoteVideos.insertBefore(videoContainer, remoteVideos.firstChild);
+        } else {
+            remoteVideos.appendChild(videoContainer);
+        }
+        
+        // Make sure voice participants panel is visible
+        if (!voiceParticipants.classList.contains('active')) {
+            voiceParticipants.classList.add('active');
+            voiceParticipants.classList.remove('hidden');
+        }
     };
     
     // Scroll to bottom of messages
