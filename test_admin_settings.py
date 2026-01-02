@@ -4,7 +4,6 @@ Test script to verify admin settings can be saved without errors.
 This test validates the fix for the admin settings UI database schema mismatch.
 """
 
-import os
 import sys
 
 
