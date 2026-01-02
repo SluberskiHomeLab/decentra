@@ -1835,6 +1835,14 @@
             serverIconPreview.textContent = '📁 Choose an image';
             serverIconFileInput.value = '';
         };
+        reader.onerror = (e) => {
+            console.error('Failed to read server icon file:', reader.error || e);
+            showNotification('Failed to read server icon file. Please try again.');
+            // Reset file input so the user can select a file again
+            selectedServerIconFile = null;
+            serverIconPreview.textContent = '📁 Choose an image';
+            serverIconFileInput.value = '';
+        };
         reader.readAsDataURL(selectedServerIconFile);
     });
     
