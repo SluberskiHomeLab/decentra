@@ -38,6 +38,7 @@
                 <button id="user-menu-btn" class="btn btn-small btn-icon" title="Menu">⚙</button>
                 <div id="user-menu" class="user-menu hidden">
                     <button id="menu-avatar-btn" class="menu-item">Set Avatar</button>
+                    <button id="menu-notifications-btn" class="menu-item">Notification Settings</button>
                     <button id="menu-friends-btn" class="menu-item">Friends</button>
                     <button id="menu-create-server-btn" class="menu-item">Create Server</button>
                     <button id="menu-join-server-btn" class="menu-item">Join Server</button>
@@ -391,6 +392,55 @@
         </div>
     </div>
     
+    <!-- Notification Settings Modal -->
+    <div id="notification-settings-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Notification Settings</h3>
+            
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" id="enable-notifications" checked>
+                    Enable Browser Notifications
+                </label>
+                <p style="font-size: 12px; color: #b9bbbe; margin-top: 5px;">
+                    Show desktop notifications for new messages and calls
+                </p>
+            </div>
+            
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" id="enable-notification-sounds" checked>
+                    Enable Notification Sounds
+                </label>
+                <p style="font-size: 12px; color: #b9bbbe; margin-top: 5px;">
+                    Play sounds when receiving messages and calls
+                </p>
+            </div>
+            
+            <div class="form-group">
+                <label for="message-sound-select">Message Notification Sound</label>
+                <select id="message-sound-select" class="device-select">
+                    <option value="soft-ping">Soft Ping</option>
+                    <option value="gentle-chime">Gentle Chime</option>
+                    <option value="subtle-pop">Subtle Pop</option>
+                </select>
+                <button id="test-message-sound-btn" class="btn btn-small" style="margin-top: 5px;">Test Sound</button>
+            </div>
+            
+            <div class="form-group">
+                <label for="call-sound-select">Call Notification Sound</label>
+                <select id="call-sound-select" class="device-select">
+                    <option value="classic-ring">Classic Ring</option>
+                    <option value="modern-tone">Modern Tone</option>
+                    <option value="upbeat-call">Upbeat Call</option>
+                </select>
+                <button id="test-call-sound-btn" class="btn btn-small" style="margin-top: 5px;">Test Sound</button>
+            </div>
+            
+            <button id="close-notification-settings-modal" class="btn btn-secondary">Close</button>
+        </div>
+    </div>
+    
     <!-- Roles Management Modal -->
     <div id="roles-modal" class="modal hidden">
         <div class="modal-content modal-content-large">
@@ -533,6 +583,7 @@
         </div>
     </div>
     
+    <script src="/static/notifications.js"></script>
     <script src="/static/voice.js"></script>
     <script src="/static/chat.js"></script>
 </body>

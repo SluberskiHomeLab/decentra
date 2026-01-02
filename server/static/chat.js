@@ -162,6 +162,17 @@
     const testMicrophoneBtn = document.getElementById('test-microphone-btn');
     const micTestStatus = document.getElementById('mic-test-status');
     
+    // Notification settings elements
+    const notificationSettingsModal = document.getElementById('notification-settings-modal');
+    const menuNotificationsBtn = document.getElementById('menu-notifications-btn');
+    const closeNotificationSettingsModalBtn = document.getElementById('close-notification-settings-modal');
+    const enableNotificationsCheckbox = document.getElementById('enable-notifications');
+    const enableNotificationSoundsCheckbox = document.getElementById('enable-notification-sounds');
+    const messageSoundSelect = document.getElementById('message-sound-select');
+    const callSoundSelect = document.getElementById('call-sound-select');
+    const testMessageSoundBtn = document.getElementById('test-message-sound-btn');
+    const testCallSoundBtn = document.getElementById('test-call-sound-btn');
+    
     // Right sidebar (members list) elements
     const rightSidebar = document.getElementById('right-sidebar');
     const toggleMembersBtn = document.getElementById('toggle-members-btn');
@@ -176,6 +187,13 @@
     let serverRoles = [];
     let currentEditingRole = null;
     let isCreatingNewRole = false;
+    
+    // Initialize notification manager
+    let notificationManager = null;
+    if (window.NotificationManager) {
+        notificationManager = new NotificationManager();
+        notificationManager.init();
+    }
     
     // Connect to WebSocket
     function connect() {
@@ -321,12 +339,19 @@
                 console.log('Received message:', data);
                 console.log('Current context:', currentContext);
                 console.log('Is for current context:', isMessageForCurrentContext(data));
+                
                 if (isMessageForCurrentContext(data)) {
                     console.log('Appending message to chat');
                     appendMessage(data);
                     scrollToBottom();
                 } else {
                     console.log('Message not for current context, ignoring');
+                }
+                
+                // Trigger notification if message is from another user
+                // The notificationManager will handle visibility checks
+                if (data.username && data.username !== username && notificationManager) {
+                    notificationManager.notifyNewMessage(data.username, data.content || '');
                 }
                 break;
                 
@@ -1841,6 +1866,11 @@
         incomingCallFrom = fromUsername;
         callerNameDisplay.textContent = `${fromUsername} is calling you...`;
         incomingCallModal.classList.remove('hidden');
+        
+        // Trigger notification
+        if (notificationManager) {
+            notificationManager.notifyIncomingCall(fromUsername);
+        }
     }
     
     function showVoiceControls(statusText) {
@@ -1906,6 +1936,10 @@
             showVoiceControls(`In call with ${incomingCallFrom}`);
             incomingCallModal.classList.add('hidden');
             incomingCallFrom = null;
+            // Stop call notification sound
+            if (notificationManager) {
+                notificationManager.stopCallSound();
+            }
         }
     });
     
@@ -1914,6 +1948,10 @@
             voiceChat.rejectDirectCall(incomingCallFrom);
             incomingCallModal.classList.add('hidden');
             incomingCallFrom = null;
+            // Stop call notification sound
+            if (notificationManager) {
+                notificationManager.stopCallSound();
+            }
         }
     });
     
@@ -1925,6 +1963,10 @@
             }
             incomingCallModal.classList.add('hidden');
             incomingCallFrom = null;
+            // Stop call notification sound
+            if (notificationManager) {
+                notificationManager.stopCallSound();
+            }
         }
     });
     
@@ -2122,6 +2164,73 @@
     cameraSelect.addEventListener('change', async (e) => {
         if (voiceChat) {
             await voiceChat.setCamera(e.target.value);
+        }
+    });
+    
+    // Notification settings
+    menuNotificationsBtn.addEventListener('click', () => {
+        userMenu.classList.add('hidden');
+        notificationSettingsModal.classList.remove('hidden');
+        
+        // Load current settings
+        if (notificationManager) {
+            enableNotificationsCheckbox.checked = notificationManager.notificationsEnabled;
+            enableNotificationSoundsCheckbox.checked = notificationManager.soundsEnabled;
+            messageSoundSelect.value = notificationManager.messageSound;
+            callSoundSelect.value = notificationManager.callSound;
+        }
+    });
+    
+    closeNotificationSettingsModalBtn.addEventListener('click', () => {
+        notificationSettingsModal.classList.add('hidden');
+    });
+    
+    notificationSettingsModal.addEventListener('click', (e) => {
+        if (e.target === notificationSettingsModal) {
+            notificationSettingsModal.classList.add('hidden');
+        }
+    });
+    
+    enableNotificationsCheckbox.addEventListener('change', (e) => {
+        if (notificationManager) {
+            notificationManager.setNotificationsEnabled(e.target.checked);
+        }
+    });
+    
+    enableNotificationSoundsCheckbox.addEventListener('change', (e) => {
+        if (notificationManager) {
+            notificationManager.setSoundsEnabled(e.target.checked);
+        }
+    });
+    
+    messageSoundSelect.addEventListener('change', (e) => {
+        if (notificationManager) {
+            notificationManager.setMessageSound(e.target.value);
+        }
+    });
+    
+    callSoundSelect.addEventListener('change', (e) => {
+        if (notificationManager) {
+            notificationManager.setCallSound(e.target.value);
+        }
+    });
+    
+    testMessageSoundBtn.addEventListener('click', () => {
+        if (notificationManager) {
+            notificationManager.playSound('message', messageSoundSelect.value);
+        }
+    });
+    
+    testCallSoundBtn.addEventListener('click', () => {
+        if (notificationManager) {
+            const CALL_SOUND_TEST_DURATION = 3000; // 3 seconds
+            notificationManager.playSound('call', callSoundSelect.value);
+            // Stop the call sound after a short duration for testing
+            setTimeout(() => {
+                if (notificationManager) {
+                    notificationManager.stopCallSound();
+                }
+            }, CALL_SOUND_TEST_DURATION);
         }
     });
     
