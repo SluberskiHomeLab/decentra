@@ -1569,6 +1569,9 @@
             return;
         }
         
+        // Close server settings modal before showing channel creation modal
+        serverSettingsModal.classList.add('hidden');
+        
         createTextChannelModal.classList.remove('hidden');
         textChannelNameInput.focus();
     });
@@ -1613,6 +1616,9 @@
             alert('You do not have permission to create channels');
             return;
         }
+        
+        // Close server settings modal before showing channel creation modal
+        serverSettingsModal.classList.add('hidden');
         
         createVoiceChannelModal.classList.remove('hidden');
         voiceChannelNameInput.focus();
