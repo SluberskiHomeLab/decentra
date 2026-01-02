@@ -1772,14 +1772,20 @@
             const emoji = option.dataset.emoji;
             if (!currentlySelectedServer) return;
             
-            ws.send(JSON.stringify({
-                type: 'set_server_icon',
-                server_id: currentlySelectedServer,
-                icon_type: 'emoji',
-                icon: emoji
-            }));
-            
-            showNotification('Server icon updated!');
+            try {
+                ws.send(JSON.stringify({
+                    type: 'set_server_icon',
+                    server_id: currentlySelectedServer,
+                    icon_type: 'emoji',
+                    icon: emoji
+                }));
+                
+                // Inform the user that the update has been requested; actual success depends on server confirmation.
+                showNotification('Server icon update requested. Changes will appear once confirmed.');
+            } catch (err) {
+                console.error('Failed to send server icon update:', err);
+                showNotification('Failed to update server icon. Please try again.');
+            }
         });
     });
     
