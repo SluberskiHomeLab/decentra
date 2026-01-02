@@ -2684,9 +2684,15 @@
     });
     
     // Maximize/minimize video functionality
+    const MAXIMIZE_ICON = '⛶';
     let currentMaximizedVideo = null;
     
     function maximizeVideo(videoElement, username, isScreenShare) {
+        // Prevent multiple maximizations
+        if (currentMaximizedVideo) {
+            minimizeVideo();
+        }
+        
         // Clone the video element
         const clonedVideo = videoElement.cloneNode(true);
         clonedVideo.srcObject = videoElement.srcObject;
@@ -2746,7 +2752,7 @@
         
         const maximizeBtn = document.createElement('button');
         maximizeBtn.className = 'maximize-btn';
-        maximizeBtn.textContent = '⛶';
+        maximizeBtn.textContent = MAXIMIZE_ICON;
         maximizeBtn.title = 'Maximize';
         maximizeBtn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -2804,7 +2810,7 @@
             
             const maximizeBtn = document.createElement('button');
             maximizeBtn.className = 'maximize-btn';
-            maximizeBtn.textContent = '⛶';
+            maximizeBtn.textContent = MAXIMIZE_ICON;
             maximizeBtn.title = 'Maximize';
             maximizeBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
