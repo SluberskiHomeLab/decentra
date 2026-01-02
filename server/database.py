@@ -424,15 +424,24 @@ class Database:
                 UPDATE servers SET name = %s WHERE server_id = %s
             ''', (name, server_id))
     
-    def update_server_icon(self, server_id: str, icon: str, icon_type: str, icon_data: Optional[str] = None):
-        """Update server icon."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                UPDATE servers 
-                SET icon = %s, icon_type = %s, icon_data = %s
-                WHERE server_id = %s
-            ''', (icon, icon_type, icon_data, server_id))
+    def update_server_icon(self, server_id: str, icon: str, icon_type: str, icon_data: Optional[str] = None) -> bool:
+        """Update server icon.
+        
+        Returns:
+            bool: True if the server was updated, False if no rows were affected
+            or if a database error occurred.
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE servers 
+                    SET icon = %s, icon_type = %s, icon_data = %s
+                    WHERE server_id = %s
+                ''', (icon, icon_type, icon_data, server_id))
+                return cursor.rowcount > 0
+        except psycopg2.Error:
+            return False
     
     # Channel operations
     def create_channel(self, channel_id: str, server_id: str, name: str, channel_type: str = 'text') -> bool:
