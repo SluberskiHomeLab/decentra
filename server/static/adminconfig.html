@@ -186,8 +186,8 @@
             
             <div class="setting-item">
                 <label for="session-timeout">Session Timeout (minutes)</label>
-                <div class="description">How long users stay logged in (0 = no timeout)</div>
-                <input type="number" id="session-timeout" min="0" max="10080" value="0" placeholder="0 (disabled)">
+                <div class="description">How long users stay logged in (0 = no timeout) - <strong>Not yet implemented</strong></div>
+                <input type="number" id="session-timeout" min="0" max="10080" value="0" placeholder="0 (disabled)" disabled>
             </div>
         </div>
         
@@ -196,15 +196,15 @@
             
             <div class="setting-item">
                 <label for="max-file-size">Maximum File Upload Size (MB)</label>
-                <div class="description">Maximum size for file uploads (future feature)</div>
+                <div class="description">Maximum size for file uploads</div>
                 <input type="number" id="max-file-size" min="1" max="100" value="10">
             </div>
             
             <div class="setting-item">
                 <label for="allow-embeds">Allow URL Embeds</label>
                 <div class="checkbox-wrapper">
-                    <input type="checkbox" id="allow-embeds" checked>
-                    <span class="description" style="margin: 0;">Automatically embed images and videos from URLs</span>
+                    <input type="checkbox" id="allow-embeds" checked disabled>
+                    <span class="description" style="margin: 0;">Automatically embed images and videos from URLs - <strong>Not yet implemented</strong></span>
                 </div>
             </div>
         </div>
@@ -286,11 +286,9 @@
             
             document.getElementById('server-name').value = settings.server_name || 'Decentra Chat';
             document.getElementById('max-message-length').value = settings.max_message_length || 2000;
-            document.getElementById('allow-registrations').checked = settings.allow_registrations !== false;
+            document.getElementById('allow-registrations').checked = settings.allow_registration !== false;
             document.getElementById('require-invite').checked = settings.require_invite !== false;
-            document.getElementById('session-timeout').value = settings.session_timeout || 0;
-            document.getElementById('max-file-size').value = settings.max_file_size || 10;
-            document.getElementById('allow-embeds').checked = settings.allow_embeds !== false;
+            document.getElementById('max-file-size').value = settings.max_file_size_mb || 10;
             document.getElementById('max-servers-per-user').value = settings.max_servers_per_user || 0;
             document.getElementById('max-channels-per-server').value = settings.max_channels_per_server || 0;
         }
@@ -310,11 +308,9 @@
             const settings = {
                 server_name: document.getElementById('server-name').value,
                 max_message_length: parseInt(document.getElementById('max-message-length').value),
-                allow_registrations: document.getElementById('allow-registrations').checked,
+                allow_registration: document.getElementById('allow-registrations').checked,
                 require_invite: document.getElementById('require-invite').checked,
-                session_timeout: parseInt(document.getElementById('session-timeout').value),
-                max_file_size: parseInt(document.getElementById('max-file-size').value),
-                allow_embeds: document.getElementById('allow-embeds').checked,
+                max_file_size_mb: parseInt(document.getElementById('max-file-size').value),
                 max_servers_per_user: parseInt(document.getElementById('max-servers-per-user').value),
                 max_channels_per_server: parseInt(document.getElementById('max-channels-per-server').value)
             };
