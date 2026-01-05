@@ -58,7 +58,9 @@ class Database:
                             avatar VARCHAR(255) DEFAULT '👤',
                             avatar_type VARCHAR(50) DEFAULT 'emoji',
                             avatar_data TEXT,
-                            notification_mode VARCHAR(50) DEFAULT 'all'
+                            notification_mode VARCHAR(50) DEFAULT 'all',
+                            email VARCHAR(255),
+                            email_verified BOOLEAN DEFAULT FALSE
                         )
                     ''')
                     
@@ -217,6 +219,18 @@ class Database:
                         )
                     ''')
                     
+                    # Email verification codes table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS email_verification_codes (
+                            email VARCHAR(255) NOT NULL,
+                            code VARCHAR(10) NOT NULL,
+                            username VARCHAR(255) NOT NULL,
+                            created_at TIMESTAMP NOT NULL,
+                            expires_at TIMESTAMP NOT NULL,
+                            PRIMARY KEY (email, username)
+                        )
+                    ''')
+                    
                     # Add notification_mode column if it doesn't exist (migration)
                     cursor.execute('''
                         DO $$ 
@@ -226,6 +240,25 @@ class Database:
                                 WHERE table_name = 'users' AND column_name = 'notification_mode'
                             ) THEN
                                 ALTER TABLE users ADD COLUMN notification_mode VARCHAR(50) DEFAULT 'all';
+                            END IF;
+                        END $$;
+                    ''')
+                    
+                    # Add email columns if they don't exist (migration)
+                    cursor.execute('''
+                        DO $$ 
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'users' AND column_name = 'email'
+                            ) THEN
+                                ALTER TABLE users ADD COLUMN email VARCHAR(255);
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'users' AND column_name = 'email_verified'
+                            ) THEN
+                                ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT FALSE;
                             END IF;
                         END $$;
                     ''')
@@ -330,15 +363,15 @@ class Database:
                 raise
     
     # User operations
-    def create_user(self, username: str, password_hash: str) -> bool:
+    def create_user(self, username: str, password_hash: str, email: str = None, email_verified: bool = False) -> bool:
         """Create a new user."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT INTO users (username, password_hash, created_at)
-                    VALUES (%s, %s, %s)
-                ''', (username, password_hash, datetime.now()))
+                    INSERT INTO users (username, password_hash, created_at, email, email_verified)
+                    VALUES (%s, %s, %s, %s, %s)
+                ''', (username, password_hash, datetime.now(), email, email_verified))
                 return True
         except psycopg2.IntegrityError:
             return False
@@ -348,6 +381,16 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM users WHERE username = %s', (username,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+    
+    def get_user_by_email(self, email: str) -> Optional[Dict]:
+        """Get user data by email address."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM users WHERE email = %s', (email,))
             row = cursor.fetchone()
             if row:
                 return dict(row)
@@ -379,6 +422,79 @@ class Database:
                 SET notification_mode = %s
                 WHERE username = %s
             ''', (notification_mode, username))
+    
+    def verify_user_email(self, username: str) -> bool:
+        """Mark user's email as verified."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE users 
+                    SET email_verified = TRUE
+                    WHERE username = %s
+                ''', (username,))
+                return cursor.rowcount > 0
+        except Exception:
+            return False
+    
+    def create_email_verification_code(self, email: str, username: str, code: str, expires_at: datetime) -> bool:
+        """Create or update an email verification code."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # Delete any existing code for this email/username combination
+                cursor.execute('''
+                    DELETE FROM email_verification_codes 
+                    WHERE email = %s AND username = %s
+                ''', (email, username))
+                
+                # Insert new code
+                cursor.execute('''
+                    INSERT INTO email_verification_codes (email, code, username, created_at, expires_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                ''', (email, code, username, datetime.now(), expires_at))
+                return True
+        except Exception:
+            return False
+    
+    def get_email_verification_code(self, email: str, username: str) -> Optional[Dict]:
+        """Get email verification code for a user."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM email_verification_codes 
+                WHERE email = %s AND username = %s AND expires_at > %s
+            ''', (email, username, datetime.now()))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+    
+    def delete_email_verification_code(self, email: str, username: str) -> bool:
+        """Delete an email verification code."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    DELETE FROM email_verification_codes 
+                    WHERE email = %s AND username = %s
+                ''', (email, username))
+                return True
+        except Exception:
+            return False
+    
+    def cleanup_expired_verification_codes(self):
+        """Remove expired verification codes."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    DELETE FROM email_verification_codes 
+                    WHERE expires_at <= %s
+                ''', (datetime.now(),))
+        except Exception as e:
+            # Log and suppress cleanup errors to avoid impacting callers
+            print(f"Error cleaning up expired verification codes: {e}")
     
     def get_first_user(self) -> Optional[str]:
         """Get the first user (admin) username."""

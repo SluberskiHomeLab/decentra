@@ -3,13 +3,24 @@
     console.log('chat.js loaded and executing');
     // Check if user is authenticated
     const username = sessionStorage.getItem('username');
-    const password = sessionStorage.getItem('password');
     const authMode = sessionStorage.getItem('authMode');
     const inviteCode = sessionStorage.getItem('inviteCode');
+    const email = sessionStorage.getItem('email');
+    const verificationCode = sessionStorage.getItem('verificationCode');
     
-    if (!username || !password || !authMode) {
-        window.location.href = '/static/index.html';
-        return;
+    // For verify_email mode, we only need username and verification code
+    if (authMode === 'verify_email') {
+        if (!username || !verificationCode) {
+            window.location.href = '/static/index.html';
+            return;
+        }
+    } else {
+        // For login and signup modes, we need password
+        const password = sessionStorage.getItem('password');
+        if (!username || !password || !authMode) {
+            window.location.href = '/static/index.html';
+            return;
+        }
     }
     
     // Update current user display
@@ -290,12 +301,18 @@
     function authenticate() {
         const authData = {
             type: authMode,
-            username: username,
-            password: password
+            username: username
         };
         
         if (authMode === 'signup') {
+            authData.password = sessionStorage.getItem('password');
+            authData.email = email || '';
             authData.invite_code = inviteCode || '';
+        } else if (authMode === 'verify_email') {
+            authData.code = verificationCode;
+        } else {
+            // login mode
+            authData.password = sessionStorage.getItem('password');
         }
         
         ws.send(JSON.stringify(authData));
@@ -314,6 +331,8 @@
                 // sessionStorage.removeItem('password');
                 // sessionStorage.removeItem('authMode');
                 sessionStorage.removeItem('inviteCode');
+                sessionStorage.removeItem('email');
+                sessionStorage.removeItem('verificationCode');
                 // Initialize voice chat
                 voiceChat = new VoiceChat(ws, username);
                 // Check if user is admin
@@ -324,6 +343,17 @@
                 authenticated = false;
                 alert('Authentication failed: ' + data.message);
                 logout();
+                break;
+                
+            case 'verification_required':
+                // Redirect back to login page to enter verification code
+                alert(data.message + '. Please check your email and enter the verification code.');
+                // Store username for verification flow
+                sessionStorage.setItem('pendingUsername', username);
+                sessionStorage.removeItem('password');
+                sessionStorage.removeItem('email');
+                sessionStorage.removeItem('inviteCode');
+                window.location.href = '/static/index.html?verify=true';
                 break;
                 
             case 'init':

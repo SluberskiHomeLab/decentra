@@ -25,9 +25,20 @@
                     <input type="password" id="password" name="password" required autocomplete="current-password">
                 </div>
                 
+                <div class="form-group" id="email-group" style="display: none;">
+                    <label for="email">Email</label>
+                    <input type="email" id="email" name="email" autocomplete="email">
+                </div>
+                
                 <div class="form-group" id="invite-group" style="display: none;">
                     <label for="invite-code">Invite Code (leave empty if first user)</label>
                     <input type="text" id="invite-code" name="invite-code" autocomplete="off">
+                </div>
+                
+                <div class="form-group" id="verification-group" style="display: none;">
+                    <label for="verification-code">Verification Code</label>
+                    <input type="text" id="verification-code" name="verification-code" autocomplete="off" maxlength="6" pattern="[0-9]{6}">
+                    <p class="help-text">Enter the 6-digit code sent to your email</p>
                 </div>
                 
                 <div class="button-group">

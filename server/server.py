@@ -7,11 +7,12 @@ A simple WebSocket-based chat server for decentralized communication.
 import asyncio
 import json
 import websockets
-from datetime import datetime
+from datetime import datetime, timedelta
 import bcrypt
 import secrets
 import string
 import random
+import re
 from aiohttp import web
 import os
 import base64
@@ -22,6 +23,12 @@ from email_utils import EmailSender
 
 # Initialize database
 db = Database()
+
+# Store pending signups temporarily (in-memory)
+# Format: {username: {password_hash, email, invite_code, inviter_username}}
+# NOTE: This is an in-memory store and will be cleared on server restart.
+# For production environments with multiple server instances, consider using Redis or a database table.
+pending_signups = {}
 
 # Store connected clients: {websocket: username}
 clients = {}
@@ -63,6 +70,13 @@ def serialize_role(role):
 def verify_password(password, password_hash):
     """Verify a password against its hash."""
     return bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
+
+
+def is_valid_email(email):
+    """Validate email address format using regex."""
+    # Basic email format check (restrictive subset of RFC 5322; does not support all valid addresses)
+    email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(email_pattern, email) is not None
 
 
 def generate_invite_code():
@@ -275,6 +289,7 @@ async def handler(websocket):
             if auth_data.get('type') == 'signup':
                 username = auth_data.get('username', '').strip()
                 password = auth_data.get('password', '')
+                email = auth_data.get('email', '').strip()
                 invite_code = auth_data.get('invite_code', '').strip()
                 
                 # Get admin settings
@@ -291,10 +306,18 @@ async def handler(websocket):
                     continue
                 
                 # Validation
-                if not username or not password:
+                if not username or not password or not email:
                     await websocket.send_str(json.dumps({
                         'type': 'auth_error',
-                        'message': 'Username and password are required'
+                        'message': 'Username, password, and email are required'
+                    }))
+                    continue
+                
+                # Email validation
+                if not is_valid_email(email):
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'Invalid email address format'
                     }))
                     continue
                 
@@ -302,6 +325,14 @@ async def handler(websocket):
                     await websocket.send_str(json.dumps({
                         'type': 'auth_error',
                         'message': 'Username already exists'
+                    }))
+                    continue
+                
+                # Check if email is already registered
+                if db.get_user_by_email(email):
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'Email address already registered'
                     }))
                     continue
                 
@@ -317,23 +348,117 @@ async def handler(websocket):
                     }))
                     continue
                 
-                # Create user account in database
-                if not db.create_user(username, hash_password(password)):
+                # Generate verification code (6-digit number)
+                verification_code = ''.join(secrets.choice(string.digits) for _ in range(6))
+                
+                # Store verification code with 15 minute expiration
+                expires_at = datetime.now() + timedelta(minutes=15)
+                if not db.create_email_verification_code(email, username, verification_code, expires_at):
                     await websocket.send_str(json.dumps({
                         'type': 'auth_error',
-                        'message': 'Failed to create account'
+                        'message': 'Failed to generate verification code'
                     }))
                     continue
                 
+                # Send verification email
+                email_sender = EmailSender(admin_settings)
+                if email_sender.is_configured():
+                    if not email_sender.send_verification_email(email, username, verification_code):
+                        await websocket.send_str(json.dumps({
+                            'type': 'auth_error',
+                            'message': 'Failed to send verification email. Please check SMTP settings.'
+                        }))
+                        db.delete_email_verification_code(email, username)
+                        continue
+                    
+                    # Check for race condition - prevent overwriting existing pending signup
+                    if username in pending_signups:
+                        await websocket.send_str(json.dumps({
+                            'type': 'auth_error',
+                            'message': 'A signup is already in progress for this username. Please wait or use a different username.'
+                        }))
+                        db.delete_email_verification_code(email, username)
+                        continue
+                    
+                    # Store signup data temporarily for verification step
+                    inviter_username = invite_data['creator'] if invite_data else None
+                    pending_signups[username] = {
+                        'password_hash': hash_password(password),
+                        'email': email,
+                        'invite_code': invite_code,
+                        'inviter_username': inviter_username
+                    }
+                    
+                    await websocket.send_str(json.dumps({
+                        'type': 'verification_required',
+                        'message': 'Verification code sent to your email'
+                    }))
+                else:
+                    # SMTP not configured, skip verification
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'Email verification is required but SMTP is not configured. Please contact the administrator.'
+                    }))
+                continue
+            
+            # Handle email verification
+            elif auth_data.get('type') == 'verify_email':
+                username = auth_data.get('username', '').strip()
+                code = auth_data.get('code', '').strip()
+                
+                # Validate verification code format (must be exactly 6 digits)
+                if not code or not code.isdigit() or len(code) != 6:
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'Invalid verification code format'
+                    }))
+                    continue
+                
+                # Check if we have pending signup data
+                if username not in pending_signups:
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'No pending signup found. Please start signup again.'
+                    }))
+                    continue
+                
+                pending = pending_signups[username]
+                email = pending['email']
+                
+                # Verify the code
+                verification_data = db.get_email_verification_code(email, username)
+                if not verification_data or verification_data['code'] != code:
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'Invalid or expired verification code'
+                    }))
+                    continue
+                
+                # Create user account in database
+                if not db.create_user(username, pending['password_hash'], email, email_verified=True):
+                    # Clean up so the user can restart signup if account creation fails
+                    db.delete_email_verification_code(email, username)
+                    if username in pending_signups:
+                        del pending_signups[username]
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'Failed to create account. Please restart signup.'
+                    }))
+                    continue
+                
+                # Clean up verification code and pending signup
+                db.delete_email_verification_code(email, username)
+                del pending_signups[username]
+                
                 # Auto-friend inviter if signing up with invite code
-                inviter_username = None
-                if invite_data:
-                    inviter_username = invite_data['creator']
+                inviter_username = pending['inviter_username']
+                if inviter_username:
                     # Add mutual friendship
                     db.add_friend_request(inviter_username, username)
                     db.accept_friend_request(inviter_username, username)
                     # Remove used invite code
-                    db.delete_invite_code(invite_code)
+                    if pending['invite_code']:
+                        db.delete_invite_code(pending['invite_code'])
                 
                 await websocket.send_str(json.dumps({
                     'type': 'auth_success',
@@ -1960,6 +2085,17 @@ async def websocket_handler(request):
     return ws
 
 
+async def cleanup_verification_codes_periodically():
+    """Periodic task to clean up expired verification codes."""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # Run every hour
+            db.cleanup_expired_verification_codes()
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Cleaned up expired verification codes")
+        except Exception as e:
+            print(f"Error in periodic cleanup task: {e}")
+
+
 async def main():
     """Start the HTTP and WebSocket server."""
     print("Decentra Chat Server")
@@ -1986,6 +2122,9 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', 8765)
     await site.start()
+    
+    # Start periodic cleanup task
+    asyncio.create_task(cleanup_verification_codes_periodically())
     
     print("Server started successfully!")
     print("Access the web client at http://localhost:8765")
