@@ -12,6 +12,7 @@ import bcrypt
 import secrets
 import string
 import random
+import re
 from aiohttp import web
 import os
 import base64
@@ -25,6 +26,8 @@ db = Database()
 
 # Store pending signups temporarily (in-memory)
 # Format: {username: {password_hash, email, invite_code, inviter_username}}
+# NOTE: This is an in-memory store and will be cleared on server restart.
+# For production environments with multiple server instances, consider using Redis or a database table.
 pending_signups = {}
 
 # Store connected clients: {websocket: username}
@@ -67,6 +70,13 @@ def serialize_role(role):
 def verify_password(password, password_hash):
     """Verify a password against its hash."""
     return bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
+
+
+def is_valid_email(email):
+    """Validate email address format using regex."""
+    # RFC 5322 compliant email regex (simplified version)
+    email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(email_pattern, email) is not None
 
 
 def generate_invite_code():
@@ -303,11 +313,11 @@ async def handler(websocket):
                     }))
                     continue
                 
-                # Basic email validation
-                if '@' not in email or '.' not in email.split('@')[-1]:
+                # Email validation
+                if not is_valid_email(email):
                     await websocket.send_str(json.dumps({
                         'type': 'auth_error',
-                        'message': 'Invalid email address'
+                        'message': 'Invalid email address format'
                     }))
                     continue
                 

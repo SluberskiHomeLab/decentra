@@ -7,13 +7,14 @@ Tests email verification code generation, storage, validation, and cleanup.
 import os
 import sys
 from datetime import datetime, timedelta
+import secrets
+import string
+import bcrypt
 
 # Add server directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
 
 from database import Database
-import secrets
-import string
 
 
 def test_email_verification_flow():
@@ -60,7 +61,6 @@ def test_email_verification_flow():
     print("\n1.3: Testing user creation with email verification...")
     
     # Create user with email
-    import bcrypt
     password_hash = bcrypt.hashpw('testpassword'.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
     result = db.create_user('testuser', password_hash, 'test@example.com', email_verified=True)
     assert result == True, "Should create user successfully"
