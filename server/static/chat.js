@@ -709,6 +709,16 @@
                             // Track in voiceChat for video display
                             if (voiceChat) {
                                 voiceChat.remoteScreenSharing.set(data.username, data.screen_sharing);
+                                // When screenshare starts, assume they're showing screen (default behavior)
+                                if (data.screen_sharing) {
+                                    voiceChat.remoteShowingScreen.set(data.username, true);
+                                } else {
+                                    // When screenshare stops, they're showing camera if video is still enabled
+                                    const hasVideo = voiceChat.remoteVideoEnabled.get(data.username) || false;
+                                    if (hasVideo) {
+                                        voiceChat.remoteShowingScreen.set(data.username, false);
+                                    }
+                                }
                                 // Update toggle button if both video and screenshare are active
                                 updateVideoToggleButton(data.username);
                             }
@@ -735,7 +745,9 @@
             
             case 'video_source_changed_update':
                 // Update UI when a user switches their video source
-                if (data.username) {
+                if (data.username && voiceChat) {
+                    // Track the state
+                    voiceChat.remoteShowingScreen.set(data.username, data.showing_screen);
                     updateVideoSourceDisplay(data.username, data.showing_screen);
                 }
                 break;
@@ -3047,7 +3059,8 @@
             // Add toggle button
             const toggleBtn = document.createElement('button');
             toggleBtn.className = 'toggle-video-btn';
-            const isShowingScreen = videoContainer.classList.contains('screen-share');
+            // Use tracked state instead of CSS class to determine current view
+            const isShowingScreen = voiceChat.remoteShowingScreen.get(username) ?? true; // Default to screen if not set
             toggleBtn.textContent = isShowingScreen ? '📹 Show Camera' : '🖥️ Show Screen';
             toggleBtn.title = isShowingScreen ? 'Switch to camera view' : 'Switch to screen share';
             toggleBtn.addEventListener('click', (e) => {

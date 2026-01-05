@@ -20,6 +20,7 @@ class VoiceChat {
         this.setSinkIdWarningShown = false; // Track if setSinkId warning has been shown
         this.remoteScreenSharing = new Map(); // Track which peers are screen sharing
         this.remoteVideoEnabled = new Map(); // Track which peers have video enabled
+        this.remoteShowingScreen = new Map(); // Track which peers are currently showing screen (vs camera)
         this.showingScreenShare = true; // When both video and screenshare active, which is being sent (true = screen, false = camera)
         
         // Video configuration constants
@@ -573,6 +574,12 @@ class VoiceChat {
             return;
         }
         
+        // Verify streams exist
+        if (!this.localVideoStream || !this.localScreenStream) {
+            console.warn('Cannot switch video source: streams not available');
+            return;
+        }
+        
         this.showingScreenShare = showScreen;
         
         // Switch the track being sent to all peers
@@ -584,7 +591,11 @@ class VoiceChat {
                 const newTrack = showScreen ? 
                     this.localScreenStream.getVideoTracks()[0] : 
                     this.localVideoStream.getVideoTracks()[0];
-                videoSender.replaceTrack(newTrack);
+                
+                // Verify the new track exists
+                if (newTrack) {
+                    videoSender.replaceTrack(newTrack);
+                }
             }
         });
         
