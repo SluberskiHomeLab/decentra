@@ -363,7 +363,7 @@
             document.getElementById('smtp-password').value = settings.smtp_password || '';
             document.getElementById('smtp-from-email').value = settings.smtp_from_email || '';
             document.getElementById('smtp-from-name').value = settings.smtp_from_name || 'Decentra';
-            document.getElementById('smtp-use-tls').checked = settings.smtp_use_tls !== false;
+            document.getElementById('smtp-use-tls').checked = settings.smtp_use_tls ?? true; // Default to true if not set
         }
         
         function showStatus(message, type) {
@@ -436,7 +436,8 @@
                     showSmtpTestResult(false, 'From Email Address is required when email notifications are enabled');
                     return;
                 }
-                if (isNaN(smtpSettings.smtp_port) || smtpSettings.smtp_port < 1 || smtpSettings.smtp_port > 65535) {
+                const port = smtpSettings.smtp_port;
+                if (!Number.isInteger(port) || port < 1 || port > 65535) {
                     showSmtpTestResult(false, 'Valid SMTP Port (1-65535) is required');
                     return;
                 }
