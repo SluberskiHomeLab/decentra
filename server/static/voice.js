@@ -588,13 +588,12 @@ class VoiceChat {
             const videoSender = senders.find(s => s.track && s.track.kind === 'video');
             
             if (videoSender) {
-                const newTrack = showScreen ? 
-                    this.localScreenStream.getVideoTracks()[0] : 
-                    this.localVideoStream.getVideoTracks()[0];
+                const sourceStream = showScreen ? this.localScreenStream : this.localVideoStream;
+                const videoTracks = sourceStream.getVideoTracks();
                 
-                // Verify the new track exists
-                if (newTrack) {
-                    videoSender.replaceTrack(newTrack);
+                // Verify the track exists before replacing
+                if (videoTracks.length > 0) {
+                    videoSender.replaceTrack(videoTracks[0]);
                 }
             }
         });

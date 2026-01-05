@@ -31,6 +31,9 @@
     let friendRequestsReceived = [];
     let voiceMembers = {}; // Track voice members by channel: {server_id/channel_id: [usernames]}
     
+    // Video toggle constants
+    const DEFAULT_SCREEN_SHARE_PRIORITY = true; // When both video and screenshare are active, show screenshare by default
+    
     // DOM elements
     const messagesContainer = document.getElementById('messages');
     const messageForm = document.getElementById('message-form');
@@ -3060,13 +3063,13 @@
             const toggleBtn = document.createElement('button');
             toggleBtn.className = 'toggle-video-btn';
             // Use tracked state instead of CSS class to determine current view
-            const isShowingScreen = voiceChat.remoteShowingScreen.get(username) ?? true; // Default to screen if not set
+            const isShowingScreen = voiceChat.remoteShowingScreen.get(username) ?? DEFAULT_SCREEN_SHARE_PRIORITY;
             toggleBtn.textContent = isShowingScreen ? '📹 Show Camera' : '🖥️ Show Screen';
             toggleBtn.title = isShowingScreen ? 'Switch to camera view' : 'Switch to screen share';
             toggleBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 // Get current state dynamically each time button is clicked
-                const currentShowingScreen = voiceChat.remoteShowingScreen.get(username) ?? true;
+                const currentShowingScreen = voiceChat.remoteShowingScreen.get(username) ?? DEFAULT_SCREEN_SHARE_PRIORITY;
                 const newShowScreen = !currentShowingScreen;
                 voiceChat.switchVideoSource(username, newShowScreen);
             });
