@@ -7,7 +7,7 @@ A simple WebSocket-based chat server for decentralized communication.
 import asyncio
 import json
 import websockets
-from datetime import datetime
+from datetime import datetime, timedelta
 import bcrypt
 import secrets
 import string
@@ -22,6 +22,10 @@ from email_utils import EmailSender
 
 # Initialize database
 db = Database()
+
+# Store pending signups temporarily (in-memory)
+# Format: {username: {password_hash, email, invite_code, inviter_username}}
+pending_signups = {}
 
 # Store connected clients: {websocket: username}
 clients = {}
@@ -330,7 +334,6 @@ async def handler(websocket):
                 verification_code = ''.join(secrets.choice(string.digits) for _ in range(6))
                 
                 # Store verification code with 15 minute expiration
-                from datetime import timedelta
                 expires_at = datetime.now() + timedelta(minutes=15)
                 if not db.create_email_verification_code(email, username, verification_code, expires_at):
                     await websocket.send_str(json.dumps({
@@ -350,12 +353,8 @@ async def handler(websocket):
                         continue
                     
                     # Store signup data temporarily for verification step
-                    # We'll use a dict to store pending signups: {username: {password_hash, email, invite_code, inviter}}
-                    if not hasattr(db, '_pending_signups'):
-                        db._pending_signups = {}
-                    
                     inviter_username = invite_data['creator'] if invite_data else None
-                    db._pending_signups[username] = {
+                    pending_signups[username] = {
                         'password_hash': hash_password(password),
                         'email': email,
                         'invite_code': invite_code,
@@ -380,14 +379,14 @@ async def handler(websocket):
                 code = auth_data.get('code', '').strip()
                 
                 # Check if we have pending signup data
-                if not hasattr(db, '_pending_signups') or username not in db._pending_signups:
+                if username not in pending_signups:
                     await websocket.send_str(json.dumps({
                         'type': 'auth_error',
                         'message': 'No pending signup found. Please start signup again.'
                     }))
                     continue
                 
-                pending = db._pending_signups[username]
+                pending = pending_signups[username]
                 email = pending['email']
                 
                 # Verify the code
@@ -409,7 +408,7 @@ async def handler(websocket):
                 
                 # Clean up verification code and pending signup
                 db.delete_email_verification_code(email, username)
-                del db._pending_signups[username]
+                del pending_signups[username]
                 
                 # Auto-friend inviter if signing up with invite code
                 inviter_username = pending['inviter_username']

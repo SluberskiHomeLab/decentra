@@ -453,8 +453,8 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT * FROM email_verification_codes 
-                WHERE email = %s AND username = %s AND expires_at > NOW()
-            ''', (email, username))
+                WHERE email = %s AND username = %s AND expires_at > %s
+            ''', (email, username, datetime.now()))
             row = cursor.fetchone()
             if row:
                 return dict(row)
@@ -480,8 +480,8 @@ class Database:
                 cursor = conn.cursor()
                 cursor.execute('''
                     DELETE FROM email_verification_codes 
-                    WHERE expires_at <= NOW()
-                ''')
+                    WHERE expires_at <= %s
+                ''', (datetime.now(),))
         except Exception:
             pass
     
