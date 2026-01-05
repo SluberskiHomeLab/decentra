@@ -568,7 +568,7 @@ class VoiceChat {
     }
     
     // Handle request from another user to switch our sent video track
-    handleSwitchVideoSourceRequest(showScreen) {
+    async handleSwitchVideoSourceRequest(showScreen) {
         // Only applicable if we have both video and screenshare active
         if (!this.isVideoEnabled || !this.isScreenSharing) {
             return;
@@ -580,25 +580,30 @@ class VoiceChat {
             return;
         }
         
+        // Verify the target stream has video tracks before proceeding
+        const sourceStream = showScreen ? this.localScreenStream : this.localVideoStream;
+        const videoTracks = sourceStream.getVideoTracks();
+        if (videoTracks.length === 0) {
+            console.warn('No video tracks available for replacement from', showScreen ? 'screen stream' : 'video stream');
+            return;
+        }
+        
         this.showingScreenShare = showScreen;
+        const newTrack = videoTracks[0];
         
         // Switch the track being sent to all peers
+        const replacePromises = [];
         this.peerConnections.forEach(pc => {
             const senders = pc.getSenders();
             const videoSender = senders.find(s => s.track && s.track.kind === 'video');
             
             if (videoSender) {
-                const sourceStream = showScreen ? this.localScreenStream : this.localVideoStream;
-                const videoTracks = sourceStream.getVideoTracks();
-                
-                // Verify the track exists before replacing
-                if (videoTracks.length > 0) {
-                    videoSender.replaceTrack(videoTracks[0]);
-                } else {
-                    console.warn('No video tracks available for replacement from', showScreen ? 'screen stream' : 'video stream');
-                }
+                replacePromises.push(videoSender.replaceTrack(newTrack));
             }
         });
+        
+        // Wait for all track replacements to complete
+        await Promise.all(replacePromises);
         
         // Update local preview
         if (window.onLocalVideoTrack) {
