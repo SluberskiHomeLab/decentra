@@ -368,8 +368,10 @@ class NotificationManager {
             );
         }
         
-        // Always play sound regardless of visibility
-        this.playSound('message', this.messageSound);
+        // Always play sound regardless of visibility (if sounds are enabled)
+        if (this.soundsEnabled) {
+            this.playSound('message', this.messageSound);
+        }
     }
 
     notifyIncomingCall(caller) {
@@ -378,7 +380,9 @@ class NotificationManager {
             `${caller} is calling you...`
         );
         
-        this.playSound('call', this.callSound);
+        if (this.soundsEnabled) {
+            this.playSound('call', this.callSound);
+        }
     }
 }
 
