@@ -3065,8 +3065,9 @@
             toggleBtn.title = isShowingScreen ? 'Switch to camera view' : 'Switch to screen share';
             toggleBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                // Toggle between screen and camera
-                const newShowScreen = !isShowingScreen;
+                // Get current state dynamically each time button is clicked
+                const currentShowingScreen = voiceChat.remoteShowingScreen.get(username) ?? true;
+                const newShowScreen = !currentShowingScreen;
                 voiceChat.switchVideoSource(username, newShowScreen);
             });
             
