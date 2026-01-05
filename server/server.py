@@ -1707,7 +1707,6 @@ async def handler(websocket):
                     elif data.get('type') == 'video_source_changed':
                         # Broadcast to others in voice channel that video source has changed
                         if username in voice_states:
-                            # Default to False if the client does not explicitly specify showing_screen
                             showing_screen = data.get('showing_screen', False)
                             voice_states[username]['showing_screen'] = showing_screen
                             state = voice_states[username]
