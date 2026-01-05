@@ -360,6 +360,7 @@ async def handler(websocket):
                             'type': 'auth_error',
                             'message': 'Failed to send verification email. Please check SMTP settings.'
                         }))
+                        db.delete_email_verification_code(email, username)
                         continue
                     
                     # Store signup data temporarily for verification step
