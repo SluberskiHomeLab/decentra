@@ -447,58 +447,8 @@ class VoiceChat {
                 return false;
             }
         } else {
-            // Stop screen sharing
-            if (this.localScreenStream) {
-                this.localScreenStream.getTracks().forEach(track => track.stop());
-                
-                // Restore video track or remove screen track from all peer connections
-                this.peerConnections.forEach(pc => {
-                    const senders = pc.getSenders();
-                    const videoSender = senders.find(s => s.track && s.track.kind === 'video');
-                    
-                    if (videoSender) {
-                        if (this.isVideoEnabled && this.localVideoStream) {
-                            // Restore camera video
-                            const videoTrack = this.localVideoStream.getVideoTracks()[0];
-                            videoSender.replaceTrack(videoTrack);
-                        } else {
-                            // Remove video track
-                            pc.removeTrack(videoSender);
-                        }
-                    }
-                });
-                
-                this.localScreenStream = null;
-            }
-            
-            this.isScreenSharing = false;
-            
-            // Update state
-            this.showingScreen = false;
-            
-            // Restore camera preview if video is enabled, otherwise remove preview
-            if (window.onLocalVideoTrack) {
-                if (this.isVideoEnabled && this.localVideoStream) {
-                    window.onLocalVideoTrack(this.localVideoStream, false);
-                } else {
-                    window.onLocalVideoTrack(null, false);
-                }
-            }
-            
-            // Notify server
-            this.ws.send(JSON.stringify({
-                type: 'voice_screen_share',
-                screen_sharing: false
-            }));
-            
-            // If video is still enabled, notify that we're now showing camera
-            if (this.isVideoEnabled) {
-                this.ws.send(JSON.stringify({
-                    type: 'video_source_changed',
-                    showing_screen: false
-                }));
-            }
-            
+            // Stop screen sharing by calling the helper method
+            this.stopScreenSharing();
             return false;
         }
     }
