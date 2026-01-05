@@ -5,9 +5,9 @@ services:
     image: postgres:16-alpine
     container_name: decentra-postgres
     environment:
-      - POSTGRES_DB=decentra
-      - POSTGRES_USER=decentra
-      - POSTGRES_PASSWORD=decentra
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     volumes:
       - decentra-data:/var/lib/postgresql/data
     networks:
@@ -27,7 +27,7 @@ services:
     ports:
       - "8765:8765"
     environment:
-      - DATABASE_URL=postgresql://decentra:decentra@postgres:5432/decentra
+      - DATABASE_URL=${DATABASE_URL}
     networks:
       - decentra-network
     restart: unless-stopped

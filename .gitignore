@@ -31,3 +31,6 @@ server/static/chat-old.js
 # Database
 *.db
 *.db-journal
+
+# Environment variables
+.env
