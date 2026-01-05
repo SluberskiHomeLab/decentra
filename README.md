@@ -110,7 +110,8 @@ docker run -d --name decentra-postgres \
 
 3. Then, build and run the server:
 ```bash
-# Load environment variables into shell for variable expansion
+# Load environment variables into shell for variable expansion in docker run command
+# This is needed because we construct DATABASE_URL with the container hostname
 set -a
 source .env
 set +a
