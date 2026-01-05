@@ -97,12 +97,25 @@ class NotificationManager {
     }
 
     // Generate notification sounds using Web Audio API
-    playSound(soundType, soundName) {
-        if (!this.soundsEnabled || !this.audioContext) return;
+    async playSound(soundType, soundName) {
+        // Initialize audio context if it doesn't exist (for test buttons or when sounds were disabled)
+        if (!this.audioContext) {
+            try {
+                this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            } catch (error) {
+                console.error('Failed to create AudioContext:', error);
+                return;
+            }
+        }
 
         // Resume audio context if it's suspended (required by some browsers)
         if (this.audioContext.state === 'suspended') {
-            this.audioContext.resume();
+            try {
+                await this.audioContext.resume();
+            } catch (error) {
+                console.error('Failed to resume AudioContext:', error);
+                return;
+            }
         }
 
         if (soundType === 'message') {
@@ -355,8 +368,11 @@ class NotificationManager {
             );
         }
         
-        // Always play sound regardless of visibility
-        this.playSound('message', this.messageSound);
+        // Always play sound regardless of visibility (if sounds are enabled)
+        // Fire-and-forget: we don't await to avoid blocking the notification
+        if (this.soundsEnabled) {
+            this.playSound('message', this.messageSound);
+        }
     }
 
     notifyIncomingCall(caller) {
@@ -365,7 +381,10 @@ class NotificationManager {
             `${caller} is calling you...`
         );
         
-        this.playSound('call', this.callSound);
+        // Fire-and-forget: we don't await to avoid blocking the notification
+        if (this.soundsEnabled) {
+            this.playSound('call', this.callSound);
+        }
     }
 }
 
