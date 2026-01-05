@@ -225,6 +225,67 @@
             </div>
         </div>
         
+        <div class="admin-section">
+            <h2>Email & SMTP Settings</h2>
+            
+            <div class="setting-item">
+                <label for="smtp-enabled">Enable Email Notifications</label>
+                <div class="checkbox-wrapper">
+                    <input type="checkbox" id="smtp-enabled">
+                    <span class="description" style="margin: 0;">Enable SMTP email notifications for system events</span>
+                </div>
+            </div>
+            
+            <div class="setting-item">
+                <label for="smtp-host">SMTP Host</label>
+                <div class="description">SMTP server hostname (e.g., smtp.gmail.com, smtp.office365.com)</div>
+                <input type="text" id="smtp-host" placeholder="smtp.example.com">
+            </div>
+            
+            <div class="setting-item">
+                <label for="smtp-port">SMTP Port</label>
+                <div class="description">SMTP server port (587 for TLS, 465 for SSL, 25 for unencrypted)</div>
+                <input type="number" id="smtp-port" min="1" max="65535" value="587">
+            </div>
+            
+            <div class="setting-item">
+                <label for="smtp-username">SMTP Username</label>
+                <div class="description">Username for SMTP authentication (often your email address)</div>
+                <input type="text" id="smtp-username" placeholder="user@example.com">
+            </div>
+            
+            <div class="setting-item">
+                <label for="smtp-password">SMTP Password</label>
+                <div class="description">Password for SMTP authentication (use app-specific password for Gmail)</div>
+                <input type="password" id="smtp-password" placeholder="••••••••">
+            </div>
+            
+            <div class="setting-item">
+                <label for="smtp-from-email">From Email Address</label>
+                <div class="description">Email address to send notifications from</div>
+                <input type="email" id="smtp-from-email" placeholder="noreply@example.com">
+            </div>
+            
+            <div class="setting-item">
+                <label for="smtp-from-name">From Name</label>
+                <div class="description">Display name for outgoing emails</div>
+                <input type="text" id="smtp-from-name" placeholder="Decentra">
+            </div>
+            
+            <div class="setting-item">
+                <label for="smtp-use-tls">Use TLS/STARTTLS</label>
+                <div class="checkbox-wrapper">
+                    <input type="checkbox" id="smtp-use-tls" checked>
+                    <span class="description" style="margin: 0;">Use TLS encryption (recommended for port 587)</span>
+                </div>
+            </div>
+            
+            <div class="setting-item">
+                <button id="test-smtp" class="save-button" style="margin-top: 0;">Test SMTP Connection</button>
+                <div id="smtp-test-result" style="margin-top: 10px; display: none;"></div>
+            </div>
+        </div>
+        
         <button id="save-settings" class="save-button">Save Settings</button>
     </div>
     
@@ -276,6 +337,8 @@
                 loadSettings(data.settings);
             } else if (data.type === 'settings_saved') {
                 showStatus('Settings saved successfully!', 'success');
+            } else if (data.type === 'smtp_test_result') {
+                showSmtpTestResult(data.success, data.message);
             } else if (data.type === 'error') {
                 showStatus(data.message, 'error');
             }
@@ -291,6 +354,16 @@
             document.getElementById('max-file-size').value = settings.max_file_size_mb || 10;
             document.getElementById('max-servers-per-user').value = settings.max_servers_per_user || 0;
             document.getElementById('max-channels-per-server').value = settings.max_channels_per_server || 0;
+            
+            // Load SMTP settings
+            document.getElementById('smtp-enabled').checked = settings.smtp_enabled || false;
+            document.getElementById('smtp-host').value = settings.smtp_host || '';
+            document.getElementById('smtp-port').value = settings.smtp_port || 587;
+            document.getElementById('smtp-username').value = settings.smtp_username || '';
+            document.getElementById('smtp-password').value = settings.smtp_password || '';
+            document.getElementById('smtp-from-email').value = settings.smtp_from_email || '';
+            document.getElementById('smtp-from-name').value = settings.smtp_from_name || 'Decentra';
+            document.getElementById('smtp-use-tls').checked = settings.smtp_use_tls ?? true; // Default to true if not set
         }
         
         function showStatus(message, type) {
@@ -304,20 +377,75 @@
             }, 5000);
         }
         
+        function showSmtpTestResult(success, message) {
+            const resultEl = document.getElementById('smtp-test-result');
+            resultEl.textContent = message;
+            resultEl.className = success ? 'status-message success' : 'status-message error';
+            resultEl.style.display = 'block';
+            
+            setTimeout(() => {
+                resultEl.style.display = 'none';
+            }, 5000);
+        }
+        
         document.getElementById('save-settings').addEventListener('click', () => {
             const settings = {
                 server_name: document.getElementById('server-name').value,
-                max_message_length: parseInt(document.getElementById('max-message-length').value),
+                max_message_length: parseInt(document.getElementById('max-message-length').value, 10),
                 allow_registration: document.getElementById('allow-registrations').checked,
                 require_invite: document.getElementById('require-invite').checked,
-                max_file_size_mb: parseInt(document.getElementById('max-file-size').value),
-                max_servers_per_user: parseInt(document.getElementById('max-servers-per-user').value),
-                max_channels_per_server: parseInt(document.getElementById('max-channels-per-server').value)
+                max_file_size_mb: parseInt(document.getElementById('max-file-size').value, 10),
+                max_servers_per_user: parseInt(document.getElementById('max-servers-per-user').value, 10),
+                max_channels_per_server: parseInt(document.getElementById('max-channels-per-server').value, 10),
+                // SMTP settings
+                smtp_enabled: document.getElementById('smtp-enabled').checked,
+                smtp_host: document.getElementById('smtp-host').value,
+                smtp_port: parseInt(document.getElementById('smtp-port').value, 10),
+                smtp_username: document.getElementById('smtp-username').value,
+                smtp_password: document.getElementById('smtp-password').value,
+                smtp_from_email: document.getElementById('smtp-from-email').value,
+                smtp_from_name: document.getElementById('smtp-from-name').value,
+                smtp_use_tls: document.getElementById('smtp-use-tls').checked
             };
             
             ws.send(JSON.stringify({
                 type: 'save_admin_settings',
                 settings: settings
+            }));
+        });
+        
+        document.getElementById('test-smtp').addEventListener('click', () => {
+            const smtpSettings = {
+                smtp_enabled: document.getElementById('smtp-enabled').checked,
+                smtp_host: document.getElementById('smtp-host').value,
+                smtp_port: parseInt(document.getElementById('smtp-port').value, 10),
+                smtp_username: document.getElementById('smtp-username').value,
+                smtp_password: document.getElementById('smtp-password').value,
+                smtp_from_email: document.getElementById('smtp-from-email').value,
+                smtp_from_name: document.getElementById('smtp-from-name').value,
+                smtp_use_tls: document.getElementById('smtp-use-tls').checked
+            };
+            
+            // Validate SMTP settings if enabled
+            if (smtpSettings.smtp_enabled) {
+                if (!smtpSettings.smtp_host) {
+                    showSmtpTestResult(false, 'SMTP Host is required when email notifications are enabled');
+                    return;
+                }
+                if (!smtpSettings.smtp_from_email) {
+                    showSmtpTestResult(false, 'From Email Address is required when email notifications are enabled');
+                    return;
+                }
+                const port = smtpSettings.smtp_port;
+                if (!Number.isInteger(port) || port < 1 || port > 65535) {
+                    showSmtpTestResult(false, 'Valid SMTP Port (1-65535) is required');
+                    return;
+                }
+            }
+            
+            ws.send(JSON.stringify({
+                type: 'test_smtp',
+                settings: smtpSettings
             }));
         });
     </script>

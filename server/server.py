@@ -18,6 +18,7 @@ import base64
 import hashlib
 from database import Database
 from api import setup_api_routes
+from email_utils import EmailSender
 
 # Initialize database
 db = Database()
@@ -918,6 +919,26 @@ async def handler(websocket):
                                     'type': 'error',
                                     'message': 'Failed to save settings'
                                 }))
+                    
+                    elif data.get('type') == 'test_smtp':
+                        # Verify user is admin
+                        first_user = db.get_first_user()
+                        if username != first_user:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Access denied. Admin only.'
+                            }))
+                        else:
+                            smtp_settings = data.get('settings', {})
+                            email_sender = EmailSender(smtp_settings)
+                            
+                            success, message = email_sender.test_connection()
+                            
+                            await websocket.send_str(json.dumps({
+                                'type': 'smtp_test_result',
+                                'success': success,
+                                'message': message
+                            }))
                     
                     # Server settings handlers
                     elif data.get('type') == 'rename_server':

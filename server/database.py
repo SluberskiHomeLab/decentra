@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 from contextlib import contextmanager
 from typing import List, Dict, Set, Optional, Tuple
+from encryption_utils import get_encryption_manager
 
 
 class Database:
@@ -229,6 +230,61 @@ class Database:
                         END $$;
                     ''')
                     
+                    # Add SMTP settings columns if they don't exist (migration)
+                    cursor.execute('''
+                        DO $$ 
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'admin_settings' AND column_name = 'smtp_enabled'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN smtp_enabled BOOLEAN DEFAULT FALSE;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'admin_settings' AND column_name = 'smtp_host'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN smtp_host VARCHAR(255) DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'admin_settings' AND column_name = 'smtp_port'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN smtp_port INTEGER DEFAULT 587;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'admin_settings' AND column_name = 'smtp_username'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN smtp_username VARCHAR(255) DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'admin_settings' AND column_name = 'smtp_password'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN smtp_password VARCHAR(255) DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'admin_settings' AND column_name = 'smtp_from_email'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN smtp_from_email VARCHAR(255) DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'admin_settings' AND column_name = 'smtp_from_name'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN smtp_from_name VARCHAR(255) DEFAULT 'Decentra';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'admin_settings' AND column_name = 'smtp_use_tls'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN smtp_use_tls BOOLEAN DEFAULT TRUE;
+                            END IF;
+                        END $$;
+                    ''')
+                    
                     # Add server icon columns if they don't exist (migration)
                     cursor.execute('''
                         DO $$ 
@@ -340,7 +396,7 @@ class Database:
     
     # Admin settings operations
     def get_admin_settings(self) -> Dict:
-        """Get admin settings from database."""
+        """Get admin settings from database with decrypted SMTP password."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM admin_settings WHERE id = 1')
@@ -351,11 +407,22 @@ class Database:
                 settings.pop('id', None)
                 settings.pop('created_at', None)
                 settings.pop('updated_at', None)
+                
+                # Decrypt SMTP password if present
+                if settings.get('smtp_password'):
+                    try:
+                        encryption_manager = get_encryption_manager()
+                        settings['smtp_password'] = encryption_manager.decrypt(settings['smtp_password'])
+                    except RuntimeError as e:
+                        print(f"Error decrypting SMTP password: {e}")
+                        # Return empty password if decryption fails with key mismatch
+                        settings['smtp_password'] = ''
+                
                 return settings
             return {}
     
     def update_admin_settings(self, settings: Dict) -> bool:
-        """Update admin settings in database."""
+        """Update admin settings in database with encrypted SMTP password."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -365,6 +432,16 @@ class Database:
                 values = []
                 for key, value in settings.items():
                     if key not in ['id', 'created_at', 'updated_at']:
+                        # Encrypt SMTP password before storing
+                        if key == 'smtp_password' and value:
+                            try:
+                                encryption_manager = get_encryption_manager()
+                                value = encryption_manager.encrypt(value)
+                            except RuntimeError as e:
+                                print(f"Error encrypting SMTP password: {e}")
+                                # Return False to indicate save failure
+                                return False
+                        
                         set_clauses.append(f"{key} = %s")
                         values.append(value)
                 
