@@ -92,10 +92,13 @@
         e.preventDefault();
         
         const username = document.getElementById('username').value.trim();
-        const password = document.getElementById('password').value;
         const email = document.getElementById('email').value.trim();
         const inviteCode = document.getElementById('invite-code').value.trim();
         const verificationCode = document.getElementById('verification-code').value.trim();
+        let password = '';
+        if (!isVerificationMode) {
+            password = document.getElementById('password').value;
+        }
         
         if (isVerificationMode) {
             // Handle verification code submission
