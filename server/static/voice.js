@@ -21,7 +21,7 @@ class VoiceChat {
         this.remoteScreenSharing = new Map(); // Track which peers are screen sharing
         this.remoteVideoEnabled = new Map(); // Track which peers have video enabled
         this.remoteShowingScreen = new Map(); // Track which peers are currently showing screen (vs camera)
-        this.showingScreenShare = true; // When both video and screenshare active, which is being sent (true = screen, false = camera)
+        this.showingScreenShare = true; // Default/preferred source when both video and screenshare are active (true = screen, false = camera)
         
         // Video configuration constants
         this.VIDEO_WIDTH = 640;
