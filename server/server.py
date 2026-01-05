@@ -275,6 +275,7 @@ async def handler(websocket):
             if auth_data.get('type') == 'signup':
                 username = auth_data.get('username', '').strip()
                 password = auth_data.get('password', '')
+                email = auth_data.get('email', '').strip()
                 invite_code = auth_data.get('invite_code', '').strip()
                 
                 # Get admin settings
@@ -291,10 +292,18 @@ async def handler(websocket):
                     continue
                 
                 # Validation
-                if not username or not password:
+                if not username or not password or not email:
                     await websocket.send_str(json.dumps({
                         'type': 'auth_error',
-                        'message': 'Username and password are required'
+                        'message': 'Username, password, and email are required'
+                    }))
+                    continue
+                
+                # Basic email validation
+                if '@' not in email or '.' not in email.split('@')[-1]:
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'Invalid email address'
                     }))
                     continue
                 
@@ -317,23 +326,100 @@ async def handler(websocket):
                     }))
                     continue
                 
+                # Generate verification code (6-digit number)
+                verification_code = ''.join(secrets.choice(string.digits) for _ in range(6))
+                
+                # Store verification code with 15 minute expiration
+                from datetime import timedelta
+                expires_at = datetime.now() + timedelta(minutes=15)
+                if not db.create_email_verification_code(email, username, verification_code, expires_at):
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'Failed to generate verification code'
+                    }))
+                    continue
+                
+                # Send verification email
+                email_sender = EmailSender(admin_settings)
+                if email_sender.is_configured():
+                    if not email_sender.send_verification_email(email, username, verification_code):
+                        await websocket.send_str(json.dumps({
+                            'type': 'auth_error',
+                            'message': 'Failed to send verification email. Please check SMTP settings.'
+                        }))
+                        continue
+                    
+                    # Store signup data temporarily for verification step
+                    # We'll use a dict to store pending signups: {username: {password_hash, email, invite_code, inviter}}
+                    if not hasattr(db, '_pending_signups'):
+                        db._pending_signups = {}
+                    
+                    inviter_username = invite_data['creator'] if invite_data else None
+                    db._pending_signups[username] = {
+                        'password_hash': hash_password(password),
+                        'email': email,
+                        'invite_code': invite_code,
+                        'inviter_username': inviter_username
+                    }
+                    
+                    await websocket.send_str(json.dumps({
+                        'type': 'verification_required',
+                        'message': 'Verification code sent to your email'
+                    }))
+                else:
+                    # SMTP not configured, skip verification
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'Email verification is required but SMTP is not configured. Please contact the administrator.'
+                    }))
+                continue
+            
+            # Handle email verification
+            elif auth_data.get('type') == 'verify_email':
+                username = auth_data.get('username', '').strip()
+                code = auth_data.get('code', '').strip()
+                
+                # Check if we have pending signup data
+                if not hasattr(db, '_pending_signups') or username not in db._pending_signups:
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'No pending signup found. Please start signup again.'
+                    }))
+                    continue
+                
+                pending = db._pending_signups[username]
+                email = pending['email']
+                
+                # Verify the code
+                verification_data = db.get_email_verification_code(email, username)
+                if not verification_data or verification_data['code'] != code:
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'Invalid or expired verification code'
+                    }))
+                    continue
+                
                 # Create user account in database
-                if not db.create_user(username, hash_password(password)):
+                if not db.create_user(username, pending['password_hash'], email, email_verified=True):
                     await websocket.send_str(json.dumps({
                         'type': 'auth_error',
                         'message': 'Failed to create account'
                     }))
                     continue
                 
+                # Clean up verification code and pending signup
+                db.delete_email_verification_code(email, username)
+                del db._pending_signups[username]
+                
                 # Auto-friend inviter if signing up with invite code
-                inviter_username = None
-                if invite_data:
-                    inviter_username = invite_data['creator']
+                inviter_username = pending['inviter_username']
+                if inviter_username:
                     # Add mutual friendship
                     db.add_friend_request(inviter_username, username)
                     db.accept_friend_request(inviter_username, username)
                     # Remove used invite code
-                    db.delete_invite_code(invite_code)
+                    if pending['invite_code']:
+                        db.delete_invite_code(pending['invite_code'])
                 
                 await websocket.send_str(json.dumps({
                     'type': 'auth_success',

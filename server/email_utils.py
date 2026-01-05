@@ -221,6 +221,69 @@ This is an automated message from {server_name}.
 """
         
         return self.send_email(to_email, subject, body_text, body_html)
+    
+    def send_verification_email(self, to_email: str, username: str, code: str, server_name: str = "Decentra") -> bool:
+        """
+        Send a verification email with a code to a new user.
+        
+        Args:
+            to_email: User's email address
+            username: User's username
+            code: Verification code
+            server_name: Name of the Decentra instance
+            
+        Returns:
+            bool: True if email sent successfully
+        """
+        subject = f"Verify your {server_name} account"
+        
+        body_text = f"""
+Hello {username},
+
+Thank you for signing up for {server_name}!
+
+To complete your registration, please enter the following verification code:
+
+{code}
+
+This code will expire in 15 minutes.
+
+If you did not sign up for {server_name}, please ignore this email.
+
+---
+This is an automated message from {server_name}.
+"""
+        
+        body_html = f"""
+<html>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+    <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #5865F2;">Verify your {server_name} account</h2>
+        
+        <p>Hello {username},</p>
+        
+        <p>Thank you for signing up for {server_name}!</p>
+        
+        <p>To complete your registration, please enter the following verification code:</p>
+        
+        <div style="background-color: #f4f4f4; padding: 15px; border-radius: 5px; text-align: center; margin: 20px 0;">
+            <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #5865F2;">{code}</span>
+        </div>
+        
+        <p style="color: #666; font-size: 14px;">This code will expire in 15 minutes.</p>
+        
+        <p style="color: #666; font-size: 14px;">If you did not sign up for {server_name}, please ignore this email.</p>
+        
+        <hr style="margin-top: 30px; border: none; border-top: 1px solid #ddd;">
+        <p style="font-size: 12px; color: #999;">
+            This is an automated message from {server_name}.
+        </p>
+    </div>
+</body>
+</html>
+"""
+        
+        return self.send_email(to_email, subject, body_text, body_html)
 
 
 def get_email_sender(db) -> EmailSender:

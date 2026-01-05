@@ -108,6 +108,13 @@ body {
     border-color: #5865F2;
 }
 
+.help-text {
+    margin-top: 6px;
+    color: #72767d;
+    font-size: 12px;
+    font-weight: 400;
+}
+
 button {
     width: 100%;
     padding: 10px;
