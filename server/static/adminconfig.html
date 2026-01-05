@@ -426,6 +426,22 @@
                 smtp_use_tls: document.getElementById('smtp-use-tls').checked
             };
             
+            // Validate SMTP settings if enabled
+            if (smtpSettings.smtp_enabled) {
+                if (!smtpSettings.smtp_host) {
+                    showSmtpTestResult(false, 'SMTP Host is required when email notifications are enabled');
+                    return;
+                }
+                if (!smtpSettings.smtp_from_email) {
+                    showSmtpTestResult(false, 'From Email Address is required when email notifications are enabled');
+                    return;
+                }
+                if (!smtpSettings.smtp_port || smtpSettings.smtp_port < 1 || smtpSettings.smtp_port > 65535) {
+                    showSmtpTestResult(false, 'Valid SMTP Port (1-65535) is required');
+                    return;
+                }
+            }
+            
             ws.send(JSON.stringify({
                 type: 'test_smtp',
                 settings: smtpSettings

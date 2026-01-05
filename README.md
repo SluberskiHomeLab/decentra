@@ -24,6 +24,10 @@ A decentralized Discord-like chat server and client that is non-federated and se
 - 🔐 Username/password authentication
 - 🎟️ Invite code system for controlled access
 - 📜 Complete message history with database persistence
+- 📧 **Email Notifications** - SMTP support for system emails
+  - Configurable SMTP settings in admin panel
+  - Welcome emails for new users
+  - Test SMTP connection before saving
 - 🐳 Docker containerized for easy deployment
 - 🌐 Modern web-based interface with Discord-like layout
 - 🎨 Beautiful responsive UI design
@@ -296,6 +300,35 @@ Any authenticated user can generate invite codes:
 2. Copy the displayed code from the modal
 3. Share the code with someone you want to invite
 4. Each invite code can only be used once
+
+## Email Notifications (SMTP)
+
+Decentra supports sending email notifications for system events like user registration. The first user (admin) can configure SMTP settings through the Admin Configuration page.
+
+### Setting up SMTP
+
+1. Log in as the first user (admin)
+2. Navigate to Admin Configuration (accessible from the chat interface)
+3. Scroll to the "Email & SMTP Settings" section
+4. Configure your SMTP server settings:
+   - Enable email notifications
+   - Enter your SMTP host (e.g., smtp.gmail.com)
+   - Set the SMTP port (587 for TLS, 465 for SSL)
+   - Enter authentication credentials
+   - Set the "From" email address and name
+5. Click "Test SMTP Connection" to verify your settings
+6. Click "Save Settings" to save your configuration
+
+For detailed SMTP setup instructions and provider-specific examples, see [SMTP_SETUP.md](SMTP_SETUP.md).
+
+### Common SMTP Providers
+
+- **Gmail**: smtp.gmail.com:587 (requires App Password)
+- **Office 365**: smtp.office365.com:587
+- **SendGrid**: smtp.sendgrid.net:587
+- **Mailgun**: smtp.mailgun.org:587
+
+See [SMTP_SETUP.md](SMTP_SETUP.md) for complete configuration details.
 
 ## Customization
 
