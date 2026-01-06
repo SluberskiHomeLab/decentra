@@ -1072,7 +1072,7 @@ async def handler(websocket):
                                     'set_at': set_at.isoformat() if set_at and hasattr(set_at, 'isoformat') else None
                                 }
                                 
-                                for client_ws in active_connections.values():
+                                for client_ws in clients.keys():
                                     try:
                                         await client_ws.send_str(json.dumps(announcement_data))
                                     except Exception:
