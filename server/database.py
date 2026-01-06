@@ -343,6 +343,37 @@ class Database:
                         END $$;
                     ''')
                     
+                    # Add announcement columns if they don't exist (migration)
+                    cursor.execute('''
+                        DO $$ 
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'admin_settings' AND column_name = 'announcement_enabled'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN announcement_enabled BOOLEAN DEFAULT FALSE;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'admin_settings' AND column_name = 'announcement_message'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN announcement_message TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'admin_settings' AND column_name = 'announcement_duration_minutes'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN announcement_duration_minutes INTEGER DEFAULT 60;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'admin_settings' AND column_name = 'announcement_set_at'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN announcement_set_at TIMESTAMP;
+                            END IF;
+                        END $$;
+                    ''')
+                    
                     conn.commit()
                 
                 # If we get here, connection was successful

@@ -2171,3 +2171,83 @@ body::before {
     transform: scale(1.05);
     box-shadow: 0 4px 12px rgba(88, 101, 242, 0.3);
 }
+
+/* Announcement Banner */
+:root {
+    --announcement-banner-height: 48px;
+}
+
+.announcement-banner {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: linear-gradient(90deg, #5865F2 0%, #7289da 100%);
+    color: white;
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+    z-index: 9999;
+    animation: slideDown 0.3s ease-out;
+    min-height: var(--announcement-banner-height);
+}
+
+@keyframes slideDown {
+    from {
+        transform: translateY(-100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+.announcement-banner.hidden {
+    display: none;
+}
+
+.announcement-content {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    font-size: 14px;
+    font-weight: 500;
+    overflow: hidden;
+}
+
+.announcement-icon {
+    font-size: 18px;
+    margin-right: 8px;
+    flex-shrink: 0;
+}
+
+#announcement-text {
+    margin-left: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.announcement-close {
+    background: transparent;
+    border: none;
+    color: white;
+    font-size: 20px;
+    cursor: pointer;
+    padding: 5px 10px;
+    border-radius: 4px;
+    transition: background 0.2s ease;
+    margin-left: 20px;
+}
+
+.announcement-close:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+/* Adjust main container when announcement is visible */
+body.announcement-visible .main-container {
+    margin-top: var(--announcement-banner-height);
+}

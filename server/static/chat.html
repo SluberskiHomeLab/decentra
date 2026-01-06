@@ -7,6 +7,15 @@
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
+    <!-- Announcement Banner -->
+    <div id="announcement-banner" class="announcement-banner hidden" role="status" aria-live="polite">
+        <div class="announcement-content">
+            <span class="announcement-icon">📢</span>
+            <span id="announcement-text"></span>
+        </div>
+        <button id="close-announcement" class="announcement-close" title="Dismiss" aria-label="Dismiss announcement">✕</button>
+    </div>
+    
     <div class="main-container">
         <!-- Left Sidebar: Servers and DMs -->
         <div class="left-sidebar">

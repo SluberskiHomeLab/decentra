@@ -604,6 +604,18 @@ async def handler(websocket):
         })
         await websocket.send_str(user_data)
         
+        # Send announcement data
+        admin_settings = db.get_admin_settings()
+        set_at = admin_settings.get('announcement_set_at')
+        announcement_data = {
+            'type': 'announcement_update',
+            'enabled': admin_settings.get('announcement_enabled', False),
+            'message': admin_settings.get('announcement_message', ''),
+            'duration_minutes': admin_settings.get('announcement_duration_minutes', 60),
+            'set_at': set_at.isoformat() if set_at and hasattr(set_at, 'isoformat') else None
+        }
+        await websocket.send_str(json.dumps(announcement_data))
+        
         # Deprecated: Send old message history for backward compatibility
         if messages:
             history_message = json.dumps({
@@ -1031,11 +1043,72 @@ async def handler(websocket):
                             }))
                         else:
                             settings = data.get('settings', {})
+                            
+                            # Server-side validation for announcement settings
+                            if settings.get('announcement_enabled'):
+                                # Validate message length
+                                message = settings.get('announcement_message', '')
+                                if len(message) > 500:
+                                    await websocket.send_str(json.dumps({
+                                        'type': 'error',
+                                        'message': 'Announcement message cannot exceed 500 characters'
+                                    }))
+                                    continue
+                                
+                                # Validate duration
+                                duration = settings.get('announcement_duration_minutes')
+                                if duration is None or not isinstance(duration, (int, float)):
+                                    await websocket.send_str(json.dumps({
+                                        'type': 'error',
+                                        'message': 'Invalid announcement duration value'
+                                    }))
+                                    continue
+                                
+                                duration = int(duration)
+                                if duration < 1 or duration > 10080:
+                                    await websocket.send_str(json.dumps({
+                                        'type': 'error',
+                                        'message': 'Announcement duration must be between 1 and 10080 minutes'
+                                    }))
+                                    continue
+                                
+                                settings['announcement_duration_minutes'] = duration
+                            
+                            # If announcement is enabled and message is set, update timestamp
+                            if settings.get('announcement_enabled') and settings.get('announcement_message'):
+                                # Get current settings to check if announcement changed
+                                current_settings = db.get_admin_settings()
+                                if (not current_settings.get('announcement_enabled') or 
+                                    current_settings.get('announcement_message') != settings.get('announcement_message') or
+                                    current_settings.get('announcement_duration_minutes') != settings.get('announcement_duration_minutes')):
+                                    # Announcement was just enabled, message changed, or duration changed - reset timestamp
+                                    settings['announcement_set_at'] = datetime.now()
+                            elif not settings.get('announcement_enabled'):
+                                # Announcement disabled, clear timestamp
+                                settings['announcement_set_at'] = None
+                            
                             # Save settings to database
                             success = db.update_admin_settings(settings)
                             
                             if success:
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Admin {username} updated settings: {settings}")
+                                
+                                # Broadcast announcement update to all connected clients
+                                set_at = settings.get('announcement_set_at')
+                                announcement_data = {
+                                    'type': 'announcement_update',
+                                    'enabled': settings.get('announcement_enabled', False),
+                                    'message': settings.get('announcement_message', ''),
+                                    'duration_minutes': settings.get('announcement_duration_minutes', 60),
+                                    'set_at': set_at.isoformat() if set_at and hasattr(set_at, 'isoformat') else None
+                                }
+                                
+                                for client_ws in clients.keys():
+                                    try:
+                                        await client_ws.send_str(json.dumps(announcement_data))
+                                    except Exception:
+                                        pass  # Ignore errors sending to individual clients
+                                
                                 await websocket.send_str(json.dumps({
                                     'type': 'settings_saved',
                                     'message': 'Settings saved successfully'
