@@ -58,17 +58,17 @@ async def test_https_server():
         client_ssl_context.verify_mode = ssl.CERT_NONE
         
         url = f'https://127.0.0.1:{port}/'
-        print(f"\nTesting HTTP request to {url}")
+        print(f"\nTesting HTTPS request to {url}")
         
         # Use aiohttp client for async request
         async with aiohttp.ClientSession() as session:
             async with session.get(url, ssl=client_ssl_context) as response:
                 content = await response.text()
                 assert content == "Hello from HTTPS server!", f"Unexpected response: {content}"
-                print(f"✓ HTTP request successful: {content}")
+                print(f"✓ HTTPS request successful: {content}")
     
     except Exception as e:
-        print(f"❌ HTTP request failed: {e}")
+        print(f"❌ HTTPS request failed: {e}")
         raise
     
     finally:
