@@ -438,8 +438,18 @@
                 // Announcement settings
                 announcement_enabled: document.getElementById('announcement-enabled').checked,
                 announcement_message: document.getElementById('announcement-message').value,
-                announcement_duration_minutes: parseInt(document.getElementById('announcement-duration').value, 10)
+                announcement_duration_minutes: parseInt(document.getElementById('announcement-duration').value, 10) || 60
             };
+            
+            // Validate announcement duration
+            if (settings.announcement_enabled && settings.announcement_duration_minutes < 1) {
+                showStatus('Announcement duration must be at least 1 minute', 'error');
+                return;
+            }
+            if (settings.announcement_enabled && settings.announcement_duration_minutes > 10080) {
+                showStatus('Announcement duration cannot exceed 7 days (10080 minutes)', 'error');
+                return;
+            }
             
             ws.send(JSON.stringify({
                 type: 'save_admin_settings',
