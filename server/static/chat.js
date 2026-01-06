@@ -261,12 +261,41 @@
         };
     }
     
+    // Helper function to validate avatar image URLs
+    function isSafeAvatarUrl(url) {
+        if (typeof url !== 'string' || url.trim() === '') {
+            return false;
+        }
+        try {
+            // Resolve relative URLs against current origin
+            const parsed = new URL(url, window.location.origin);
+            const scheme = parsed.protocol.toLowerCase();
+            // Disallow dangerous schemes
+            if (scheme === 'javascript:' || scheme === 'vbscript:') {
+                return false;
+            }
+            // Optionally restrict to same-origin; adjust if external avatars are needed
+            if (parsed.origin !== window.location.origin) {
+                return false;
+            }
+            return true;
+        } catch (e) {
+            // If URL parsing fails, treat as unsafe
+            return false;
+        }
+    }
+
     // Helper function to create avatar element
     function createAvatarElement(avatarData, className = 'user-avatar') {
         const avatarEl = document.createElement('span');
         avatarEl.className = className;
         
-        if (avatarData && avatarData.avatar_type === 'image' && avatarData.avatar_data) {
+        if (
+            avatarData &&
+            avatarData.avatar_type === 'image' &&
+            avatarData.avatar_data &&
+            isSafeAvatarUrl(avatarData.avatar_data)
+        ) {
             // Image avatar
             const img = document.createElement('img');
             img.src = avatarData.avatar_data;
