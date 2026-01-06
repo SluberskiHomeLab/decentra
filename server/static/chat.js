@@ -261,6 +261,45 @@
         };
     }
     
+    // Helper to sanitize avatar image URLs coming from untrusted sources.
+    // Returns a safe URL string or null if the value is not acceptable.
+    function sanitizeAvatarUrl(rawUrl) {
+        if (typeof rawUrl !== 'string') {
+            return null;
+        }
+        const trimmed = rawUrl.trim();
+        if (!trimmed) {
+            return null;
+        }
+
+        // Allow data URLs for images only
+        if (trimmed.startsWith('data:')) {
+            const lower = trimmed.toLowerCase();
+            if (lower.startsWith('data:image/')) {
+                return trimmed;
+            }
+            return null;
+        }
+
+        try {
+            // Support absolute and relative URLs; resolve relative to current origin.
+            const url = new URL(trimmed, window.location.origin);
+
+            // Only allow http/https, and require same origin for http.
+            if (url.protocol === 'https:') {
+                return url.toString();
+            }
+            if (url.protocol === 'http:' && url.origin === window.location.origin) {
+                return url.toString();
+            }
+        } catch (e) {
+            // Invalid URL
+            return null;
+        }
+
+        return null;
+    }
+    
     // Helper function to create avatar element
     function createAvatarElement(avatarData, className = 'user-avatar') {
         const avatarEl = document.createElement('span');
@@ -269,9 +308,15 @@
         if (avatarData && avatarData.avatar_type === 'image' && avatarData.avatar_data) {
             // Image avatar
             const img = document.createElement('img');
-            img.src = avatarData.avatar_data;
-            img.alt = 'Avatar';
-            avatarEl.appendChild(img);
+            const safeSrc = sanitizeAvatarUrl(avatarData.avatar_data);
+            if (safeSrc) {
+                img.src = safeSrc;
+                img.alt = 'Avatar';
+                avatarEl.appendChild(img);
+            } else {
+                // Fallback to emoji avatar if URL is not safe
+                avatarEl.textContent = (avatarData && avatarData.avatar) || '👤';
+            }
         } else {
             // Emoji avatar
             avatarEl.textContent = (avatarData && avatarData.avatar) || '👤';
@@ -288,9 +333,15 @@
         if (avatarData && avatarData.avatar_type === 'image' && avatarData.avatar_data) {
             // Image avatar
             const img = document.createElement('img');
-            img.src = avatarData.avatar_data;
-            img.alt = 'Avatar';
-            element.appendChild(img);
+            const safeSrc = sanitizeAvatarUrl(avatarData.avatar_data);
+            if (safeSrc) {
+                img.src = safeSrc;
+                img.alt = 'Avatar';
+                element.appendChild(img);
+            } else {
+                // Fallback to emoji avatar if URL is not safe
+                element.textContent = (avatarData && avatarData.avatar) || '👤';
+            }
         } else {
             // Emoji avatar
             element.textContent = (avatarData && avatarData.avatar) || '👤';
