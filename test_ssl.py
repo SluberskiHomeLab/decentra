@@ -49,7 +49,9 @@ def test_ssl_certificate_generation():
     print(f"  Serial number: {cert.serial_number}")
     
     # Verify certificate is still valid
-    # X.509 certificates store times as timezone-naive UTC, so compare with UTC time
+    # Note: X.509 certificates store times as timezone-naive UTC by design.
+    # We use timezone-aware datetime to ensure we're working in UTC, then
+    # convert to timezone-naive for comparison with the certificate times.
     now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     assert cert.not_valid_after > now_utc, "Certificate has expired"
     print(f"✓ Certificate is valid")

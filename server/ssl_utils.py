@@ -38,8 +38,9 @@ def generate_self_signed_cert(cert_dir='certs', cert_file='cert.pem', key_file='
             with open(cert_path, 'rb') as f:
                 cert = x509.load_pem_x509_certificate(f.read())
                 # Check if certificate is still valid (not expired)
-                # X.509 certificates store times as timezone-naive UTC
-                # Compare with current UTC time (also timezone-naive for compatibility)
+                # Note: X.509 certificates store times as timezone-naive UTC by design.
+                # We use timezone-aware datetime to ensure we're working in UTC, then
+                # convert to timezone-naive for comparison with the certificate times.
                 now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
                 if cert.not_valid_after > now_utc:
                     print(f"Using existing SSL certificate from {cert_path}")
