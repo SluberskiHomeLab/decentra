@@ -2168,6 +2168,6 @@ body::before {
 .emoji-option:hover {
     background: #40444b;
     border-color: #5865F2;
-    transform: scale(1.1);
+    transform: scale(1.05);
     box-shadow: 0 4px 12px rgba(88, 101, 242, 0.3);
 }
