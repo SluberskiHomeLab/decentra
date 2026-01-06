@@ -942,7 +942,7 @@ body::before {
 
 .invite-friend-item:hover {
     background: #3f4247;
-    transform: scale(1.02);
+    transform: translateY(-1px);
 }
 
 .invite-friend-item input[type="checkbox"] {
