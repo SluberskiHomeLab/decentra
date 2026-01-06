@@ -625,6 +625,10 @@
                 }
                 break;
             
+            case 'announcement_update':
+                handleAnnouncementUpdate(data);
+                break;
+            
             case 'admin_status':
                 // Show or hide admin config menu item based on admin status
                 if (data.is_admin) {
@@ -3463,6 +3467,77 @@
             availableMembersList.appendChild(memberItem);
         });
     };
+    
+    // Announcement banner handling
+    const announcementBanner = document.getElementById('announcement-banner');
+    const announcementText = document.getElementById('announcement-text');
+    const closeAnnouncementBtn = document.getElementById('close-announcement');
+    const ANNOUNCEMENT_DISMISSED_KEY = 'announcement_dismissed';
+    let currentAnnouncementData = null; // Store current announcement data
+    
+    function handleAnnouncementUpdate(data) {
+        currentAnnouncementData = data; // Store for later use when dismissing
+        
+        if (!data.enabled || !data.message) {
+            hideAnnouncement();
+            return;
+        }
+        
+        // Check if announcement has expired
+        if (data.set_at && data.duration_minutes) {
+            const setAt = new Date(data.set_at);
+            const expiresAt = new Date(setAt.getTime() + data.duration_minutes * 60000);
+            const now = new Date();
+            
+            if (now > expiresAt) {
+                hideAnnouncement();
+                return;
+            }
+        }
+        
+        // Check if user has dismissed this specific announcement
+        const dismissedData = localStorage.getItem(ANNOUNCEMENT_DISMISSED_KEY);
+        if (dismissedData) {
+            try {
+                const dismissed = JSON.parse(dismissedData);
+                // Check if this is the same announcement that was dismissed
+                if (dismissed.message === data.message && dismissed.set_at === data.set_at) {
+                    hideAnnouncement();
+                    return;
+                }
+            } catch (e) {
+                // Invalid JSON, ignore
+            }
+        }
+        
+        // Show announcement
+        announcementText.textContent = data.message;
+        announcementBanner.classList.remove('hidden');
+        document.body.classList.add('announcement-visible');
+    }
+    
+    function hideAnnouncement() {
+        announcementBanner.classList.add('hidden');
+        document.body.classList.remove('announcement-visible');
+    }
+    
+    closeAnnouncementBtn.addEventListener('click', () => {
+        if (!currentAnnouncementData) return;
+        
+        // Store dismissal in localStorage
+        try {
+            localStorage.setItem(ANNOUNCEMENT_DISMISSED_KEY, JSON.stringify({
+                message: currentAnnouncementData.message,
+                set_at: currentAnnouncementData.set_at,
+                dismissed_at: new Date().toISOString()
+            }));
+        } catch (e) {
+            console.error('Failed to store announcement dismissal:', e);
+        }
+        
+        hideAnnouncement();
+    });
+    
     
     console.log('chat.js: About to call connect()');
     // Initialize connection

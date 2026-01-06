@@ -286,6 +286,30 @@
             </div>
         </div>
         
+        <div class="admin-section">
+            <h2>Announcements</h2>
+            
+            <div class="setting-item">
+                <label for="announcement-enabled">Enable Announcement Banner</label>
+                <div class="checkbox-wrapper">
+                    <input type="checkbox" id="announcement-enabled">
+                    <span class="description" style="margin: 0;">Display an announcement banner at the top of the chat interface</span>
+                </div>
+            </div>
+            
+            <div class="setting-item">
+                <label for="announcement-message">Announcement Message</label>
+                <div class="description">The message to display in the announcement banner</div>
+                <input type="text" id="announcement-message" placeholder="Enter announcement message">
+            </div>
+            
+            <div class="setting-item">
+                <label for="announcement-duration">Display Duration (minutes)</label>
+                <div class="description">How long to display the announcement (1 minute to 7 days / 10080 minutes)</div>
+                <input type="number" id="announcement-duration" min="1" max="10080" value="60">
+            </div>
+        </div>
+        
         <button id="save-settings" class="save-button">Save Settings</button>
     </div>
     
@@ -364,6 +388,11 @@
             document.getElementById('smtp-from-email').value = settings.smtp_from_email || '';
             document.getElementById('smtp-from-name').value = settings.smtp_from_name || 'Decentra';
             document.getElementById('smtp-use-tls').checked = settings.smtp_use_tls ?? true; // Default to true if not set
+            
+            // Load announcement settings
+            document.getElementById('announcement-enabled').checked = settings.announcement_enabled || false;
+            document.getElementById('announcement-message').value = settings.announcement_message || '';
+            document.getElementById('announcement-duration').value = settings.announcement_duration_minutes || 60;
         }
         
         function showStatus(message, type) {
@@ -405,7 +434,11 @@
                 smtp_password: document.getElementById('smtp-password').value,
                 smtp_from_email: document.getElementById('smtp-from-email').value,
                 smtp_from_name: document.getElementById('smtp-from-name').value,
-                smtp_use_tls: document.getElementById('smtp-use-tls').checked
+                smtp_use_tls: document.getElementById('smtp-use-tls').checked,
+                // Announcement settings
+                announcement_enabled: document.getElementById('announcement-enabled').checked,
+                announcement_message: document.getElementById('announcement-message').value,
+                announcement_duration_minutes: parseInt(document.getElementById('announcement-duration').value, 10)
             };
             
             ws.send(JSON.stringify({
