@@ -34,3 +34,7 @@ server/static/chat-old.js
 
 # Environment variables
 .env
+
+# SSL certificates (auto-generated)
+server/certs/
+certs/

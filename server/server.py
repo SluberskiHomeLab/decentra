@@ -20,6 +20,7 @@ import hashlib
 from database import Database
 from api import setup_api_routes
 from email_utils import EmailSender
+from ssl_utils import generate_self_signed_cert, create_ssl_context
 
 # Initialize database
 db = Database()
@@ -2097,11 +2098,17 @@ async def cleanup_verification_codes_periodically():
 
 
 async def main():
-    """Start the HTTP and WebSocket server."""
+    """Start the HTTPS and WebSocket server."""
     print("Decentra Chat Server")
     print("=" * 50)
-    print("Starting HTTP server on http://0.0.0.0:8765")
-    print("Starting WebSocket server on ws://0.0.0.0:8765")
+    
+    # Generate or load self-signed SSL certificate
+    cert_dir = os.path.join(os.path.dirname(__file__), 'certs')
+    cert_path, key_path = generate_self_signed_cert(cert_dir=cert_dir)
+    ssl_context = create_ssl_context(cert_path, key_path)
+    
+    print("Starting HTTPS server on https://0.0.0.0:8765")
+    print("Starting WebSocket server on wss://0.0.0.0:8765")
     print("=" * 50)
     
     # Initialize database counters from existing data
@@ -2117,19 +2124,21 @@ async def main():
     # Setup REST API routes
     setup_api_routes(app, db)
     
-    # Run the server
+    # Run the server with SSL
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 8765)
+    site = web.TCPSite(runner, '0.0.0.0', 8765, ssl_context=ssl_context)
     await site.start()
     
     # Start periodic cleanup task
     asyncio.create_task(cleanup_verification_codes_periodically())
     
     print("Server started successfully!")
-    print("Access the web client at http://localhost:8765")
+    print("Access the web client at https://localhost:8765")
     print(f"Database: PostgreSQL at {db.db_url}")
-    print("REST API available at http://localhost:8765/api/*")
+    print("REST API available at https://localhost:8765/api/*")
+    print("\nNOTE: You may see a browser warning about the self-signed certificate.")
+    print("This is normal for local development. Click 'Advanced' and proceed to continue.")
     
     # Keep running
     await asyncio.Future()

@@ -19,6 +19,26 @@ python3 -m py_compile server/server.py
 python3 -m py_compile client/client.py
 echo "✓ Python syntax is valid"
 
+# Run SSL certificate generation tests
+echo "Testing SSL certificate generation..."
+python3 test_ssl.py
+if [ $? -eq 0 ]; then
+    echo "✓ SSL certificate generation works"
+else
+    echo "✗ SSL certificate generation failed"
+    exit 1
+fi
+
+# Run HTTPS server tests
+echo "Testing HTTPS server functionality..."
+python3 test_https_server.py
+if [ $? -eq 0 ]; then
+    echo "✓ HTTPS server functionality works"
+else
+    echo "✗ HTTPS server test failed"
+    exit 1
+fi
+
 # Check if websockets can be installed
 echo "Checking if websockets library is available..."
 pip3 install --user websockets &> /dev/null

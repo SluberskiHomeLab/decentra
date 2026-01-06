@@ -73,8 +73,10 @@ This will start both the PostgreSQL database and the chat server on port 8765 wi
 
 4. Open your web browser and navigate to:
 ```
-http://localhost:8765
+https://localhost:8765
 ```
+
+**Note**: Since the server uses a self-signed SSL certificate for local security, your browser will show a security warning. This is expected behavior. Click "Advanced" or "Show Details" and then "Proceed to localhost" (the exact wording varies by browser) to continue.
 
 5. Create an account or log in to start chatting!
 
@@ -126,7 +128,9 @@ docker run -p 8765:8765 \
 
 **Note**: For easier management, consider using docker-compose instead of running containers manually. Docker Compose automatically loads the .env file.
 
-Then open your browser to `http://localhost:8765`
+Then open your browser to `https://localhost:8765`
+
+**Note**: You will see a browser warning about the self-signed certificate. This is normal for local development.
 
 ### Running Locally (without Docker)
 
@@ -198,7 +202,9 @@ The terminal-based client is still available for backwards compatibility but is 
 
 ### Configuration
 
-The server runs on port 8765 by default and serves both HTTP and WebSocket connections.
+The server runs on port 8765 by default and serves both HTTPS and WebSocket connections with a self-signed SSL certificate for improved local security.
+
+**SSL Certificate**: The server automatically generates a self-signed SSL certificate on first run, which is stored in the `server/certs/` directory. The certificate is valid for 1 year and will be reused on subsequent runs. When accessing the application in your browser, you'll need to accept the self-signed certificate warning.
 
 ## Usage
 
@@ -371,7 +377,7 @@ services:
       - "8080:8765"  # Change 8080 to your desired port
 ```
 
-Then access the web interface at `http://localhost:8080`
+Then access the web interface at `https://localhost:8080`
 
 ### Multiple Users
 
@@ -412,14 +418,16 @@ Decentra includes a REST API for desktop application integration. The API provid
 
 See [API.md](API.md) for complete API documentation.
 
-**API Base URL**: `http://localhost:8765/api`
+**API Base URL**: `https://localhost:8765/api`
 
 **Example**: Get user's servers
 ```bash
-curl "http://localhost:8765/api/servers?username=myusername"
+curl -k "https://localhost:8765/api/servers?username=myusername"
 ```
 
-For real-time messaging and updates, desktop applications should use the WebSocket endpoint at `ws://localhost:8765/ws` in combination with the REST API.
+**Note**: Use the `-k` flag with curl to accept the self-signed certificate.
+
+For real-time messaging and updates, desktop applications should use the WebSocket endpoint at `wss://localhost:8765/ws` in combination with the REST API.
 
 ## Development
 
