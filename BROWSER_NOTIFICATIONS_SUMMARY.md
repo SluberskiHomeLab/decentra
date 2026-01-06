@@ -180,6 +180,8 @@ See `NOTIFICATION_TEST_CHECKLIST.md` for detailed testing procedures.
 1. `README.md` - Added feature documentation
 2. `NOTIFICATION_TEST_CHECKLIST.md` - Created testing guide (new file)
 3. `BROWSER_NOTIFICATIONS_SUMMARY.md` - This summary (new file)
+4. `NOTIFICATION_FLOW_DIAGRAM.md` - Notification flow diagram (new file)
+5. `docs/NOTIFICATIONS_INDEX.md` - Notifications documentation index (new file)
 
 ## Files with Existing Implementation (Not Modified)
 
