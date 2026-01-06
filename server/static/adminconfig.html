@@ -438,15 +438,18 @@
             };
             
             // Parse and validate announcement duration
-            const durationInput = document.getElementById('announcement-duration').value;
+            const durationInputElement = document.getElementById('announcement-duration');
+            const durationInput = durationInputElement.value;
             const duration = parseInt(durationInput, 10);
-            
-            // Check if parsing failed
+
+            // If parsing fails, clear the field, inform the user, and abort saving
             if (isNaN(duration)) {
-                settings.announcement_duration_minutes = 60; // Default value
-            } else {
-                settings.announcement_duration_minutes = duration;
+                durationInputElement.value = '';
+                showStatus('Please enter a valid numeric value for announcement duration in minutes.', 'error');
+                return;
             }
+
+            settings.announcement_duration_minutes = duration;
             
             // Announcement settings
             settings.announcement_enabled = document.getElementById('announcement-enabled').checked;
