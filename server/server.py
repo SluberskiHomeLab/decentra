@@ -1079,8 +1079,9 @@ async def handler(websocket):
                                 # Get current settings to check if announcement changed
                                 current_settings = db.get_admin_settings()
                                 if (not current_settings.get('announcement_enabled') or 
-                                    current_settings.get('announcement_message') != settings.get('announcement_message')):
-                                    # Announcement was just enabled or message changed, set timestamp
+                                    current_settings.get('announcement_message') != settings.get('announcement_message') or
+                                    current_settings.get('announcement_duration_minutes') != settings.get('announcement_duration_minutes')):
+                                    # Announcement was just enabled, message changed, or duration changed - reset timestamp
                                     settings['announcement_set_at'] = datetime.now()
                             elif not settings.get('announcement_enabled'):
                                 # Announcement disabled, clear timestamp

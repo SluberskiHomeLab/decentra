@@ -2119,15 +2119,20 @@ body::before {
     align-items: center;
     font-size: 14px;
     font-weight: 500;
+    overflow: hidden;
 }
 
 .announcement-icon {
     font-size: 18px;
     margin-right: 8px;
+    flex-shrink: 0;
 }
 
 #announcement-text {
     margin-left: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .announcement-close {
