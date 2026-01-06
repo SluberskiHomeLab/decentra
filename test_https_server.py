@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script to verify HTTPS server functionality with a simple HTTP server.
+Test script to verify HTTPS server functionality with a simple HTTPS server.
 """
 
 import asyncio
