@@ -153,7 +153,7 @@ def test_message_encryption():
     # Test 8: Test special characters and unicode
     print("\nTest 8: Testing encryption with special characters and unicode...")
     special_message = "Hello! 👋 This has émojis 🎉 and spëcial çharacters: !@#$%^&*()_+-=[]{}|;:',.<>?/~`"
-    msg_id = db.save_message("alice", special_message, "dm", "dm_1")
+    db.save_message("alice", special_message, "dm", "dm_1")
     
     messages = db.get_messages("dm", "dm_1", 1)
     assert messages[0]['content'] == special_message, "Special characters not handled correctly"
