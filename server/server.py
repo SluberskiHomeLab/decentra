@@ -713,7 +713,9 @@ async def handler(websocket):
                             server_info['permissions'] = {
                                 'can_create_channel': member.get('can_create_channel', False),
                                 'can_edit_channel': member.get('can_edit_channel', False),
-                                'can_delete_channel': member.get('can_delete_channel', False)
+                                'can_delete_channel': member.get('can_delete_channel', False),
+                                'can_edit_messages': member.get('can_edit_messages', False),
+                                'can_delete_messages': member.get('can_delete_messages', False)
                             }
                             break
                 user_servers.append(server_info)
