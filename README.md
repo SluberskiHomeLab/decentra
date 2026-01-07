@@ -59,14 +59,38 @@ cd decentra
 cp .env.example .env
 ```
 
-Then edit `.env` and update the database credentials (especially the password):
+Then edit `.env` and update the required configuration:
+
+**Required Configuration:**
 ```env
 # PostgreSQL Database Configuration
 POSTGRES_DB=decentra
 POSTGRES_USER=decentra
 POSTGRES_PASSWORD=your_secure_password_here
+
+# Server Configuration
+DATABASE_URL=postgresql://decentra:your_secure_password_here@postgres:5432/decentra
+
+# Encryption Configuration (REQUIRED)
+DECENTRA_ENCRYPTION_KEY=your_encryption_key_here
 ```
 
+**⚠️ IMPORTANT: Encryption Key Setup**
+
+The `DECENTRA_ENCRYPTION_KEY` environment variable is **required** for the application to start. It is used to encrypt sensitive data like SMTP passwords in the database.
+
+To generate a secure encryption key, run:
+```bash
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+```
+
+Copy the output and set it as the value of `DECENTRA_ENCRYPTION_KEY` in your `.env` file.
+
+**Security Note:** 
+- Keep this key secret and secure
+- Never commit the `.env` file to version control
+- If you lose this key, encrypted data cannot be recovered
+- Use a different key for each deployment/environment
 **Note**: The `DATABASE_URL` is automatically constructed from these variables. You don't need to set it manually unless you want to override the default connection string.
 
 3. Start the server:
@@ -127,6 +151,7 @@ cd server
 docker build -t decentra-server .
 docker run -p 8765:8765 \
   -e DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@decentra-postgres:5432/${POSTGRES_DB} \
+  -e DECENTRA_ENCRYPTION_KEY=${DECENTRA_ENCRYPTION_KEY} \
   --link decentra-postgres \
   decentra-server
 ```
@@ -148,9 +173,14 @@ createdb decentra
 psql -c "CREATE DATABASE decentra;"
 ```
 
-2. Set the database connection URL (optional, defaults to localhost):
+2. Set the required environment variables:
 ```bash
+# Database connection (optional, defaults to localhost)
 export DATABASE_URL=postgresql://username:password@localhost:5432/decentra
+
+# Encryption key (REQUIRED) - Generate using:
+# python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+export DECENTRA_ENCRYPTION_KEY='your-generated-encryption-key-here'
 ```
 
 3. Install dependencies and run the server:

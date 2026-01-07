@@ -11,6 +11,10 @@ import secrets
 import string
 import bcrypt
 
+# Set test encryption key before importing modules that need it
+if 'DECENTRA_ENCRYPTION_KEY' not in os.environ:
+    os.environ['DECENTRA_ENCRYPTION_KEY'] = 'test-encryption-key-for-email-verification-tests'
+
 # Add server directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
 
