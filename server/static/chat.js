@@ -3638,13 +3638,19 @@
         mobileMenuToggle.addEventListener('click', (e) => {
             e.stopPropagation();
             // Smart sidebar selection for mobile navigation:
-            // - If middle sidebar (channels) is currently visible, switch to left sidebar (servers)
-            // - If no sidebar is visible or left sidebar is visible, show middle sidebar (channels)
-            // This creates a toggle behavior: hamburger menu -> channels -> servers -> channels...
-            if (currentMobileSidebar === middleSidebar) {
+            // - If no sidebar is visible, show left sidebar (servers) first
+            // - If left sidebar (servers) is currently visible, switch to middle sidebar (channels)
+            // - If middle sidebar (channels) is currently visible, switch back to left sidebar (servers)
+            // This creates a toggle behavior: hamburger menu -> servers -> channels -> servers...
+            if (!currentMobileSidebar) {
+                openMobileSidebar(leftSidebar);
+            } else if (currentMobileSidebar === leftSidebar) {
+                openMobileSidebar(middleSidebar);
+            } else if (currentMobileSidebar === middleSidebar) {
                 openMobileSidebar(leftSidebar);
             } else {
-                openMobileSidebar(middleSidebar);
+                // Fallback: if for some reason currentMobileSidebar is something else, default to servers
+                openMobileSidebar(leftSidebar);
             }
         });
     }
