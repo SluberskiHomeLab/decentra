@@ -93,6 +93,47 @@ class TestEncryptionKeyRequired(unittest.TestCase):
         self.assertIn("DECENTRA_ENCRYPTION_KEY", error_message)
         
         print("✓ Test passed: get_encryption_manager() raises RuntimeError when key is missing")
+    
+    def test_empty_encryption_key_raises_error(self):
+        """Test that empty encryption key raises RuntimeError."""
+        # Set encryption key to empty string
+        os.environ['DECENTRA_ENCRYPTION_KEY'] = ''
+        
+        # Import encryption_utils module
+        from encryption_utils import EncryptionManager
+        
+        # Creating EncryptionManager should raise RuntimeError
+        with self.assertRaises(RuntimeError) as context:
+            EncryptionManager()
+        
+        # Check that the error message is informative
+        error_message = str(context.exception)
+        self.assertIn("DECENTRA_ENCRYPTION_KEY", error_message)
+        self.assertIn("required", error_message.lower())
+        
+        print("✓ Test passed: EncryptionManager raises RuntimeError when key is empty string")
+    
+    def test_whitespace_encryption_key_raises_error(self):
+        """Test that whitespace-only encryption key raises RuntimeError."""
+        # Test various whitespace-only values
+        whitespace_values = ['   ', '\t', '\n', '  \t\n  ']
+        
+        from encryption_utils import EncryptionManager
+        
+        for whitespace_key in whitespace_values:
+            # Set encryption key to whitespace-only string
+            os.environ['DECENTRA_ENCRYPTION_KEY'] = whitespace_key
+            
+            # Creating EncryptionManager should raise RuntimeError
+            with self.assertRaises(RuntimeError) as context:
+                EncryptionManager()
+            
+            # Check that the error message is informative
+            error_message = str(context.exception)
+            self.assertIn("DECENTRA_ENCRYPTION_KEY", error_message)
+            self.assertIn("required", error_message.lower())
+        
+        print("✓ Test passed: EncryptionManager raises RuntimeError when key is whitespace-only")
 
 
 def main():
