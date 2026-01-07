@@ -124,6 +124,7 @@
             
             // Store credentials for WebSocket authentication
             sessionStorage.setItem('username', username);
+            sessionStorage.setItem('password', password);
             sessionStorage.setItem('email', email);
             sessionStorage.setItem('authMode', 'signup');
             sessionStorage.setItem('inviteCode', inviteCode);
@@ -139,6 +140,7 @@
             
             // Store credentials for WebSocket authentication
             sessionStorage.setItem('username', username);
+            sessionStorage.setItem('password', password);
             sessionStorage.setItem('authMode', 'login');
             sessionStorage.setItem('inviteCode', inviteCode);
             
