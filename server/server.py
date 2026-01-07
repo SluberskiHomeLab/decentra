@@ -7,7 +7,7 @@ A simple WebSocket-based chat server for decentralized communication.
 import asyncio
 import json
 import websockets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import bcrypt
 import secrets
 import string
@@ -83,10 +83,11 @@ def verify_password(password, password_hash):
 
 def generate_jwt_token(username):
     """Generate a JWT token for a user."""
+    now = datetime.now(timezone.utc)
     payload = {
         'username': username,
-        'exp': datetime.utcnow() + timedelta(hours=JWT_EXPIRATION_HOURS),
-        'iat': datetime.utcnow()
+        'exp': now + timedelta(hours=JWT_EXPIRATION_HOURS),
+        'iat': now
     }
     token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
     return token
