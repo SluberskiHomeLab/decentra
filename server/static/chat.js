@@ -3607,6 +3607,9 @@
     }
     
     // Mobile menu functionality
+    const MOBILE_BREAKPOINT = 768; // px - matches CSS media query
+    const MOBILE_SIDEBAR_CLOSE_DELAY = 100; // ms - allows click event to complete before sidebar closes
+    
     const mobileMenuToggle = document.getElementById('mobile-menu-toggle');
     const mobileOverlay = document.getElementById('mobile-overlay');
     const leftSidebar = document.getElementById('left-sidebar');
@@ -3652,14 +3655,10 @@
     
     // Close mobile sidebar when selecting an item
     function setupMobileClose() {
-        // Delay ensures the navigation/selection event completes before closing the sidebar
-        // Without this delay, rapid clicks might not register properly
-        const MOBILE_SIDEBAR_CLOSE_DELAY = 100;
-        
         // Close when clicking server/channel/DM items
         document.addEventListener('click', (e) => {
             if (e.target.closest('.server-item, .channel-item, .dm-item, .friend-item')) {
-                // Small delay to allow the click event to be processed before closing
+                // Delay ensures navigation completes before closing; prevents race conditions
                 setTimeout(closeMobileSidebars, MOBILE_SIDEBAR_CLOSE_DELAY);
             }
         });
@@ -3669,7 +3668,7 @@
     
     // Update mobile menu behavior based on screen size
     function updateMobileMenu() {
-        const isMobile = window.innerWidth <= 768;
+        const isMobile = window.innerWidth <= MOBILE_BREAKPOINT;
         if (!isMobile) {
             closeMobileSidebars();
         }

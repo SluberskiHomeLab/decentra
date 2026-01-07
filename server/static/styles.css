@@ -1022,8 +1022,8 @@ body::before {
     padding: 8px 12px;
     border-radius: 8px;
     transition: all 0.3s ease;
-    min-width: 44px; /* iOS touch target minimum */
-    min-height: 44px;
+    min-width: 48px; /* Touch target best practice for all platforms */
+    min-height: 48px;
 }
 
 .mobile-menu-toggle:hover {
