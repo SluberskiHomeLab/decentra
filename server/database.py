@@ -62,7 +62,7 @@ class Database:
                             email VARCHAR(255),
                             email_verified BOOLEAN DEFAULT FALSE,
                             bio TEXT DEFAULT '',
-                            status_message VARCHAR(255) DEFAULT ''
+                            status_message VARCHAR(100) DEFAULT ''
                         )
                     ''')
                     
