@@ -2027,7 +2027,9 @@ async def handler(websocket):
                     elif data.get('type') == 'accept_voice_call':
                         caller_username = data.get('from', '').strip()
                         
-                        if db.get_user(caller_username):
+                        # Verify caller exists and is a friend
+                        friends = set(db.get_friends(username))
+                        if db.get_user(caller_username) and caller_username in friends:
                             await send_to_user(caller_username, json.dumps({
                                 'type': 'voice_call_accepted',
                                 'from': username
@@ -2036,7 +2038,9 @@ async def handler(websocket):
                     elif data.get('type') == 'reject_voice_call':
                         caller_username = data.get('from', '').strip()
                         
-                        if db.get_user(caller_username):
+                        # Verify caller exists and is a friend
+                        friends = set(db.get_friends(username))
+                        if db.get_user(caller_username) and caller_username in friends:
                             await send_to_user(caller_username, json.dumps({
                                 'type': 'voice_call_rejected',
                                 'from': username
