@@ -168,3 +168,15 @@ def get_encryption_manager() -> EncryptionManager:
     if _encryption_manager is None:
         _encryption_manager = EncryptionManager()
     return _encryption_manager
+
+
+def reset_encryption_manager() -> None:
+    """
+    Reset the global encryption manager instance.
+    
+    This function is intended for testing purposes only.
+    It clears the cached encryption manager so that a new one
+    will be created on the next call to get_encryption_manager().
+    """
+    global _encryption_manager
+    _encryption_manager = None

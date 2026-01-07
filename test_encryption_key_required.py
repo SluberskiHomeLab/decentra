@@ -22,9 +22,9 @@ class TestEncryptionKeyRequired(unittest.TestCase):
         if 'DECENTRA_ENCRYPTION_KEY' in os.environ:
             del os.environ['DECENTRA_ENCRYPTION_KEY']
         
-        # Clear any cached encryption manager
-        import encryption_utils
-        encryption_utils._encryption_manager = None
+        # Clear any cached encryption manager using the public API
+        from encryption_utils import reset_encryption_manager
+        reset_encryption_manager()
     
     def tearDown(self):
         """Restore original environment."""
@@ -34,9 +34,9 @@ class TestEncryptionKeyRequired(unittest.TestCase):
         elif 'DECENTRA_ENCRYPTION_KEY' in os.environ:
             del os.environ['DECENTRA_ENCRYPTION_KEY']
         
-        # Clear any cached encryption manager
-        import encryption_utils
-        encryption_utils._encryption_manager = None
+        # Clear any cached encryption manager using the public API
+        from encryption_utils import reset_encryption_manager
+        reset_encryption_manager()
     
     def test_encryption_key_missing_raises_error(self):
         """Test that missing encryption key raises RuntimeError."""
