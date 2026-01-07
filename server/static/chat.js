@@ -718,6 +718,50 @@
                 }
                 break;
             
+            case 'message_edited':
+                // Update the edited message in the UI
+                const editedMessageDiv = messagesContainer.querySelector(`[data-message-id="${data.message_id}"]`);
+                if (editedMessageDiv) {
+                    const contentDiv = editedMessageDiv.querySelector('.message-content');
+                    if (contentDiv) {
+                        contentDiv.textContent = data.content;
+                    }
+                    
+                    // Add or update edited indicator
+                    const headerDiv = editedMessageDiv.querySelector('.message-header');
+                    if (headerDiv) {
+                        let editedSpan = headerDiv.querySelector('.message-edited');
+                        if (!editedSpan) {
+                            editedSpan = document.createElement('span');
+                            editedSpan.className = 'message-edited';
+                            editedSpan.textContent = '(edited)';
+                            headerDiv.appendChild(editedSpan);
+                        }
+                    }
+                }
+                break;
+            
+            case 'message_deleted':
+                // Mark the message as deleted in the UI
+                const deletedMessageDiv = messagesContainer.querySelector(`[data-message-id="${data.message_id}"]`);
+                if (deletedMessageDiv) {
+                    deletedMessageDiv.classList.add('deleted');
+                    
+                    const contentDiv = deletedMessageDiv.querySelector('.message-content');
+                    if (contentDiv) {
+                        contentDiv.textContent = '[Message deleted]';
+                        contentDiv.style.fontStyle = 'italic';
+                        contentDiv.style.opacity = '0.6';
+                    }
+                    
+                    // Remove edit/delete buttons
+                    const actionsDiv = deletedMessageDiv.querySelector('.message-actions');
+                    if (actionsDiv) {
+                        actionsDiv.remove();
+                    }
+                }
+                break;
+            
             case 'announcement_update':
                 handleAnnouncementUpdate(data);
                 break;
@@ -1591,11 +1635,21 @@
         const messageDiv = document.createElement('div');
         messageDiv.className = 'message';
         
+        // Store message ID for edit/delete operations
+        if (msg.id) {
+            messageDiv.dataset.messageId = msg.id;
+        }
+        
         const isOwnMessage = msg.username === username;
         if (isOwnMessage) {
             messageDiv.classList.add('own');
         } else {
             messageDiv.classList.add('other');
+        }
+        
+        // Mark deleted messages
+        if (msg.deleted) {
+            messageDiv.classList.add('deleted');
         }
         
         const timestamp = new Date(msg.timestamp).toLocaleTimeString('en-US', {
@@ -1619,13 +1673,52 @@
         
         const contentWrapper = document.createElement('div');
         contentWrapper.className = 'message-content-wrapper';
+        
+        // Build the edited indicator
+        let editedIndicator = '';
+        if (msg.edited_at) {
+            editedIndicator = '<span class="message-edited">(edited)</span>';
+        }
+        
         contentWrapper.innerHTML = `
             <div class="message-header">
                 <span class="message-username ${isOwnMessage ? 'own' : 'other'}">${escapeHtml(msg.username)}</span>
                 <span class="message-time">${timestamp}</span>
+                ${editedIndicator}
             </div>
             <div class="message-content">${escapeHtml(msg.content)}</div>
         `;
+        
+        // Add edit/delete buttons if message is not deleted
+        if (!msg.deleted && msg.id) {
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'message-actions';
+            
+            // Show edit/delete buttons for own messages
+            if (isOwnMessage) {
+                actionsDiv.innerHTML = `
+                    <button class="message-action-btn edit-message-btn" title="Edit message">
+                        <span>✏️</span>
+                    </button>
+                    <button class="message-action-btn delete-message-btn" title="Delete message">
+                        <span>🗑️</span>
+                    </button>
+                `;
+            } else {
+                // For other users' messages, show buttons only if user has permissions
+                // We'll check permissions when buttons are clicked
+                actionsDiv.innerHTML = `
+                    <button class="message-action-btn edit-message-btn admin-action" title="Edit message" style="display: none;">
+                        <span>✏️</span>
+                    </button>
+                    <button class="message-action-btn delete-message-btn admin-action" title="Delete message" style="display: none;">
+                        <span>🗑️</span>
+                    </button>
+                `;
+            }
+            
+            contentWrapper.appendChild(actionsDiv);
+        }
         
         messageDiv.appendChild(avatarEl);
         messageDiv.appendChild(contentWrapper);
@@ -1737,6 +1830,100 @@
             hideMentionAutocomplete();
         }
     });
+    
+    // Handle edit and delete message button clicks using event delegation
+    messagesContainer.addEventListener('click', (e) => {
+        const editBtn = e.target.closest('.edit-message-btn');
+        const deleteBtn = e.target.closest('.delete-message-btn');
+        
+        if (editBtn) {
+            const messageDiv = editBtn.closest('.message');
+            if (messageDiv && messageDiv.dataset.messageId) {
+                startEditingMessage(messageDiv);
+            }
+        } else if (deleteBtn) {
+            const messageDiv = deleteBtn.closest('.message');
+            if (messageDiv && messageDiv.dataset.messageId) {
+                deleteMessage(messageDiv);
+            }
+        }
+    });
+    
+    // Start editing a message
+    function startEditingMessage(messageDiv) {
+        const messageId = messageDiv.dataset.messageId;
+        const contentDiv = messageDiv.querySelector('.message-content');
+        const originalContent = contentDiv.textContent;
+        
+        // Create edit form
+        const editForm = document.createElement('form');
+        editForm.className = 'message-edit-form';
+        
+        const editInput = document.createElement('input');
+        editInput.type = 'text';
+        editInput.className = 'message-edit-input';
+        editInput.value = originalContent;
+        editInput.maxLength = 2000;
+        
+        const saveBtn = document.createElement('button');
+        saveBtn.type = 'submit';
+        saveBtn.className = 'message-edit-save';
+        saveBtn.textContent = '✓ Save';
+        
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'message-edit-cancel';
+        cancelBtn.textContent = '✗ Cancel';
+        
+        editForm.appendChild(editInput);
+        editForm.appendChild(saveBtn);
+        editForm.appendChild(cancelBtn);
+        
+        // Replace content with edit form
+        contentDiv.replaceWith(editForm);
+        editInput.focus();
+        editInput.select();
+        
+        // Handle save
+        editForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const newContent = editInput.value.trim();
+            
+            if (newContent && newContent !== originalContent) {
+                ws.send(JSON.stringify({
+                    type: 'edit_message',
+                    message_id: parseInt(messageId),
+                    content: newContent
+                }));
+            }
+            
+            // Restore original content while waiting for server response
+            const restoredContentDiv = document.createElement('div');
+            restoredContentDiv.className = 'message-content';
+            restoredContentDiv.textContent = originalContent;
+            editForm.replaceWith(restoredContentDiv);
+        });
+        
+        // Handle cancel
+        cancelBtn.addEventListener('click', () => {
+            const restoredContentDiv = document.createElement('div');
+            restoredContentDiv.className = 'message-content';
+            restoredContentDiv.textContent = originalContent;
+            editForm.replaceWith(restoredContentDiv);
+        });
+    }
+    
+    // Delete a message
+    function deleteMessage(messageDiv) {
+        const messageId = messageDiv.dataset.messageId;
+        
+        if (confirm('Are you sure you want to delete this message?')) {
+            ws.send(JSON.stringify({
+                type: 'delete_message',
+                message_id: parseInt(messageId)
+            }));
+        }
+    }
     
     // User menu toggle
     userMenuBtn.addEventListener('click', (e) => {
