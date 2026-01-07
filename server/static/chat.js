@@ -199,6 +199,14 @@
     const testMessageSoundBtn = document.getElementById('test-message-sound-btn');
     const testCallSoundBtn = document.getElementById('test-call-sound-btn');
     
+    // Profile settings elements
+    const profileSettingsModal = document.getElementById('profile-settings-modal');
+    const menuProfileBtn = document.getElementById('menu-profile-btn');
+    const closeProfileModalBtn = document.getElementById('close-profile-modal');
+    const statusMessageInput = document.getElementById('status-message-input');
+    const bioInput = document.getElementById('bio-input');
+    const saveProfileBtn = document.getElementById('save-profile-btn');
+    
     // Right sidebar (members list) elements
     const rightSidebar = document.getElementById('right-sidebar');
     const toggleMembersBtn = document.getElementById('toggle-members-btn');
@@ -422,6 +430,12 @@
                 updateServersList();
                 updateDMsList();
                 updateFriendsList();
+                
+                // Store current user's profile data
+                window.currentUserProfile = {
+                    bio: data.bio || '',
+                    status_message: data.status_message || ''
+                };
                 
                 // Initialize notification manager with username and notification mode
                 if (notificationManager) {
@@ -782,6 +796,48 @@
                 updateAvatarElement(currentUserAvatar, data);
                 break;
             
+            case 'profile_update':
+                // Update profile data in friends list
+                const friendProfileUpdate = friends.find(f => 
+                    (typeof f === 'object' ? f.username : f) === data.username
+                );
+                if (friendProfileUpdate && typeof friendProfileUpdate === 'object') {
+                    friendProfileUpdate.bio = data.bio || '';
+                    friendProfileUpdate.status_message = data.status_message || '';
+                    updateFriendsList();
+                }
+                
+                // Update profile in DMs list
+                const dmProfileUpdate = dms.find(dm => dm.username === data.username);
+                if (dmProfileUpdate) {
+                    dmProfileUpdate.bio = data.bio || '';
+                    dmProfileUpdate.status_message = data.status_message || '';
+                    updateDMsList();
+                }
+                
+                // Update profile in current server members list, if available
+                if (typeof currentServerMembers !== 'undefined' && Array.isArray(currentServerMembers)) {
+                    const memberProfileUpdate = currentServerMembers.find(m => 
+                        (typeof m === 'object' ? m.username : m) === data.username
+                    );
+                    if (memberProfileUpdate && typeof memberProfileUpdate === 'object') {
+                        memberProfileUpdate.bio = data.bio || '';
+                        memberProfileUpdate.status_message = data.status_message || '';
+                        if (typeof updateServerMembersList === 'function') {
+                            updateServerMembersList();
+                        }
+                    }
+                }
+                break;
+            
+            case 'profile_updated':
+                // Update current user's profile data
+                window.currentUserProfile = {
+                    bio: data.bio || '',
+                    status_message: data.status_message || ''
+                };
+                break;
+            
             case 'voice_video_update':
                 // Update video state in participants list
                 if (voiceChat && voiceChat.currentVoiceChannel) {
@@ -1138,8 +1194,21 @@
                 const friendUsername = typeof friend === 'object' ? friend.username : friend;
                 const avatarEl = createAvatarElement(friend, 'friend-avatar');
                 
+                const userInfoDiv = document.createElement('div');
+                userInfoDiv.className = 'friend-info';
+                
                 const nameSpan = document.createElement('span');
+                nameSpan.className = 'friend-name';
                 nameSpan.textContent = friendUsername;
+                userInfoDiv.appendChild(nameSpan);
+                
+                // Add status message if available
+                if (typeof friend === 'object' && friend.status_message) {
+                    const statusSpan = document.createElement('span');
+                    statusSpan.className = 'friend-status';
+                    statusSpan.textContent = friend.status_message;
+                    userInfoDiv.appendChild(statusSpan);
+                }
                 
                 const actionsDiv = document.createElement('div');
                 actionsDiv.className = 'friend-actions';
@@ -1158,7 +1227,7 @@
                 actionsDiv.appendChild(callBtn);
                 actionsDiv.appendChild(dmBtn);
                 friendItem.appendChild(avatarEl);
-                friendItem.appendChild(nameSpan);
+                friendItem.appendChild(userInfoDiv);
                 friendItem.appendChild(actionsDiv);
                 friendsList.appendChild(friendItem);
             });
@@ -2832,6 +2901,43 @@
                 }
             }, CALL_SOUND_TEST_DURATION);
         }
+    });
+    
+    // Profile settings handlers
+    menuProfileBtn.addEventListener('click', () => {
+        userMenu.classList.add('hidden');
+        profileSettingsModal.classList.remove('hidden');
+        
+        // Load current profile data from user's data
+        // These will be populated from the init message
+        // Always initialize fields to avoid stale values if currentUserProfile is missing
+        statusMessageInput.value = (window.currentUserProfile && window.currentUserProfile.status_message) || '';
+        bioInput.value = (window.currentUserProfile && window.currentUserProfile.bio) || '';
+    });
+    
+    closeProfileModalBtn.addEventListener('click', () => {
+        profileSettingsModal.classList.add('hidden');
+    });
+    
+    profileSettingsModal.addEventListener('click', (e) => {
+        if (e.target === profileSettingsModal) {
+            profileSettingsModal.classList.add('hidden');
+        }
+    });
+    
+    saveProfileBtn.addEventListener('click', () => {
+        const bio = bioInput.value.trim();
+        const statusMessage = statusMessageInput.value.trim();
+        
+        // Send update to server
+        ws.send(JSON.stringify({
+            type: 'update_profile',
+            bio: bio,
+            status_message: statusMessage
+        }));
+        
+        // Close modal
+        profileSettingsModal.classList.add('hidden');
     });
     
     // Screen share settings modal handlers

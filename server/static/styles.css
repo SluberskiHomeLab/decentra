@@ -125,6 +125,32 @@ body::before {
     transform: translateY(-1px);
 }
 
+.form-group textarea {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid rgba(0, 0, 0, 0.35);
+    border-radius: 8px;
+    font-size: 16px;
+    transition: all 0.3s ease;
+    background-color: rgba(0, 0, 0, 0.35);
+    color: #dcddde;
+    font-family: inherit;
+    resize: vertical;
+}
+
+.form-group textarea:focus {
+    outline: none;
+    border-color: #5865F2;
+    box-shadow: 0 0 0 3px rgba(88, 101, 242, 0.1);
+}
+
+.modal-buttons {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    margin-top: 20px;
+}
+
 .button-group {
     display: flex;
     gap: 10px;
@@ -547,6 +573,28 @@ body::before {
     display: flex;
     justify-content: space-between;
     align-items: center;
+}
+
+.friend-info {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+}
+
+.friend-name {
+    font-weight: 500;
+    color: #dcddde;
+}
+
+.friend-status {
+    font-size: 12px;
+    color: #b9bbbe;
+    font-style: italic;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 2px;
 }
 
 .friend-actions {
