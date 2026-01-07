@@ -223,6 +223,20 @@ body::before {
     flex: 1;
 }
 
+/* Adjust voice controls when in call to fit narrower chat container */
+.main-container.in-voice-call .voice-controls {
+    padding: 10px 15px;
+}
+
+.main-container.in-voice-call .voice-buttons {
+    gap: 6px;
+}
+
+.main-container.in-voice-call .voice-buttons .btn-icon {
+    min-width: 40px;
+    padding: 8px;
+}
+
 .left-sidebar {
     width: 240px;
     background: #202225;
@@ -1053,6 +1067,7 @@ body::before {
 .voice-buttons {
     display: flex;
     gap: 10px;
+    flex-wrap: wrap;
 }
 
 .voice-channel {
@@ -1673,6 +1688,7 @@ body::before {
     display: flex;
     gap: 10px;
     align-items: center;
+    flex-wrap: wrap;
 }
 
 .voice-buttons .btn-icon {
