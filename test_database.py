@@ -18,11 +18,10 @@ def test_database():
     print("Testing Decentra Database Persistence")
     print("=" * 50)
     
-    # Use a temporary test database (cross-platform compatible)
-    temp_dir = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir, "test_decentra.db")
+    # Use PostgreSQL test database
+    db_url = os.getenv('TEST_DATABASE_URL', 'postgresql://decentra:decentra@localhost:5432/decentra_test')
     
-    db = Database(db_path)
+    db = Database(db_url)
     print("✓ Database created successfully")
     
     # Test 1: Create users
@@ -154,7 +153,7 @@ def test_database():
     # Test 14: Persistence check - close and reopen database
     print("\nTest 14: Testing persistence...")
     del db  # Close database
-    db = Database(db_path)  # Reopen
+    db = Database(db_url)  # Reopen
     
     # Verify data persists
     alice = db.get_user("alice")
@@ -167,10 +166,6 @@ def test_database():
     messages = db.get_messages("dm", "dm_1", 10)
     assert len(messages) == 1, "Message data lost after restart"
     print("✓ All data persisted successfully after database restart")
-    
-    # Cleanup
-    os.remove(db_path)
-    os.rmdir(temp_dir)
     
     print("\n" + "=" * 50)
     print("All tests passed! ✓")

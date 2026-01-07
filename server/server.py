@@ -741,7 +741,7 @@ async def handler(websocket):
                                         
                                         # Broadcast to server members
                                         await broadcast_to_server(server_id, json.dumps(msg_obj))
-                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} in {server_id}/{channel_id}: {msg_content}")
+                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} sent message in {server_id}/{channel_id}")
                         
                         elif context == 'dm' and context_id:
                             # Direct message - verify DM exists and user is participant
@@ -758,7 +758,7 @@ async def handler(websocket):
                                         for participant in participants:
                                             await send_to_user(participant, json.dumps(msg_obj))
                                         break
-                                print(f"[{datetime.now().strftime('%H:%M:%S')}] DM {username}: {msg_content}")
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] DM from {username} in {context_id}")
                         
                         else:
                             # Global chat (backward compatibility)
@@ -766,7 +766,7 @@ async def handler(websocket):
                             if len(messages) > MAX_HISTORY:
                                 messages.pop(0)
                             await broadcast(json.dumps(msg_obj))
-                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username}: {msg_content}")
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} sent global message")
                     
                     elif data.get('type') == 'create_server':
                         server_name = data.get('name', '').strip()
