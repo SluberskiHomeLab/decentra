@@ -7,6 +7,7 @@ Handles encryption/decryption of sensitive data like SMTP passwords
 from __future__ import annotations
 
 import os
+import sys
 import base64
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
@@ -25,44 +26,51 @@ class EncryptionManager:
     
     def _get_or_generate_key(self) -> bytes:
         """
-        Get encryption key from environment variable or generate a new one.
+        Get encryption key from environment variable.
         
         The key is derived from DECENTRA_ENCRYPTION_KEY environment variable.
-        If not set, a default key is derived from a fixed salt (NOT SECURE for production).
+        This environment variable is REQUIRED for the application to start.
         
         Returns:
             bytes: Fernet encryption key
+            
+        Raises:
+            RuntimeError: If DECENTRA_ENCRYPTION_KEY is not set
         """
         # Try to get key from environment
         env_key = os.getenv('DECENTRA_ENCRYPTION_KEY')
         
-        if env_key:
-            # Derive a proper Fernet key from the environment variable
-            kdf = PBKDF2HMAC(
-                algorithm=hashes.SHA256(),
-                length=32,
-                salt=b'decentra_smtp_salt',  # Fixed salt for deterministic key derivation
-                iterations=100000,
+        if not env_key:
+            error_msg = (
+                "\n" + "=" * 80 + "\n"
+                "ERROR: DECENTRA_ENCRYPTION_KEY environment variable is not set.\n"
+                "\n"
+                "This environment variable is REQUIRED for the application to start.\n"
+                "It is used to encrypt sensitive data like SMTP passwords.\n"
+                "\n"
+                "To generate a secure encryption key, run:\n"
+                "  python3 -c 'import secrets; print(secrets.token_urlsafe(32))'\n"
+                "\n"
+                "Then set the environment variable:\n"
+                "  export DECENTRA_ENCRYPTION_KEY='your-generated-key-here'\n"
+                "\n"
+                "For Docker deployments, add it to your .env file:\n"
+                "  DECENTRA_ENCRYPTION_KEY=your-generated-key-here\n"
+                "\n"
+                "=" * 80 + "\n"
             )
-            key = base64.urlsafe_b64encode(kdf.derive(env_key.encode()))
-            return key
-        else:
-            # For development/testing: generate a deterministic key
-            # WARNING: In production, you should set DECENTRA_ENCRYPTION_KEY environment variable
-            print("[Security Warning] DECENTRA_ENCRYPTION_KEY not set. Using default encryption key.")
-            print("[Security Warning] Set DECENTRA_ENCRYPTION_KEY environment variable for production use.")
-            
-            # Use a fixed passphrase to generate a deterministic key
-            # This ensures encrypted data can be decrypted across server restarts
-            default_passphrase = "decentra_default_passphrase_change_in_production"
-            kdf = PBKDF2HMAC(
-                algorithm=hashes.SHA256(),
-                length=32,
-                salt=b'decentra_smtp_salt',
-                iterations=100000,
-            )
-            key = base64.urlsafe_b64encode(kdf.derive(default_passphrase.encode()))
-            return key
+            print(error_msg, file=sys.stderr)
+            raise RuntimeError("DECENTRA_ENCRYPTION_KEY environment variable is required but not set")
+        
+        # Derive a proper Fernet key from the environment variable
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=b'decentra_smtp_salt',  # Fixed salt for deterministic key derivation
+            iterations=100000,
+        )
+        key = base64.urlsafe_b64encode(kdf.derive(env_key.encode()))
+        return key
     
     def encrypt(self, plaintext: str) -> str:
         """
