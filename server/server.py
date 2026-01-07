@@ -833,17 +833,6 @@ async def handler(websocket):
                         
                         # Create message object
                         user_profile = db.get_user(username)
-                        msg_obj = {
-                            'type': 'message',
-                            'username': username,
-                            'content': msg_content,
-                            'timestamp': datetime.now(timezone.utc).isoformat(),
-                            'context': context,
-                            'context_id': context_id,
-                            'avatar': user_profile.get('avatar', '👤') if user_profile else '👤',
-                            'avatar_type': user_profile.get('avatar_type', 'emoji') if user_profile else 'emoji',
-                            'avatar_data': user_profile.get('avatar_data') if user_profile else None
-                        }
                         
                         # Route message based on context
                         if context == 'server' and context_id:
@@ -856,8 +845,22 @@ async def handler(websocket):
                                     members = db.get_server_members(server_id)
                                     member_usernames = {m['username'] for m in members}
                                     if username in member_usernames:
-                                        # Save message to database
-                                        db.save_message(username, msg_content, 'server', context_id)
+                                        # Save message to database and get message ID
+                                        message_id = db.save_message(username, msg_content, 'server', context_id)
+                                        
+                                        # Create message object with ID
+                                        msg_obj = {
+                                            'type': 'message',
+                                            'id': message_id,
+                                            'username': username,
+                                            'content': msg_content,
+                                            'timestamp': datetime.now(timezone.utc).isoformat(),
+                                            'context': context,
+                                            'context_id': context_id,
+                                            'avatar': user_profile.get('avatar', '👤') if user_profile else '👤',
+                                            'avatar_type': user_profile.get('avatar_type', 'emoji') if user_profile else 'emoji',
+                                            'avatar_data': user_profile.get('avatar_data') if user_profile else None
+                                        }
                                         
                                         # Broadcast to server members
                                         await broadcast_to_server(server_id, json.dumps(msg_obj))
@@ -868,8 +871,22 @@ async def handler(websocket):
                             dm_users = db.get_user_dms(username)
                             dm_ids = [dm['dm_id'] for dm in dm_users]
                             if context_id in dm_ids:
-                                # Save message to database
-                                db.save_message(username, msg_content, 'dm', context_id)
+                                # Save message to database and get message ID
+                                message_id = db.save_message(username, msg_content, 'dm', context_id)
+                                
+                                # Create message object with ID
+                                msg_obj = {
+                                    'type': 'message',
+                                    'id': message_id,
+                                    'username': username,
+                                    'content': msg_content,
+                                    'timestamp': datetime.now(timezone.utc).isoformat(),
+                                    'context': context,
+                                    'context_id': context_id,
+                                    'avatar': user_profile.get('avatar', '👤') if user_profile else '👤',
+                                    'avatar_type': user_profile.get('avatar_type', 'emoji') if user_profile else 'emoji',
+                                    'avatar_data': user_profile.get('avatar_data') if user_profile else None
+                                }
                                 
                                 # Get participants and send to both
                                 for dm in dm_users:
@@ -882,6 +899,17 @@ async def handler(websocket):
                         
                         else:
                             # Global chat (backward compatibility)
+                            msg_obj = {
+                                'type': 'message',
+                                'username': username,
+                                'content': msg_content,
+                                'timestamp': datetime.now(timezone.utc).isoformat(),
+                                'context': context,
+                                'context_id': context_id,
+                                'avatar': user_profile.get('avatar', '👤') if user_profile else '👤',
+                                'avatar_type': user_profile.get('avatar_type', 'emoji') if user_profile else 'emoji',
+                                'avatar_data': user_profile.get('avatar_data') if user_profile else None
+                            }
                             messages.append(msg_obj)
                             if len(messages) > MAX_HISTORY:
                                 messages.pop(0)
@@ -976,6 +1004,194 @@ async def handler(websocket):
                                 'type': 'dm_history',
                                 'dm_id': dm_id,
                                 'messages': dm_messages
+                            }))
+                    
+                    elif data.get('type') == 'edit_message':
+                        message_id = data.get('message_id')
+                        new_content = data.get('content', '').strip()
+                        
+                        if not message_id or not new_content:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid message edit request'
+                            }))
+                            continue
+                        
+                        # Get the message
+                        message = db.get_message(message_id)
+                        if not message:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Message not found'
+                            }))
+                            continue
+                        
+                        # Check if message is deleted
+                        if message.get('deleted'):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Cannot edit a deleted message'
+                            }))
+                            continue
+                        
+                        # Check permissions
+                        can_edit = False
+                        
+                        # Users can always edit their own messages
+                        if message['username'] == username:
+                            can_edit = True
+                        # Check server permissions for editing others' messages
+                        elif message['context_type'] == 'server' and message['context_id']:
+                            server_id = message['context_id'].split('/')[0]
+                            server = db.get_server(server_id)
+                            if server:
+                                # Server owner can edit any message
+                                if username == server['owner']:
+                                    can_edit = True
+                                else:
+                                    # Check member permissions
+                                    members = db.get_server_members(server_id)
+                                    for member in members:
+                                        if member['username'] == username:
+                                            can_edit = member.get('can_edit_messages', False)
+                                            break
+                        
+                        if not can_edit:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'You do not have permission to edit this message'
+                            }))
+                            continue
+                        
+                        # Enforce max message length
+                        admin_settings = db.get_admin_settings()
+                        max_length = admin_settings.get('max_message_length', 2000)
+                        if len(new_content) > max_length:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': f'Message exceeds maximum length of {max_length} characters'
+                            }))
+                            continue
+                        
+                        # Edit the message
+                        if db.edit_message(message_id, new_content):
+                            # Get updated message
+                            updated_message = db.get_message(message_id)
+                            
+                            # Broadcast the edit to relevant users
+                            edit_notification = {
+                                'type': 'message_edited',
+                                'message_id': message_id,
+                                'content': new_content,
+                                'edited_at': updated_message.get('edited_at'),
+                                'context_type': message['context_type'],
+                                'context_id': message['context_id']
+                            }
+                            
+                            if message['context_type'] == 'server':
+                                server_id = message['context_id'].split('/')[0]
+                                await broadcast_to_server(server_id, json.dumps(edit_notification))
+                            elif message['context_type'] == 'dm':
+                                # Send to both DM participants
+                                user_dms = db.get_user_dms(username)
+                                for dm in user_dms:
+                                    if dm['dm_id'] == message['context_id']:
+                                        participants = [dm['user1'], dm['user2']]
+                                        for participant in participants:
+                                            await send_to_user(participant, json.dumps(edit_notification))
+                                        break
+                            
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} edited message {message_id}")
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Failed to edit message'
+                            }))
+                    
+                    elif data.get('type') == 'delete_message':
+                        message_id = data.get('message_id')
+                        
+                        if not message_id:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid message delete request'
+                            }))
+                            continue
+                        
+                        # Get the message
+                        message = db.get_message(message_id)
+                        if not message:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Message not found'
+                            }))
+                            continue
+                        
+                        # Check if message is already deleted
+                        if message.get('deleted'):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Message is already deleted'
+                            }))
+                            continue
+                        
+                        # Check permissions
+                        can_delete = False
+                        
+                        # Users can always delete their own messages
+                        if message['username'] == username:
+                            can_delete = True
+                        # Check server permissions for deleting others' messages
+                        elif message['context_type'] == 'server' and message['context_id']:
+                            server_id = message['context_id'].split('/')[0]
+                            server = db.get_server(server_id)
+                            if server:
+                                # Server owner can delete any message
+                                if username == server['owner']:
+                                    can_delete = True
+                                else:
+                                    # Check member permissions
+                                    members = db.get_server_members(server_id)
+                                    for member in members:
+                                        if member['username'] == username:
+                                            can_delete = member.get('can_delete_messages', False)
+                                            break
+                        
+                        if not can_delete:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'You do not have permission to delete this message'
+                            }))
+                            continue
+                        
+                        # Delete the message
+                        if db.delete_message(message_id):
+                            # Broadcast the deletion to relevant users
+                            delete_notification = {
+                                'type': 'message_deleted',
+                                'message_id': message_id,
+                                'context_type': message['context_type'],
+                                'context_id': message['context_id']
+                            }
+                            
+                            if message['context_type'] == 'server':
+                                server_id = message['context_id'].split('/')[0]
+                                await broadcast_to_server(server_id, json.dumps(delete_notification))
+                            elif message['context_type'] == 'dm':
+                                # Send to both DM participants
+                                user_dms = db.get_user_dms(username)
+                                for dm in user_dms:
+                                    if dm['dm_id'] == message['context_id']:
+                                        participants = [dm['user1'], dm['user2']]
+                                        for participant in participants:
+                                            await send_to_user(participant, json.dumps(delete_notification))
+                                        break
+                            
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} deleted message {message_id}")
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Failed to delete message'
                             }))
                     
                     elif data.get('type') == 'search_users':
