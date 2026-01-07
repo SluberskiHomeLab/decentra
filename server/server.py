@@ -27,9 +27,45 @@ from ssl_utils import generate_self_signed_cert, create_ssl_context
 db = Database()
 
 # JWT Configuration
-# Generate a secure random secret key for JWT tokens
-# In production, this should be stored securely (environment variable or secrets manager)
-JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', secrets.token_urlsafe(32))
+# Generate or load a secure secret key for JWT tokens.
+# In production, JWT_SECRET_KEY should be provided via environment variable or a secrets manager.
+def _load_jwt_secret_key() -> str:
+    """
+    Load the JWT secret key from the environment or from a local secret file.
+
+    Precedence:
+    1. JWT_SECRET_KEY environment variable
+    2. Secret stored in .jwt_secret_key file alongside this server script
+    3. Newly generated secret, which is then persisted to the secret file
+    """
+    env_key = os.environ.get("JWT_SECRET_KEY")
+    if env_key:
+        return env_key
+
+    secret_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".jwt_secret_key")
+    try:
+        with open(secret_file, "r", encoding="utf-8") as f:
+            file_key = f.read().strip()
+            if file_key:
+                return file_key
+    except FileNotFoundError:
+        pass
+    except OSError:
+        # If the file cannot be read for any reason, fall back to generating a new key
+        pass
+
+    # Generate a new secret key and persist it for future restarts
+    new_key = secrets.token_urlsafe(32)
+    try:
+        # Best-effort persistence; if this fails, the key will only live for this process
+        with open(secret_file, "w", encoding="utf-8") as f:
+            f.write(new_key)
+    except OSError:
+        pass
+
+    return new_key
+
+JWT_SECRET_KEY = _load_jwt_secret_key()
 JWT_ALGORITHM = 'HS256'
 JWT_EXPIRATION_HOURS = 24  # Token expires after 24 hours
 
