@@ -391,7 +391,7 @@ async def handler(websocket):
                     verification_code = ''.join(secrets.choice(string.digits) for _ in range(6))
                     
                     # Store verification code with 15 minute expiration
-                    expires_at = datetime.now() + timedelta(minutes=15)
+                    expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
                     if not db.create_email_verification_code(email, username, verification_code, expires_at):
                         await websocket.send_str(json.dumps({
                             'type': 'auth_error',
@@ -744,7 +744,7 @@ async def handler(websocket):
         join_message = json.dumps({
             'type': 'system',
             'content': f'{username} joined the chat',
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         })
         await broadcast(join_message, exclude=websocket)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} joined chat")
@@ -778,7 +778,7 @@ async def handler(websocket):
                             'type': 'message',
                             'username': username,
                             'content': msg_content,
-                            'timestamp': datetime.now().isoformat(),
+                            'timestamp': datetime.now(timezone.utc).isoformat(),
                             'context': context,
                             'context_id': context_id,
                             'avatar': user_profile.get('avatar', '👤') if user_profile else '👤',
@@ -1198,7 +1198,7 @@ async def handler(websocket):
                                     current_settings.get('announcement_message') != settings.get('announcement_message') or
                                     current_settings.get('announcement_duration_minutes') != settings.get('announcement_duration_minutes')):
                                     # Announcement was just enabled, message changed, or duration changed - reset timestamp
-                                    settings['announcement_set_at'] = datetime.now()
+                                    settings['announcement_set_at'] = datetime.now(timezone.utc)
                             elif not settings.get('announcement_enabled'):
                                 # Announcement disabled, clear timestamp
                                 settings['announcement_set_at'] = None
@@ -2186,7 +2186,7 @@ async def handler(websocket):
             leave_message = json.dumps({
                 'type': 'system',
                 'content': f'{username} left the chat',
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now(timezone.utc).isoformat()
             })
             await broadcast(leave_message)
             print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} left")
