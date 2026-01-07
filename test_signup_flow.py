@@ -27,9 +27,9 @@ def test_signup_logic():
     # Simulate EmailSender check
     from email_utils import EmailSender
     email_sender = EmailSender(admin_settings)
-    should_verify = admin_settings.get('require_email_verification', False) and email_sender.is_configured()
+    should_verify = admin_settings['require_email_verification'] and email_sender.is_configured()
     
-    print(f"  require_email_verification: {admin_settings.get('require_email_verification', False)}")
+    print(f"  require_email_verification: {admin_settings['require_email_verification']}")
     print(f"  SMTP configured: {email_sender.is_configured()}")
     print(f"  Should verify email: {should_verify}")
     assert should_verify == False, "Should NOT require verification"
@@ -45,9 +45,9 @@ def test_signup_logic():
     }
     
     email_sender = EmailSender(admin_settings)
-    should_verify = admin_settings.get('require_email_verification', False) and email_sender.is_configured()
+    should_verify = admin_settings['require_email_verification'] and email_sender.is_configured()
     
-    print(f"  require_email_verification: {admin_settings.get('require_email_verification', False)}")
+    print(f"  require_email_verification: {admin_settings['require_email_verification']}")
     print(f"  SMTP configured: {email_sender.is_configured()}")
     print(f"  Should verify email: {should_verify}")
     assert should_verify == False, "Should NOT require verification (SMTP not configured)"
@@ -63,9 +63,9 @@ def test_signup_logic():
     }
     
     email_sender = EmailSender(admin_settings)
-    should_verify = admin_settings.get('require_email_verification', False) and email_sender.is_configured()
+    should_verify = admin_settings['require_email_verification'] and email_sender.is_configured()
     
-    print(f"  require_email_verification: {admin_settings.get('require_email_verification', False)}")
+    print(f"  require_email_verification: {admin_settings['require_email_verification']}")
     print(f"  SMTP configured: {email_sender.is_configured()}")
     print(f"  Should verify email: {should_verify}")
     assert should_verify == True, "Should require verification"
@@ -81,9 +81,9 @@ def test_signup_logic():
     }
     
     email_sender = EmailSender(admin_settings)
-    should_verify = admin_settings.get('require_email_verification', False) and email_sender.is_configured()
+    should_verify = admin_settings['require_email_verification'] and email_sender.is_configured()
     
-    print(f"  require_email_verification: {admin_settings.get('require_email_verification', False)}")
+    print(f"  require_email_verification: {admin_settings['require_email_verification']}")
     print(f"  SMTP configured: {email_sender.is_configured()}")
     print(f"  Should verify email: {should_verify}")
     assert should_verify == False, "Should NOT require verification (disabled by admin)"
