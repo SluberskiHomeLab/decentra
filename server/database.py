@@ -23,6 +23,8 @@ class Database:
         # Use environment variable or provided URL
         self.db_url = db_url or os.getenv('DATABASE_URL', 
             'postgresql://decentra:decentra@localhost:5432/decentra')
+        # Initialize encryption manager for message encryption
+        self.encryption_manager = get_encryption_manager()
         self.init_database()
     
     @contextmanager
@@ -909,19 +911,22 @@ class Database:
     
     # Message operations
     def save_message(self, username: str, content: str, context_type: str, context_id: Optional[str] = None) -> int:
-        """Save a message and return its ID."""
+        """Save a message and return its ID. Message content is encrypted before storage."""
+        # Encrypt message content before storing
+        encrypted_content = self.encryption_manager.encrypt(content)
+        
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO messages (username, content, timestamp, context_type, context_id)
                 VALUES (%s, %s, %s, %s, %s)
                 RETURNING id
-            ''', (username, content, datetime.now(), context_type, context_id))
+            ''', (username, encrypted_content, datetime.now(), context_type, context_id))
             result = cursor.fetchone()
             return result['id']
     
     def get_messages(self, context_type: str, context_id: Optional[str] = None, limit: int = 100) -> List[Dict]:
-        """Get messages for a context."""
+        """Get messages for a context. Message content is decrypted before returning."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
@@ -935,8 +940,14 @@ class Database:
                 ORDER BY m.timestamp DESC
                 LIMIT %s
             ''', (context_type, context_id, limit))
-            # Reverse to get chronological order and return as list of dicts
-            return [dict(row) for row in reversed(cursor.fetchall())]
+            # Decrypt message content and reverse to get chronological order
+            messages = []
+            for row in reversed(cursor.fetchall()):
+                msg = dict(row)
+                # Decrypt the message content
+                msg['content'] = self.encryption_manager.decrypt(msg['content'])
+                messages.append(msg)
+            return messages
     
     # Friendship operations
     def add_friend_request(self, requester: str, target: str) -> bool:
