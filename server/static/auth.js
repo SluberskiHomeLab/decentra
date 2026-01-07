@@ -126,6 +126,7 @@
             sessionStorage.setItem('username', username);
             sessionStorage.setItem('email', email);
             sessionStorage.setItem('authMode', 'signup');
+            sessionStorage.setItem('password', password);
             sessionStorage.setItem('inviteCode', inviteCode);
             
             // Redirect to chat page
@@ -140,6 +141,7 @@
             // Store credentials for WebSocket authentication
             sessionStorage.setItem('username', username);
             sessionStorage.setItem('authMode', 'login');
+            sessionStorage.setItem('password', password);
             sessionStorage.setItem('inviteCode', inviteCode);
             
             // Redirect to chat page
