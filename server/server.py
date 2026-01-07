@@ -620,10 +620,13 @@ async def handler(websocket):
                     }))
                     continue
                 
+                # Generate a new JWT token to refresh the session
+                new_token = generate_jwt_token(username)
+                
                 await websocket.send_str(json.dumps({
                     'type': 'auth_success',
                     'message': 'Token authentication successful',
-                    'token': token
+                    'token': new_token
                 }))
                 authenticated = True
                 clients[websocket] = username
