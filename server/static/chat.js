@@ -3645,8 +3645,7 @@
     }
     
     if (mobileMenuToggle) {
-        mobileMenuToggle.addEventListener('click', (e) => {
-            e.stopPropagation();
+        mobileMenuToggle.addEventListener('click', () => {
             // Smart sidebar selection for mobile navigation:
             // - If no sidebar is visible, show left sidebar (servers) first
             // - If left sidebar (servers) is currently visible, switch to middle sidebar (channels)
@@ -3692,6 +3691,11 @@
     function setupMobileClose() {
         // Close when clicking server/channel/DM items
         document.addEventListener('click', (e) => {
+            // Skip if clicking the mobile menu toggle button
+            if (e.target.closest('#mobile-menu-toggle')) {
+                return;
+            }
+            
             // Only close if we're on mobile and a sidebar is currently open
             const isMobile = window.innerWidth <= MOBILE_BREAKPOINT;
             if (isMobile && currentMobileSidebar && e.target.closest('.server-item, .channel-item, .dm-item, .friend-item')) {
