@@ -16,38 +16,12 @@ def test_jwt_token_functions():
     print("Testing JWT Token Authentication")
     print("=" * 60)
     
-    # Import JWT functions directly without importing the whole server module
-    import jwt
-    import secrets
-    
-    # Use the same configuration as in server.py
-    JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', secrets.token_urlsafe(32))
-    JWT_ALGORITHM = 'HS256'
-    JWT_EXPIRATION_HOURS = 24
-    
-    def generate_jwt_token(username):
-        """Generate a JWT token for a user."""
-        now = datetime.now(timezone.utc)
-        payload = {
-            'username': username,
-            'exp': now + timedelta(hours=JWT_EXPIRATION_HOURS),
-            'iat': now
-        }
-        token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
-        return token
-    
-    def verify_jwt_token(token):
-        """Verify a JWT token and return the username if valid."""
-        try:
-            payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-            return payload.get('username')
-        except jwt.ExpiredSignatureError:
-            return None  # Token has expired
-        except jwt.InvalidTokenError:
-            return None  # Invalid token
+    # Import the actual JWT helper functions from the server implementation
+    from server import generate_jwt_token, verify_jwt_token
     
     # Test Case 1: Generate and verify valid token
     print("\nTest 1: Generate and verify valid token")
+    username = "test_user"
     username = "test_user"
     token = generate_jwt_token(username)
     print(f"  Generated token: {token[:20]}...")
