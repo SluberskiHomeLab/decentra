@@ -1025,26 +1025,287 @@ body::before {
     background: #1a1c1f;
 }
 
+/* Mobile Menu Toggle Buttons */
+.mobile-menu-toggle {
+    display: none;
+    background: transparent;
+    border: none;
+    color: #dcddde;
+    font-size: 24px;
+    cursor: pointer;
+    padding: 8px 12px;
+    border-radius: 8px;
+    transition: all 0.3s ease;
+    min-width: 48px; /* Cross-platform touch target accessibility standard */
+    min-height: 48px;
+}
+
+.mobile-menu-toggle:hover {
+    background: rgba(79, 84, 92, 0.4);
+}
+
+.mobile-menu-toggle:active {
+    background: rgba(79, 84, 92, 0.6);
+    transform: scale(0.95);
+}
+
 /* Responsive Design */
 @media (max-width: 768px) {
+    /* Show mobile menu toggle buttons */
+    .mobile-menu-toggle {
+        display: block;
+    }
+    
+    /* Hide sidebars by default on mobile */
+    .left-sidebar,
+    .middle-sidebar {
+        position: fixed;
+        top: 0;
+        left: -100%;
+        width: 280px;
+        max-width: 80vw;
+        height: 100vh;
+        z-index: 1001;
+        transition: left 0.3s ease;
+        box-shadow: 2px 0 8px rgba(0, 0, 0, 0.3);
+    }
+    
+    .left-sidebar.mobile-visible {
+        left: 0;
+    }
+    
+    .middle-sidebar.mobile-visible {
+        left: 0;
+    }
+    
+    /* Right sidebar always hidden on mobile to maximize chat space */
+    .right-sidebar {
+        display: none;
+    }
+    
+    /* Full width chat container on mobile */
     .chat-container {
         max-width: 100%;
+        width: 100%;
         height: 100vh;
     }
     
+    /* Add menu button to chat header */
     .chat-header {
-        flex-direction: column;
         gap: 10px;
-        align-items: flex-start;
+        align-items: center;
+        flex-wrap: wrap;
+    }
+    
+    .chat-header h2 {
+        flex: 1;
+        font-size: 14px;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
     
     .header-actions {
+        display: flex;
+        gap: 8px;
+        flex-shrink: 0;
+    }
+    
+    .header-actions .btn {
+        padding: 6px 10px;
+        font-size: 12px;
+    }
+    
+    /* Mobile overlay to close sidebars */
+    .mobile-overlay {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
         width: 100%;
-        justify-content: space-between;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.7);
+        z-index: 1000;
+    }
+    
+    .mobile-overlay.active {
+        display: block;
+    }
+    
+    /* Adjust message layout for mobile */
+    .message {
+        padding: 2px 8px;
+        gap: 12px;
+    }
+    
+    .message-avatar {
+        width: 32px;
+        height: 32px;
+        font-size: 16px;
+    }
+    
+    .message-username {
+        font-size: 14px;
     }
     
     .message-content {
-        max-width: 85%;
+        font-size: 14px;
+        max-width: 90%;
+    }
+    
+    /* Adjust input container for mobile */
+    .input-container {
+        padding: 12px;
+    }
+    
+    #message-input {
+        font-size: 16px; /* Prevents zoom on iOS */
+        padding: 10px;
+    }
+    
+    /* Modal adjustments for mobile */
+    .modal-content {
+        width: 95%;
+        max-width: 95%;
+        padding: 20px;
+        max-height: 90vh;
+        overflow-y: auto;
+    }
+    
+    .modal-content-large {
+        max-width: 95%;
+    }
+    
+    /* Adjust form elements for mobile */
+    .form-group input,
+    .form-group select,
+    .device-select {
+        font-size: 16px; /* Prevents zoom on iOS */
+    }
+    
+    /* Button groups on mobile */
+    .button-group {
+        flex-direction: column;
+    }
+    
+    .button-group .btn {
+        width: 100%;
+    }
+    
+    /* Voice controls on mobile */
+    .voice-controls {
+        padding: 10px;
+    }
+    
+    .voice-buttons {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    
+    .voice-buttons .btn {
+        flex: 1 1 auto;
+        min-width: 80px;
+        padding: 8px;
+        font-size: 14px;
+    }
+    
+    /* Video call area on mobile */
+    .video-call-area {
+        flex-direction: column;
+    }
+    
+    .voice-participants-sidebar {
+        width: 100%;
+        min-width: 100%;
+        border-left: none;
+        border-top: 1px solid rgba(0, 0, 0, 0.2);
+        max-height: 30vh;
+    }
+    
+    /* Adjust tabs for mobile */
+    .settings-tabs,
+    .avatar-tabs,
+    .icon-tabs {
+        overflow-x: auto;
+        flex-wrap: nowrap;
+    }
+    
+    .settings-tab,
+    .avatar-tab,
+    .icon-tab {
+        white-space: nowrap;
+        font-size: 12px;
+        padding: 8px 12px;
+    }
+    
+    /* Avatar picker on mobile */
+    .avatar-picker,
+    .emoji-grid {
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+    }
+    
+    .avatar-option,
+    .emoji-option {
+        font-size: 24px;
+        padding: 8px;
+    }
+    
+    /* Roles container on mobile */
+    .roles-container {
+        grid-template-columns: 1fr;
+        max-height: 70vh;
+    }
+    
+    .roles-sidebar {
+        border-right: none;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        padding-right: 0;
+        padding-bottom: 15px;
+        max-height: 200px;
+    }
+    
+    .roles-list {
+        max-height: 150px;
+    }
+    
+    /* Announcement banner on mobile */
+    .announcement-banner {
+        padding: 8px 12px;
+        font-size: 12px;
+    }
+    
+    #announcement-text {
+        font-size: 12px;
+    }
+    
+    /* User section on mobile */
+    .user-section {
+        padding: 8px;
+    }
+    
+    .username-display {
+        font-size: 12px;
+        max-width: 120px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    
+    /* Sidebar sections on mobile */
+    .section-header {
+        font-size: 11px;
+        padding: 12px 8px 4px 12px;
+    }
+    
+    .server-item,
+    .dm-item,
+    .channel-item,
+    .friend-item {
+        font-size: 14px;
+        padding: 8px 6px;
+        margin: 1px 4px;
     }
 }
 

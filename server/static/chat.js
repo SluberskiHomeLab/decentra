@@ -3606,6 +3606,132 @@
         });
     }
     
+    // Mobile menu functionality
+    const MOBILE_BREAKPOINT = 768; // px - matches CSS media query
+    const MOBILE_SIDEBAR_CLOSE_DELAY = 100; // ms - allows click event to complete before sidebar closes
+    
+    const mobileMenuToggle = document.getElementById('mobile-menu-toggle');
+    const mobileOverlay = document.getElementById('mobile-overlay');
+    const leftSidebar = document.getElementById('left-sidebar');
+    const middleSidebar = document.getElementById('middle-sidebar');
+    
+    // Track which sidebar is currently open on mobile
+    let currentMobileSidebar = null;
+    
+    function closeMobileSidebars() {
+        if (leftSidebar) leftSidebar.classList.remove('mobile-visible');
+        if (middleSidebar) middleSidebar.classList.remove('mobile-visible');
+        if (mobileOverlay) mobileOverlay.classList.remove('active');
+        currentMobileSidebar = null;
+        
+        // Update aria-expanded attribute
+        if (mobileMenuToggle) {
+            mobileMenuToggle.setAttribute('aria-expanded', 'false');
+        }
+    }
+    
+    function openMobileSidebar(sidebar) {
+        closeMobileSidebars();
+        if (sidebar) {
+            sidebar.classList.add('mobile-visible');
+            if (mobileOverlay) mobileOverlay.classList.add('active');
+            currentMobileSidebar = sidebar;
+            
+            // Update aria-expanded attribute
+            if (mobileMenuToggle) {
+                mobileMenuToggle.setAttribute('aria-expanded', 'true');
+            }
+        }
+    }
+    
+    if (mobileMenuToggle) {
+        mobileMenuToggle.addEventListener('click', (e) => {
+            // Smart sidebar selection for mobile navigation:
+            // - If no sidebar is visible, show left sidebar (servers) first
+            // - If left sidebar (servers) is currently visible, switch to middle sidebar (channels)
+            // - If middle sidebar (channels) is currently visible, switch back to left sidebar (servers)
+            // This creates a toggle behavior: hamburger menu -> servers -> channels -> servers...
+            if (!currentMobileSidebar) {
+                openMobileSidebar(leftSidebar);
+            } else if (currentMobileSidebar === leftSidebar) {
+                openMobileSidebar(middleSidebar);
+            } else if (currentMobileSidebar === middleSidebar) {
+                openMobileSidebar(leftSidebar);
+            } else {
+                // Fallback: if for some reason currentMobileSidebar is something else, default to servers
+                openMobileSidebar(leftSidebar);
+            }
+        });
+    }
+    
+    if (mobileOverlay) {
+        mobileOverlay.addEventListener('click', closeMobileSidebars);
+        
+        // Keyboard support for overlay (Enter/Space keys)
+        mobileOverlay.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                // Prevent default for Space to avoid scrolling
+                if (e.key === ' ') {
+                    e.preventDefault();
+                }
+                closeMobileSidebars();
+            }
+        });
+    }
+    
+    // Allow closing mobile sidebars with the Escape key for keyboard users
+    document.addEventListener('keydown', (e) => {
+        // Only act on Escape and when a mobile sidebar is currently open
+        if ((e.key === 'Escape' || e.key === 'Esc') && currentMobileSidebar) {
+            closeMobileSidebars();
+        }
+    });
+    
+    // Close mobile sidebar when selecting an item
+    function setupMobileClose() {
+        // Close when clicking server/channel/DM items
+        document.addEventListener('click', (e) => {
+            // Skip if clicking the mobile menu toggle button
+            if (mobileMenuToggle && (e.target === mobileMenuToggle || mobileMenuToggle.contains(e.target))) {
+                return;
+            }
+            
+            // Only close if we're on mobile and a sidebar is currently open
+            const isMobile = window.innerWidth <= MOBILE_BREAKPOINT;
+            if (isMobile && currentMobileSidebar && e.target.closest('.server-item, .channel-item, .dm-item, .friend-item')) {
+                // Delay ensures navigation completes before closing; prevents race conditions
+                setTimeout(closeMobileSidebars, MOBILE_SIDEBAR_CLOSE_DELAY);
+            }
+        });
+    }
+    
+    setupMobileClose();
+    
+    // Update mobile menu behavior based on screen size
+    function updateMobileMenu() {
+        const isMobile = window.innerWidth <= MOBILE_BREAKPOINT;
+        if (!isMobile) {
+            closeMobileSidebars();
+        }
+    }
+    
+    // Debounce helper to prevent excessive resize event calls
+    function debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+            const later = () => {
+                clearTimeout(timeout);
+                func(...args);
+            };
+            clearTimeout(timeout);
+            timeout = setTimeout(later, wait);
+        };
+    }
+    
+    // Debounce resize handler to improve performance
+    window.addEventListener('resize', debounce(updateMobileMenu, 150));
+    updateMobileMenu();
+    
     
     console.log('chat.js: About to call connect()');
     // Initialize connection

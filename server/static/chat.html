@@ -16,9 +16,12 @@
         <button id="close-announcement" class="announcement-close" title="Dismiss" aria-label="Dismiss announcement">✕</button>
     </div>
     
+    <!-- Mobile overlay -->
+    <div id="mobile-overlay" class="mobile-overlay" role="button" aria-label="Close menu" tabindex="0"></div>
+    
     <div class="main-container">
         <!-- Left Sidebar: Servers and DMs -->
-        <div class="left-sidebar">
+        <div id="left-sidebar" class="left-sidebar">
             <div class="sidebar-header">
                 <h3>Decentra</h3>
             </div>
@@ -60,7 +63,7 @@
         </div>
         
         <!-- Middle Sidebar: Channels or Friends -->
-        <div class="middle-sidebar">
+        <div id="middle-sidebar" class="middle-sidebar">
             <div id="channels-view" class="sidebar-view">
                 <div class="sidebar-header">
                     <h3 id="server-name">Select a Server</h3>
@@ -85,6 +88,7 @@
         <!-- Main Chat Area -->
         <div class="chat-container">
             <div class="chat-header">
+                <button id="mobile-menu-toggle" class="mobile-menu-toggle" title="Menu" aria-label="Toggle navigation menu" aria-expanded="false">☰</button>
                 <h2 id="chat-title">Welcome to Decentra</h2>
             </div>
             
