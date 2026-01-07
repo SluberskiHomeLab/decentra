@@ -91,6 +91,9 @@ Copy the output and set it as the value of `DECENTRA_ENCRYPTION_KEY` in your `.e
 - Never commit the `.env` file to version control
 - If you lose this key, encrypted data cannot be recovered
 - Use a different key for each deployment/environment
+```
+
+**Note**: The `DATABASE_URL` is automatically constructed from these variables. You don't need to set it manually unless you want to override the default connection string.
 
 3. Start the server:
 ```bash
