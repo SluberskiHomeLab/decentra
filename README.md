@@ -65,10 +65,9 @@ Then edit `.env` and update the database credentials (especially the password):
 POSTGRES_DB=decentra
 POSTGRES_USER=decentra
 POSTGRES_PASSWORD=your_secure_password_here
-
-# Server Configuration
-DATABASE_URL=postgresql://decentra:your_secure_password_here@postgres:5432/decentra
 ```
+
+**Note**: The `DATABASE_URL` is automatically constructed from these variables. You don't need to set it manually unless you want to override the default connection string.
 
 3. Start the server:
 ```bash
