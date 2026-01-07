@@ -1108,12 +1108,16 @@ body::before {
 /* Responsive Design */
 @media (max-width: 768px) {
     /* Prevent body scrolling on mobile */
-    html, body {
+    html {
         height: 100%;
         max-height: 100%;
         overflow: hidden;
-        position: fixed;
-        width: 100%;
+    }
+    
+    body {
+        height: 100%;
+        max-height: 100%;
+        overflow: hidden;
     }
     
     /* Show mobile menu toggle buttons */
