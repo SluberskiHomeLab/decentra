@@ -193,6 +193,18 @@ def get_avatar_data(username):
     }
 
 
+def get_profile_data(username):
+    """Get profile data (bio and status) for a user."""
+    user = db.get_user(username)
+    if not user:
+        return {'bio': '', 'status_message': ''}
+    
+    return {
+        'bio': user.get('bio', ''),
+        'status_message': user.get('status_message', '')
+    }
+
+
 def has_permission(server_id, username, permission):
     """Check if user has specific permission in a server through roles.
     Owner always has all permissions.
@@ -597,39 +609,47 @@ async def handler(websocket):
                 **avatar_data
             })
         
-        # Build friends list with avatars
+        # Build friends list with avatars and profile data
         friends_list = []
         for friend in db.get_friends(username):
             avatar_data = get_avatar_data(friend)
+            profile_data = get_profile_data(friend)
             friends_list.append({
                 'username': friend,
-                **avatar_data
+                **avatar_data,
+                **profile_data
             })
         
         # Build friend requests lists
         friend_requests_sent = []
         for requested_user in db.get_friend_requests_sent(username):
             avatar_data = get_avatar_data(requested_user)
+            profile_data = get_profile_data(requested_user)
             friend_requests_sent.append({
                 'username': requested_user,
-                **avatar_data
+                **avatar_data,
+                **profile_data
             })
         
         friend_requests_received = []
         for requester_user in db.get_friend_requests_received(username):
             avatar_data = get_avatar_data(requester_user)
+            profile_data = get_profile_data(requester_user)
             friend_requests_received.append({
                 'username': requester_user,
-                **avatar_data
+                **avatar_data,
+                **profile_data
             })
         
         current_avatar = get_avatar_data(username)
+        current_profile = get_profile_data(username)
         user = db.get_user(username)
         notification_mode = user.get('notification_mode', 'all') if user else 'all'
         user_data = json.dumps({
             'type': 'init',
             'username': username,
             **current_avatar,
+            **current_profile,
             'notification_mode': notification_mode,
             'servers': user_servers,
             'dms': user_dms,
@@ -1787,6 +1807,58 @@ async def handler(websocket):
                                 'type': 'avatar_updated',
                                 **avatar_update
                             }))
+                    
+                    elif data.get('type') == 'update_profile':
+                        # Update user profile (bio and status message)
+                        bio = data.get('bio', '').strip()
+                        status_message = data.get('status_message', '').strip()
+                        
+                        # Validate lengths
+                        if len(bio) > 500:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Bio is too long. Maximum 500 characters.'
+                            }))
+                            continue
+                        
+                        if len(status_message) > 100:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Status message is too long. Maximum 100 characters.'
+                            }))
+                            continue
+                        
+                        # Update profile in database
+                        db.update_user_profile(username, bio, status_message)
+                        
+                        # Get updated user data
+                        user_data = db.get_user(username)
+                        profile_update = {
+                            'bio': user_data.get('bio', ''),
+                            'status_message': user_data.get('status_message', '')
+                        }
+                        
+                        # Notify all friends about profile change
+                        for friend_username in db.get_friends(username):
+                            await send_to_user(friend_username, json.dumps({
+                                'type': 'profile_update',
+                                'username': username,
+                                **profile_update
+                            }))
+                        
+                        # Notify all servers the user is in
+                        for server_id in db.get_user_servers(username):
+                            await broadcast_to_server(server_id, json.dumps({
+                                'type': 'profile_update',
+                                'username': username,
+                                **profile_update
+                            }))
+                        
+                        # Confirm to the user
+                        await websocket.send_str(json.dumps({
+                            'type': 'profile_updated',
+                            **profile_update
+                        }))
                     
                     elif data.get('type') == 'set_server_icon':
                         # Update server icon (emoji or image upload)

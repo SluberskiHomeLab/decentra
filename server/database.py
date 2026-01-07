@@ -380,6 +380,25 @@ class Database:
                         END $$;
                     ''')
                     
+                    # Add bio and status_message columns if they don't exist (migration)
+                    cursor.execute('''
+                        DO $$ 
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'users' AND column_name = 'bio'
+                            ) THEN
+                                ALTER TABLE users ADD COLUMN bio TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'users' AND column_name = 'status_message'
+                            ) THEN
+                                ALTER TABLE users ADD COLUMN status_message VARCHAR(255) DEFAULT '';
+                            END IF;
+                        END $$;
+                    ''')
+                    
                     conn.commit()
                 
                 # If we get here, connection was successful
@@ -459,6 +478,29 @@ class Database:
                 SET notification_mode = %s
                 WHERE username = %s
             ''', (notification_mode, username))
+    
+    def update_user_profile(self, username: str, bio: str = None, status_message: str = None):
+        """Update user profile bio and/or status message."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if bio is not None and status_message is not None:
+                cursor.execute('''
+                    UPDATE users 
+                    SET bio = %s, status_message = %s
+                    WHERE username = %s
+                ''', (bio, status_message, username))
+            elif bio is not None:
+                cursor.execute('''
+                    UPDATE users 
+                    SET bio = %s
+                    WHERE username = %s
+                ''', (bio, username))
+            elif status_message is not None:
+                cursor.execute('''
+                    UPDATE users 
+                    SET status_message = %s
+                    WHERE username = %s
+                ''', (status_message, username))
     
     def verify_user_email(self, username: str) -> bool:
         """Mark user's email as verified."""

@@ -49,6 +49,7 @@
                 <span id="current-user" class="username-display"></span>
                 <button id="user-menu-btn" class="btn btn-small btn-icon" title="Menu">⚙</button>
                 <div id="user-menu" class="user-menu hidden">
+                    <button id="menu-profile-btn" class="menu-item">Profile Settings</button>
                     <button id="menu-avatar-btn" class="menu-item">Set Avatar</button>
                     <button id="menu-notifications-btn" class="menu-item">Notification Settings</button>
                     <button id="menu-friends-btn" class="menu-item">Friends</button>
@@ -423,6 +424,29 @@
             </div>
             
             <button id="close-avatar-modal" class="btn btn-secondary">Close</button>
+        </div>
+    </div>
+    
+    <div id="profile-settings-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Profile Settings</h3>
+            
+            <div class="form-group">
+                <label for="status-message-input">Status Message</label>
+                <input type="text" id="status-message-input" class="form-input" placeholder="What's on your mind?" maxlength="100">
+                <small style="color: #b9bbbe; font-size: 12px;">Maximum 100 characters</small>
+            </div>
+            
+            <div class="form-group">
+                <label for="bio-input">Bio</label>
+                <textarea id="bio-input" class="form-input" placeholder="Tell others about yourself..." maxlength="500" rows="4"></textarea>
+                <small style="color: #b9bbbe; font-size: 12px;">Maximum 500 characters</small>
+            </div>
+            
+            <div class="modal-buttons">
+                <button id="save-profile-btn" class="btn btn-primary">Save Profile</button>
+                <button id="close-profile-modal" class="btn btn-secondary">Close</button>
+            </div>
         </div>
     </div>
     
