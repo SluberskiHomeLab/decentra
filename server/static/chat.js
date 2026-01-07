@@ -3392,8 +3392,8 @@
     // Video extensions
     const VIDEO_EXTENSIONS = /\.(mp4|webm|ogg|mov)(\?[^\s]*)?$/i;
     
-    // YouTube URL patterns
-    const YOUTUBE_REGEX = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/i;
+    // YouTube URL patterns - requires https:// to match URL_REGEX
+    const YOUTUBE_REGEX = /https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/i;
     
     /**
      * Detect if a URL is an image
@@ -3475,10 +3475,10 @@
         
         const iframe = document.createElement('iframe');
         iframe.src = `https://www.youtube.com/embed/${videoId}`;
-        iframe.frameBorder = '0';
         iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
         iframe.allowFullscreen = true;
         iframe.title = 'YouTube video';
+        iframe.style.border = 'none';
         
         embedDiv.appendChild(iframe);
         return embedDiv;
