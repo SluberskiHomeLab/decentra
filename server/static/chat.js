@@ -1940,16 +1940,117 @@
         });
     }
     
+    // Delete confirmation modal
+    function showDeleteConfirmationDialog() {
+        return new Promise((resolve) => {
+            // Overlay
+            const overlay = document.createElement('div');
+            overlay.style.position = 'fixed';
+            overlay.style.top = '0';
+            overlay.style.left = '0';
+            overlay.style.width = '100%';
+            overlay.style.height = '100%';
+            overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+            overlay.style.display = 'flex';
+            overlay.style.alignItems = 'center';
+            overlay.style.justifyContent = 'center';
+            overlay.style.zIndex = '1000';
+            
+            // Modal container
+            const modal = document.createElement('div');
+            modal.style.backgroundColor = '#1f2933';
+            modal.style.color = '#f9fafb';
+            modal.style.padding = '16px 20px';
+            modal.style.borderRadius = '8px';
+            modal.style.boxShadow = '0 10px 25px rgba(0, 0, 0, 0.4)';
+            modal.style.maxWidth = '400px';
+            modal.style.width = '90%';
+            modal.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+            
+            const message = document.createElement('p');
+            message.textContent = 'Are you sure you want to delete this message?';
+            message.style.margin = '0 0 16px 0';
+            
+            const buttonsContainer = document.createElement('div');
+            buttonsContainer.style.display = 'flex';
+            buttonsContainer.style.justifyContent = 'flex-end';
+            buttonsContainer.style.gap = '8px';
+            
+            const cancelBtn = document.createElement('button');
+            cancelBtn.type = 'button';
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.style.padding = '6px 12px';
+            cancelBtn.style.borderRadius = '4px';
+            cancelBtn.style.border = '1px solid #4b5563';
+            cancelBtn.style.backgroundColor = '#111827';
+            cancelBtn.style.color = '#e5e7eb';
+            cancelBtn.style.cursor = 'pointer';
+            
+            const deleteBtn = document.createElement('button');
+            deleteBtn.type = 'button';
+            deleteBtn.textContent = 'Delete';
+            deleteBtn.style.padding = '6px 12px';
+            deleteBtn.style.borderRadius = '4px';
+            deleteBtn.style.border = 'none';
+            deleteBtn.style.backgroundColor = '#b91c1c';
+            deleteBtn.style.color = '#f9fafb';
+            deleteBtn.style.cursor = 'pointer';
+            
+            buttonsContainer.appendChild(cancelBtn);
+            buttonsContainer.appendChild(deleteBtn);
+            
+            modal.appendChild(message);
+            modal.appendChild(buttonsContainer);
+            overlay.appendChild(modal);
+            document.body.appendChild(overlay);
+            
+            function cleanup() {
+                document.body.removeChild(overlay);
+                document.removeEventListener('keydown', onKeyDown);
+            }
+            
+            function onKeyDown(e) {
+                if (e.key === 'Escape') {
+                    cleanup();
+                    resolve(false);
+                }
+            }
+            
+            cancelBtn.addEventListener('click', () => {
+                cleanup();
+                resolve(false);
+            });
+            
+            deleteBtn.addEventListener('click', () => {
+                cleanup();
+                resolve(true);
+            });
+            
+            // Close when clicking outside the modal
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) {
+                    cleanup();
+                    resolve(false);
+                }
+            });
+            
+            document.addEventListener('keydown', onKeyDown);
+        });
+    }
+    
     // Delete a message
-    function deleteMessage(messageDiv) {
+    async function deleteMessage(messageDiv) {
         const messageId = messageDiv.dataset.messageId;
         
-        if (confirm('Are you sure you want to delete this message?')) {
-            ws.send(JSON.stringify({
-                type: 'delete_message',
-                message_id: parseInt(messageId)
-            }));
+        const confirmed = await showDeleteConfirmationDialog();
+        if (!confirmed) {
+            return;
         }
+        
+        ws.send(JSON.stringify({
+            type: 'delete_message',
+            message_id: parseInt(messageId)
+        }));
     }
     
     // User menu toggle
