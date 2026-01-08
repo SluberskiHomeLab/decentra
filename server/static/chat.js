@@ -2213,7 +2213,7 @@
     
     // Close menu when clicking outside
     document.addEventListener('click', (e) => {
-        if (!userMenu.contains(e.target) && e.target !== userMenuBtn) {
+        if (!userMenu.contains(e.target) && !userMenuBtn.contains(e.target)) {
             userMenu.classList.add('hidden');
         }
     });
