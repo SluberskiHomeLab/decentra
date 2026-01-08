@@ -3640,6 +3640,7 @@
                 }
 
                 // ... more code may exist between here and the reactionGroups loop ...
+                let emojiData = null;
                 for (const serverId in customEmojis) {
                     const emoji = customEmojis[serverId].find(e => e.emoji_id === group.emoji);
                     if (emoji) {
