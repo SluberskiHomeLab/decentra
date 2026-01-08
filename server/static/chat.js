@@ -47,6 +47,9 @@
     let friendRequestsReceived = [];
     let voiceMembers = {}; // Track voice members by channel: {server_id/channel_id: [usernames]}
     
+    // Server settings
+    let maxMessageLength = 2000; // Default max message length
+    
     // Video toggle constants
     const DEFAULT_SCREEN_SHARE_PRIORITY = true; // When both video and screenshare are active, show screenshare by default
     
@@ -1880,7 +1883,8 @@
         editInput.type = 'text';
         editInput.className = 'message-edit-input';
         editInput.value = originalContent;
-        editInput.maxLength = 2000;
+        editInput.maxLength = maxMessageLength;
+        editInput.required = true;
         
         const saveBtn = document.createElement('button');
         saveBtn.type = 'submit';
@@ -1922,19 +1926,39 @@
             if (editInput.setCustomValidity) {
                 editInput.setCustomValidity('');
             }
-
-            if (newContent !== originalContent) {
-                ws.send(JSON.stringify({
-                    type: 'edit_message',
-                    message_id: parseInt(messageId),
-                    content: newContent
-                }));
+            
+            // Validate message length
+            if (newContent.length > maxMessageLength) {
+                if (editInput.setCustomValidity) {
+                    editInput.setCustomValidity(`Message exceeds maximum length of ${maxMessageLength} characters.`);
+                    editInput.reportValidity && editInput.reportValidity();
+                } else {
+                    alert(`Message exceeds maximum length of ${maxMessageLength} characters.`);
+                }
+                return;
             }
-            // Restore original content while waiting for server response
-            const restoredContentDiv = document.createElement('div');
-            restoredContentDiv.className = 'message-content';
-            restoredContentDiv.textContent = originalContent;
-            editForm.replaceWith(restoredContentDiv);
+
+            // If nothing changed, just restore the original content
+            if (newContent === originalContent) {
+                const restoredContentDiv = document.createElement('div');
+                restoredContentDiv.className = 'message-content';
+                restoredContentDiv.textContent = originalContent;
+                editForm.replaceWith(restoredContentDiv);
+                return;
+            }
+            
+            // Send edit request to server
+            ws.send(JSON.stringify({
+                type: 'edit_message',
+                message_id: parseInt(messageId),
+                content: newContent
+            }));
+
+            // Optimistically update the UI to show the new content
+            const updatedContentDiv = document.createElement('div');
+            updatedContentDiv.className = 'message-content';
+            updatedContentDiv.textContent = newContent;
+            editForm.replaceWith(updatedContentDiv);
         });
         
         // Handle cancel

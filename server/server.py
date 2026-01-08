@@ -345,6 +345,23 @@ async def send_to_user(username, message):
             break
 
 
+async def broadcast_to_dm_participants(username, dm_id, message):
+    """Broadcast a message to both participants in a DM conversation.
+    
+    Args:
+        username: The username of the current user
+        dm_id: The DM identifier
+        message: The message to broadcast
+    """
+    user_dms = db.get_user_dms(username)
+    for dm in user_dms:
+        if dm['dm_id'] == dm_id:
+            participants = [dm['user1'], dm['user2']]
+            for participant in participants:
+                await send_to_user(participant, message)
+            break
+
+
 async def handler(websocket):
     """Handle client connections."""
     username = None
@@ -1094,20 +1111,15 @@ async def handler(websocket):
                                 server_id = message['context_id'].split('/')[0]
                                 await broadcast_to_server(server_id, json.dumps(edit_notification))
                             elif message['context_type'] == 'dm':
-                                # Send to both DM participants
-                                user_dms = db.get_user_dms(username)
-                                for dm in user_dms:
-                                    if dm['dm_id'] == message['context_id']:
-                                        participants = [dm['user1'], dm['user2']]
-                                        for participant in participants:
-                                            await send_to_user(participant, json.dumps(edit_notification))
-                                        break
+                                # Send to both DM participants using helper
+                                await broadcast_to_dm_participants(username, message['context_id'], json.dumps(edit_notification))
                             
                             print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} edited message {message_id}")
                         else:
+                            # Edit failed - could be due to message being deleted by another user
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
-                                'message': 'Failed to edit message'
+                                'message': 'Failed to edit message. The message may have been deleted.'
                             }))
                     
                     elif data.get('type') == 'delete_message':
@@ -1180,20 +1192,15 @@ async def handler(websocket):
                                 server_id = message['context_id'].split('/')[0]
                                 await broadcast_to_server(server_id, json.dumps(delete_notification))
                             elif message['context_type'] == 'dm':
-                                # Send to both DM participants
-                                user_dms = db.get_user_dms(username)
-                                for dm in user_dms:
-                                    if dm['dm_id'] == message['context_id']:
-                                        participants = [dm['user1'], dm['user2']]
-                                        for participant in participants:
-                                            await send_to_user(participant, json.dumps(delete_notification))
-                                        break
+                                # Send to both DM participants using helper
+                                await broadcast_to_dm_participants(username, message['context_id'], json.dumps(delete_notification))
                             
                             print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} deleted message {message_id}")
                         else:
+                            # Delete failed - message may already be deleted
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
-                                'message': 'Failed to delete message'
+                                'message': 'Failed to delete message. It may already be deleted.'
                             }))
                     
                     elif data.get('type') == 'search_users':

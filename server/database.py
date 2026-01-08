@@ -1062,13 +1062,13 @@ class Database:
             return cursor.rowcount > 0
     
     def delete_message(self, message_id: int) -> bool:
-        """Mark a message as deleted. Returns True if successful, False otherwise."""
+        """Mark a message as deleted. Returns True if successful, False if already deleted or not found."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE messages 
                 SET deleted = TRUE, content = %s
-                WHERE id = %s
+                WHERE id = %s AND deleted = FALSE
             ''', (self.encryption_manager.encrypt('[Message deleted]'), message_id))
             return cursor.rowcount > 0
     
