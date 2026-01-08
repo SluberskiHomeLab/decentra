@@ -47,6 +47,9 @@
     let friendRequestsReceived = [];
     let voiceMembers = {}; // Track voice members by channel: {server_id/channel_id: [usernames]}
     
+    // Server settings
+    let maxMessageLength = 2000; // Default max message length
+    
     // Video toggle constants
     const DEFAULT_SCREEN_SHARE_PRIORITY = true; // When both video and screenshare are active, show screenshare by default
     
@@ -718,8 +721,56 @@
                 }
                 break;
             
+            case 'message_edited':
+                // Update the edited message in the UI
+                const editedMessageDiv = messagesContainer.querySelector(`[data-message-id="${data.message_id}"]`);
+                if (editedMessageDiv) {
+                    const contentDiv = editedMessageDiv.querySelector('.message-content');
+                    if (contentDiv) {
+                        contentDiv.textContent = data.content;
+                    }
+                    
+                    // Add or update edited indicator
+                    const headerDiv = editedMessageDiv.querySelector('.message-header');
+                    if (headerDiv) {
+                        let editedSpan = headerDiv.querySelector('.message-edited');
+                        if (!editedSpan) {
+                            editedSpan = document.createElement('span');
+                            editedSpan.className = 'message-edited';
+                            editedSpan.textContent = '(edited)';
+                            headerDiv.appendChild(editedSpan);
+                        }
+                    }
+                }
+                break;
+            
+            case 'message_deleted':
+                // Mark the message as deleted in the UI
+                const deletedMessageDiv = messagesContainer.querySelector(`[data-message-id="${data.message_id}"]`);
+                if (deletedMessageDiv) {
+                    deletedMessageDiv.classList.add('deleted');
+                    
+                    const contentDiv = deletedMessageDiv.querySelector('.message-content');
+                    if (contentDiv) {
+                        contentDiv.textContent = '[Message deleted]';
+                        contentDiv.style.fontStyle = 'italic';
+                        contentDiv.style.opacity = '0.6';
+                    }
+                    
+                    // Remove edit/delete buttons
+                    const actionsDiv = deletedMessageDiv.querySelector('.message-actions');
+                    if (actionsDiv) {
+                        actionsDiv.remove();
+                    }
+                }
+                break;
+            
             case 'announcement_update':
                 handleAnnouncementUpdate(data);
+                // Update max message length from server settings
+                if (data.max_message_length !== undefined) {
+                    maxMessageLength = data.max_message_length;
+                }
                 break;
             
             case 'admin_status':
@@ -1591,11 +1642,21 @@
         const messageDiv = document.createElement('div');
         messageDiv.className = 'message';
         
+        // Store message ID for edit/delete operations
+        if (msg.id) {
+            messageDiv.dataset.messageId = msg.id;
+        }
+        
         const isOwnMessage = msg.username === username;
         if (isOwnMessage) {
             messageDiv.classList.add('own');
         } else {
             messageDiv.classList.add('other');
+        }
+        
+        // Mark deleted messages
+        if (msg.deleted) {
+            messageDiv.classList.add('deleted');
         }
         
         const timestamp = new Date(msg.timestamp).toLocaleTimeString('en-US', {
@@ -1619,13 +1680,69 @@
         
         const contentWrapper = document.createElement('div');
         contentWrapper.className = 'message-content-wrapper';
+        
+        // Build the edited indicator
+        let editedIndicator = '';
+        if (msg.edited_at) {
+            editedIndicator = '<span class="message-edited">(edited)</span>';
+        }
+        
         contentWrapper.innerHTML = `
             <div class="message-header">
                 <span class="message-username ${isOwnMessage ? 'own' : 'other'}">${escapeHtml(msg.username)}</span>
                 <span class="message-time">${timestamp}</span>
+                ${editedIndicator}
             </div>
             <div class="message-content">${escapeHtml(msg.content)}</div>
         `;
+        
+        // Add edit/delete buttons if message is not deleted
+        if (!msg.deleted && msg.id) {
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'message-actions';
+            
+            // Check if user has permissions for other users' messages
+            let canEditOthers = false;
+            let canDeleteOthers = false;
+            
+            if (currentContext && currentContext.type === 'server') {
+                // For server messages, apply server-based permissions for other users' messages
+                if (!isOwnMessage) {
+                    const server = servers.find(s => s.id === currentContext.serverId);
+                    if (server) {
+                        // Server owner can edit/delete all messages
+                        if (server.owner === username) {
+                            canEditOthers = true;
+                            canDeleteOthers = true;
+                        } else if (server.permissions) {
+                            // Check member permissions
+                            canEditOthers = server.permissions.can_edit_messages || false;
+                            canDeleteOthers = server.permissions.can_delete_messages || false;
+                        }
+                    }
+                }
+            } else {
+                // For DMs and other non-server contexts, users can only edit/delete their own messages.
+                // canEditOthers and canDeleteOthers remain false.
+            }
+            
+            // Show edit/delete buttons for own messages or if user has permissions
+            if (isOwnMessage || canEditOthers || canDeleteOthers) {
+                const showEdit = isOwnMessage || canEditOthers;
+                const showDelete = isOwnMessage || canDeleteOthers;
+                
+                actionsDiv.innerHTML = `
+                    ${showEdit ? `<button class="message-action-btn edit-message-btn" title="Edit message">
+                        <span>✏️</span>
+                    </button>` : ''}
+                    ${showDelete ? `<button class="message-action-btn delete-message-btn" title="Delete message">
+                        <span>🗑️</span>
+                    </button>` : ''}
+                `;
+                
+                contentWrapper.appendChild(actionsDiv);
+            }
+        }
         
         messageDiv.appendChild(avatarEl);
         messageDiv.appendChild(contentWrapper);
@@ -1737,6 +1854,237 @@
             hideMentionAutocomplete();
         }
     });
+    
+    // Handle edit and delete message button clicks using event delegation
+    messagesContainer.addEventListener('click', (e) => {
+        const editBtn = e.target.closest('.edit-message-btn');
+        const deleteBtn = e.target.closest('.delete-message-btn');
+        
+        if (editBtn) {
+            const messageDiv = editBtn.closest('.message');
+            if (messageDiv && messageDiv.dataset.messageId) {
+                startEditingMessage(messageDiv);
+            }
+        } else if (deleteBtn) {
+            const messageDiv = deleteBtn.closest('.message');
+            if (messageDiv && messageDiv.dataset.messageId) {
+                deleteMessage(messageDiv);
+            }
+        }
+    });
+    
+    // Start editing a message
+    function startEditingMessage(messageDiv) {
+        const messageId = messageDiv.dataset.messageId;
+        const contentDiv = messageDiv.querySelector('.message-content');
+        const originalContent = contentDiv.textContent;
+        
+        // Create edit form
+        const editForm = document.createElement('form');
+        editForm.className = 'message-edit-form';
+        
+        const editInput = document.createElement('input');
+        editInput.type = 'text';
+        editInput.className = 'message-edit-input';
+        editInput.value = originalContent;
+        editInput.maxLength = maxMessageLength;
+        
+        const saveBtn = document.createElement('button');
+        saveBtn.type = 'submit';
+        saveBtn.className = 'message-edit-save';
+        saveBtn.textContent = '✓ Save';
+        
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'message-edit-cancel';
+        cancelBtn.textContent = '✗ Cancel';
+        
+        editForm.appendChild(editInput);
+        editForm.appendChild(saveBtn);
+        editForm.appendChild(cancelBtn);
+        
+        // Replace content with edit form
+        contentDiv.replaceWith(editForm);
+        editInput.focus();
+        editInput.select();
+        
+        // Handle save
+        editForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const newContent = editInput.value.trim();
+
+            // Prevent saving empty messages and keep the edit form open
+            if (!newContent) {
+                // Use built-in form validation messaging for feedback
+                if (editInput.setCustomValidity) {
+                    editInput.setCustomValidity('Message cannot be empty.');
+                    editInput.reportValidity && editInput.reportValidity();
+                } else {
+                    alert('Message cannot be empty.');
+                }
+                return;
+            }
+
+            // Clear any previous validation message
+            if (editInput.setCustomValidity) {
+                editInput.setCustomValidity('');
+            }
+            
+            // Validate message length
+            if (newContent.length > maxMessageLength) {
+                if (editInput.setCustomValidity) {
+                    editInput.setCustomValidity(`Message exceeds maximum length of ${maxMessageLength} characters.`);
+                    editInput.reportValidity && editInput.reportValidity();
+                } else {
+                    alert(`Message exceeds maximum length of ${maxMessageLength} characters.`);
+                }
+                return;
+            }
+
+            // If nothing changed, just restore the original content
+            if (newContent === originalContent) {
+                const restoredContentDiv = document.createElement('div');
+                restoredContentDiv.className = 'message-content';
+                restoredContentDiv.textContent = originalContent;
+                editForm.replaceWith(restoredContentDiv);
+                return;
+            }
+            
+            // Send edit request to server
+            ws.send(JSON.stringify({
+                type: 'edit_message',
+                message_id: parseInt(messageId),
+                content: newContent
+            }));
+
+            // Optimistically update the UI to show the new content
+            const updatedContentDiv = document.createElement('div');
+            updatedContentDiv.className = 'message-content';
+            updatedContentDiv.textContent = newContent;
+            editForm.replaceWith(updatedContentDiv);
+        });
+        
+        // Handle cancel
+        cancelBtn.addEventListener('click', () => {
+            const restoredContentDiv = document.createElement('div');
+            restoredContentDiv.className = 'message-content';
+            restoredContentDiv.textContent = originalContent;
+            editForm.replaceWith(restoredContentDiv);
+        });
+    }
+    
+    // Delete confirmation modal
+    function showDeleteConfirmationDialog() {
+        return new Promise((resolve) => {
+            // Overlay
+            const overlay = document.createElement('div');
+            overlay.style.position = 'fixed';
+            overlay.style.top = '0';
+            overlay.style.left = '0';
+            overlay.style.width = '100%';
+            overlay.style.height = '100%';
+            overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+            overlay.style.display = 'flex';
+            overlay.style.alignItems = 'center';
+            overlay.style.justifyContent = 'center';
+            overlay.style.zIndex = '1000';
+            
+            // Modal container
+            const modal = document.createElement('div');
+            modal.style.backgroundColor = '#1f2933';
+            modal.style.color = '#f9fafb';
+            modal.style.padding = '16px 20px';
+            modal.style.borderRadius = '8px';
+            modal.style.boxShadow = '0 10px 25px rgba(0, 0, 0, 0.4)';
+            modal.style.maxWidth = '400px';
+            modal.style.width = '90%';
+            modal.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+            
+            const message = document.createElement('p');
+            message.textContent = 'Are you sure you want to delete this message?';
+            message.style.margin = '0 0 16px 0';
+            
+            const buttonsContainer = document.createElement('div');
+            buttonsContainer.style.display = 'flex';
+            buttonsContainer.style.justifyContent = 'flex-end';
+            buttonsContainer.style.gap = '8px';
+            
+            const cancelBtn = document.createElement('button');
+            cancelBtn.type = 'button';
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.style.padding = '6px 12px';
+            cancelBtn.style.borderRadius = '4px';
+            cancelBtn.style.border = '1px solid #4b5563';
+            cancelBtn.style.backgroundColor = '#111827';
+            cancelBtn.style.color = '#e5e7eb';
+            cancelBtn.style.cursor = 'pointer';
+            
+            const deleteBtn = document.createElement('button');
+            deleteBtn.type = 'button';
+            deleteBtn.textContent = 'Delete';
+            deleteBtn.style.padding = '6px 12px';
+            deleteBtn.style.borderRadius = '4px';
+            deleteBtn.style.border = 'none';
+            deleteBtn.style.backgroundColor = '#b91c1c';
+            deleteBtn.style.color = '#f9fafb';
+            deleteBtn.style.cursor = 'pointer';
+            
+            buttonsContainer.appendChild(cancelBtn);
+            buttonsContainer.appendChild(deleteBtn);
+            
+            modal.appendChild(message);
+            modal.appendChild(buttonsContainer);
+            overlay.appendChild(modal);
+            document.body.appendChild(overlay);
+            
+            function cleanup() {
+                document.body.removeChild(overlay);
+                document.removeEventListener('keydown', onKeyDown);
+            }
+            
+            function onKeyDown(e) {
+                if (e.key === 'Escape') {
+                    cleanup();
+                    resolve(false);
+                }
+            }
+            
+            cancelBtn.addEventListener('click', () => {
+                cleanup();
+                resolve(false);
+            });
+            
+            deleteBtn.addEventListener('click', () => {
+                cleanup();
+                resolve(true);
+            });
+            
+            // Close when clicking outside the modal
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) {
+                    cleanup();
+                    resolve(false);
+                }
+            });
+            
+            document.addEventListener('keydown', onKeyDown);
+        });
+    }
+    
+    // Delete a message
+    async function deleteMessage(messageDiv) {
+        const messageId = messageDiv.dataset.messageId;
+        
+        const confirmed = await showDeleteConfirmationDialog();
+        if (!confirmed) {
+            return;
+        }
+        
+        ws.send(JSON.stringify({
+            type: 'delete_message',
+            message_id: parseInt(messageId)
+        }));
+    }
     
     // User menu toggle
     userMenuBtn.addEventListener('click', (e) => {
@@ -2244,11 +2592,13 @@
                 const permsDiv = document.createElement('div');
                 permsDiv.className = 'member-permissions';
                 
-                const permissions = ['can_create_channel', 'can_edit_channel', 'can_delete_channel'];
+                const permissions = ['can_create_channel', 'can_edit_channel', 'can_delete_channel', 'can_edit_messages', 'can_delete_messages'];
                 const permLabels = {
                     'can_create_channel': 'Create',
                     'can_edit_channel': 'Edit',
-                    'can_delete_channel': 'Delete'
+                    'can_delete_channel': 'Delete',
+                    'can_edit_messages': 'Edit Msgs',
+                    'can_delete_messages': 'Del Msgs'
                 };
                 
                 permissions.forEach(perm => {
@@ -2283,11 +2633,7 @@
         if (!server) return;
         
         // Get current permissions by reading from checkboxes using data attributes
-        const currentPerms = {
-            can_create_channel: false,
-            can_edit_channel: false,
-            can_delete_channel: false
-        };
+        const currentPerms = {};
         
         // Find the member's row and read all checkboxes
         document.querySelectorAll('.member-item').forEach(item => {

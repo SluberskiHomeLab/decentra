@@ -405,6 +405,44 @@ class Database:
                         END $$;
                     ''')
                     
+                    # Add message edit/delete tracking columns if they don't exist (migration)
+                    cursor.execute('''
+                        DO $$ 
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'messages' AND column_name = 'edited_at'
+                            ) THEN
+                                ALTER TABLE messages ADD COLUMN edited_at TIMESTAMP;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'messages' AND column_name = 'deleted'
+                            ) THEN
+                                ALTER TABLE messages ADD COLUMN deleted BOOLEAN DEFAULT FALSE;
+                            END IF;
+                        END $$;
+                    ''')
+                    
+                    # Add message permission columns to server_members if they don't exist (migration)
+                    cursor.execute('''
+                        DO $$ 
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'server_members' AND column_name = 'can_edit_messages'
+                            ) THEN
+                                ALTER TABLE server_members ADD COLUMN can_edit_messages BOOLEAN DEFAULT FALSE;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'server_members' AND column_name = 'can_delete_messages'
+                            ) THEN
+                                ALTER TABLE server_members ADD COLUMN can_delete_messages BOOLEAN DEFAULT FALSE;
+                            END IF;
+                        END $$;
+                    ''')
+                    
                     conn.commit()
                 
                 # If we get here, connection was successful
@@ -785,12 +823,15 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE server_members 
-                SET can_create_channel = %s, can_edit_channel = %s, can_delete_channel = %s
+                SET can_create_channel = %s, can_edit_channel = %s, can_delete_channel = %s,
+                    can_edit_messages = %s, can_delete_messages = %s
                 WHERE server_id = %s AND username = %s
             ''', (
                 permissions.get('can_create_channel', False),
                 permissions.get('can_edit_channel', False),
                 permissions.get('can_delete_channel', False),
+                permissions.get('can_edit_messages', False),
+                permissions.get('can_delete_messages', False),
                 server_id, username
             ))
     
@@ -986,6 +1027,8 @@ class Database:
                 SELECT m.id, m.username, m.content, 
                        m.timestamp::text as timestamp,
                        m.context_type, m.context_id,
+                       m.edited_at::text as edited_at,
+                       m.deleted,
                        u.avatar, u.avatar_type, u.avatar_data
                 FROM messages m
                 LEFT JOIN users u ON m.username = u.username
@@ -1001,6 +1044,54 @@ class Database:
                 msg['content'] = self.encryption_manager.decrypt(msg['content'])
                 messages.append(msg)
             return messages
+    
+    def edit_message(self, message_id: int, new_content: str) -> bool:
+        """Edit a message. Returns True if successful, False otherwise."""
+        try:
+            encrypted_content = self.encryption_manager.encrypt(new_content)
+        except RuntimeError as e:
+            raise RuntimeError(f"Failed to edit message: encryption error - {e}") from e
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE messages 
+                SET content = %s, edited_at = %s
+                WHERE id = %s AND deleted = FALSE
+            ''', (encrypted_content, datetime.now(), message_id))
+            return cursor.rowcount > 0
+    
+    def delete_message(self, message_id: int) -> bool:
+        """Mark a message as deleted. Returns True if successful, False if already deleted or not found."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE messages 
+                SET deleted = TRUE, content = %s
+                WHERE id = %s AND deleted = FALSE
+            ''', (self.encryption_manager.encrypt('[Message deleted]'), message_id))
+            return cursor.rowcount > 0
+    
+    def get_message(self, message_id: int) -> Optional[Dict]:
+        """Get a single message by ID."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT m.id, m.username, m.content, 
+                       m.timestamp::text as timestamp,
+                       m.context_type, m.context_id,
+                       m.edited_at::text as edited_at,
+                       m.deleted
+                FROM messages m
+                WHERE m.id = %s
+            ''', (message_id,))
+            row = cursor.fetchone()
+            if row:
+                msg = dict(row)
+                # Decrypt the message content
+                msg['content'] = self.encryption_manager.decrypt(msg['content'])
+                return msg
+            return None
     
     # Friendship operations
     def add_friend_request(self, requester: str, target: str) -> bool:
