@@ -224,6 +224,11 @@ body::before {
     display: none !important;
 }
 
+/* Mobile overlay - hidden by default on desktop, shown only on mobile when .active class is added */
+.mobile-overlay {
+    display: none;
+}
+
 /* Chat Styles */
 .main-container {
     width: 100%;
