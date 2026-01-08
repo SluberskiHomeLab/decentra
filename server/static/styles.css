@@ -448,7 +448,7 @@ body::before {
     border-radius: 12px;
     box-shadow: 0 8px 16px rgba(0, 0, 0, 0.24);
     margin-bottom: 8px;
-    z-index: 1000;
+    z-index: 1002;
     overflow: hidden;
     animation: modalSlideIn 0.2s ease;
 }
