@@ -272,6 +272,7 @@
             <div class="settings-tabs">
                 <button class="settings-tab active" data-tab="general">General</button>
                 <button class="settings-tab" data-tab="channels">Channels</button>
+                <button class="settings-tab" data-tab="emojis">Emojis</button>
                 <button class="settings-tab" data-tab="invites">Invites</button>
                 <button class="settings-tab" data-tab="roles">Roles</button>
                 <button class="settings-tab" data-tab="permissions">Permissions</button>
@@ -335,6 +336,15 @@
                 <div class="button-group">
                     <button id="create-text-channel-btn" class="btn btn-primary">Create Text Channel</button>
                     <button id="create-voice-channel-btn" class="btn btn-primary">Create Voice Channel</button>
+                </div>
+            </div>
+            
+            <div id="settings-tab-emojis" class="settings-tab-content hidden">
+                <h4>Custom Emojis</h4>
+                <p>Upload and manage custom emojis for this server.</p>
+                <button id="upload-custom-emoji-btn" class="btn btn-primary">Upload Emoji</button>
+                <div id="server-emojis-list" class="custom-emojis-list">
+                    <!-- Custom emojis will be populated here -->
                 </div>
             </div>
             
@@ -717,6 +727,53 @@
                 <button id="send-selected-invites-btn" class="btn btn-primary">Send Invites</button>
                 <button id="close-send-invite-modal" class="btn btn-secondary">Cancel</button>
             </div>
+        </div>
+    </div>
+    
+    <!-- Upload Custom Emoji Modal -->
+    <div id="upload-emoji-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Upload Custom Emoji</h3>
+            <form id="upload-emoji-form">
+                <div class="form-group">
+                    <label for="emoji-name-input">Emoji Name:</label>
+                    <input type="text" id="emoji-name-input" placeholder="e.g. happy_cat" required pattern="[a-zA-Z0-9_]+" maxlength="50">
+                    <small>Letters, numbers, and underscores only</small>
+                </div>
+                <div class="form-group">
+                    <label for="emoji-file-input">Image File:</label>
+                    <input type="file" id="emoji-file-input" accept="image/png,image/jpeg,image/gif,image/webp" required>
+                    <small>PNG, JPEG, GIF, or WebP (max 256KB)</small>
+                </div>
+                <div id="emoji-preview-container" class="emoji-preview-container hidden">
+                    <img id="emoji-preview" alt="Preview">
+                </div>
+                <div id="upload-emoji-error" class="error-message"></div>
+                <div class="modal-actions">
+                    <button type="submit" class="btn btn-primary">Upload</button>
+                    <button type="button" id="cancel-upload-emoji-btn" class="btn btn-secondary">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Emoji Picker Modal -->
+    <div id="emoji-picker-modal" class="modal hidden">
+        <div class="modal-content emoji-picker-content">
+            <h3>Pick an Emoji</h3>
+            <div class="emoji-picker-tabs">
+                <button class="emoji-tab active" data-tab="standard">Standard</button>
+                <button class="emoji-tab" data-tab="custom">Custom</button>
+            </div>
+            <div class="emoji-picker-container">
+                <div id="standard-emojis" class="emoji-grid active">
+                    <!-- Standard emojis will be populated here -->
+                </div>
+                <div id="custom-emojis" class="emoji-grid hidden">
+                    <!-- Custom emojis will be populated here -->
+                </div>
+            </div>
+            <button id="close-emoji-picker" class="btn btn-secondary">Close</button>
         </div>
     </div>
     

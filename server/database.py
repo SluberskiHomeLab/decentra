@@ -237,6 +237,41 @@ class Database:
                         )
                     ''')
                     
+                    # Custom emojis table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS custom_emojis (
+                            emoji_id VARCHAR(255) PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            name VARCHAR(100) NOT NULL,
+                            image_data TEXT NOT NULL,
+                            uploader VARCHAR(255) NOT NULL,
+                            created_at TIMESTAMP NOT NULL,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (uploader) REFERENCES users(username) ON DELETE CASCADE,
+                            UNIQUE (server_id, name)
+                        )
+                    ''')
+                    
+                    # Message reactions table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS message_reactions (
+                            message_id INTEGER NOT NULL,
+                            username VARCHAR(255) NOT NULL,
+                            emoji VARCHAR(255) NOT NULL,
+                            emoji_type VARCHAR(50) DEFAULT 'standard',
+                            created_at TIMESTAMP NOT NULL,
+                            PRIMARY KEY (message_id, username, emoji),
+                            FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Create index for faster reaction retrieval
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_reactions_message 
+                        ON message_reactions(message_id)
+                    ''')
+                    
                     # Add notification_mode column if it doesn't exist (migration)
                     cursor.execute('''
                         DO $$ 
@@ -401,6 +436,44 @@ class Database:
                                 WHERE table_name = 'users' AND column_name = 'status_message'
                             ) THEN
                                 ALTER TABLE users ADD COLUMN status_message VARCHAR(100) DEFAULT '';
+                            END IF;
+                        END $$;
+                    ''')
+                    
+                    # Add message edit/delete tracking columns if they don't exist (migration)
+                    cursor.execute('''
+                        DO $$ 
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'messages' AND column_name = 'edited_at'
+                            ) THEN
+                                ALTER TABLE messages ADD COLUMN edited_at TIMESTAMP;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'messages' AND column_name = 'deleted'
+                            ) THEN
+                                ALTER TABLE messages ADD COLUMN deleted BOOLEAN DEFAULT FALSE;
+                            END IF;
+                        END $$;
+                    ''')
+                    
+                    # Add message permission columns to server_members if they don't exist (migration)
+                    cursor.execute('''
+                        DO $$ 
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'server_members' AND column_name = 'can_edit_messages'
+                            ) THEN
+                                ALTER TABLE server_members ADD COLUMN can_edit_messages BOOLEAN DEFAULT FALSE;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'server_members' AND column_name = 'can_delete_messages'
+                            ) THEN
+                                ALTER TABLE server_members ADD COLUMN can_delete_messages BOOLEAN DEFAULT FALSE;
                             END IF;
                         END $$;
                     ''')
@@ -785,12 +858,15 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE server_members 
-                SET can_create_channel = %s, can_edit_channel = %s, can_delete_channel = %s
+                SET can_create_channel = %s, can_edit_channel = %s, can_delete_channel = %s,
+                    can_edit_messages = %s, can_delete_messages = %s
                 WHERE server_id = %s AND username = %s
             ''', (
                 permissions.get('can_create_channel', False),
                 permissions.get('can_edit_channel', False),
                 permissions.get('can_delete_channel', False),
+                permissions.get('can_edit_messages', False),
+                permissions.get('can_delete_messages', False),
                 server_id, username
             ))
     
@@ -978,6 +1054,24 @@ class Database:
             result = cursor.fetchone()
             return result['id']
     
+    def get_message(self, message_id: int) -> Optional[Dict]:
+        """Get a single message by ID."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT m.id, m.username, m.content, 
+                       m.timestamp::text as timestamp,
+                       m.context_type, m.context_id
+                FROM messages m
+                WHERE m.id = %s
+            ''', (message_id,))
+            result = cursor.fetchone()
+            if result:
+                msg = dict(result)
+                msg['content'] = self.encryption_manager.decrypt(msg['content'])
+                return msg
+            return None
+    
     def get_messages(self, context_type: str, context_id: Optional[str] = None, limit: int = 100) -> List[Dict]:
         """Get messages for a context. Message content is decrypted before returning."""
         with self.get_connection() as conn:
@@ -986,6 +1080,8 @@ class Database:
                 SELECT m.id, m.username, m.content, 
                        m.timestamp::text as timestamp,
                        m.context_type, m.context_id,
+                       m.edited_at::text as edited_at,
+                       m.deleted,
                        u.avatar, u.avatar_type, u.avatar_data
                 FROM messages m
                 LEFT JOIN users u ON m.username = u.username
@@ -1001,6 +1097,54 @@ class Database:
                 msg['content'] = self.encryption_manager.decrypt(msg['content'])
                 messages.append(msg)
             return messages
+    
+    def edit_message(self, message_id: int, new_content: str) -> bool:
+        """Edit a message. Returns True if successful, False otherwise."""
+        try:
+            encrypted_content = self.encryption_manager.encrypt(new_content)
+        except RuntimeError as e:
+            raise RuntimeError(f"Failed to edit message: encryption error - {e}") from e
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE messages 
+                SET content = %s, edited_at = %s
+                WHERE id = %s AND deleted = FALSE
+            ''', (encrypted_content, datetime.now(), message_id))
+            return cursor.rowcount > 0
+    
+    def delete_message(self, message_id: int) -> bool:
+        """Mark a message as deleted. Returns True if successful, False if already deleted or not found."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE messages 
+                SET deleted = TRUE, content = %s
+                WHERE id = %s AND deleted = FALSE
+            ''', (self.encryption_manager.encrypt('[Message deleted]'), message_id))
+            return cursor.rowcount > 0
+    
+    def get_message(self, message_id: int) -> Optional[Dict]:
+        """Get a single message by ID."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT m.id, m.username, m.content, 
+                       m.timestamp::text as timestamp,
+                       m.context_type, m.context_id,
+                       m.edited_at::text as edited_at,
+                       m.deleted
+                FROM messages m
+                WHERE m.id = %s
+            ''', (message_id,))
+            row = cursor.fetchone()
+            if row:
+                msg = dict(row)
+                # Decrypt the message content
+                msg['content'] = self.encryption_manager.decrypt(msg['content'])
+                return msg
+            return None
     
     # Friendship operations
     def add_friend_request(self, requester: str, target: str) -> bool:
@@ -1156,3 +1300,125 @@ class Database:
                 WHERE server_id = %s AND code_type = 'server'
             ''', (server_id,))
             return {row['code']: row['creator'] for row in cursor.fetchall()}
+    
+    # Custom emoji operations
+    def create_custom_emoji(self, emoji_id: str, server_id: str, name: str, 
+                           image_data: str, uploader: str) -> bool:
+        """Create a custom emoji for a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO custom_emojis (emoji_id, server_id, name, image_data, uploader, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                ''', (emoji_id, server_id, name, image_data, uploader, datetime.now()))
+                return True
+        except psycopg2.IntegrityError:
+            return False
+    
+    def get_server_emojis(self, server_id: str) -> List[Dict]:
+        """Get all custom emojis for a server."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT emoji_id, name, image_data, uploader, created_at::text as created_at
+                FROM custom_emojis
+                WHERE server_id = %s
+                ORDER BY created_at ASC
+            ''', (server_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_custom_emoji(self, emoji_id: str) -> Optional[Dict]:
+        """Get a specific custom emoji."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT emoji_id, server_id, name, image_data, uploader, created_at::text as created_at
+                FROM custom_emojis
+                WHERE emoji_id = %s
+            ''', (emoji_id,))
+            result = cursor.fetchone()
+            return dict(result) if result else None
+    
+    def delete_custom_emoji(self, emoji_id: str) -> bool:
+        """Delete a custom emoji."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM custom_emojis WHERE emoji_id = %s', (emoji_id,))
+            return cursor.rowcount > 0
+    
+    # Message reaction operations
+    def add_reaction(self, message_id: int, username: str, emoji: str, emoji_type: str = 'standard') -> bool:
+        """Add a reaction to a message."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO message_reactions (message_id, username, emoji, emoji_type, created_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                ''', (message_id, username, emoji, emoji_type, datetime.now()))
+                return True
+        except psycopg2.IntegrityError:
+            # Reaction already exists
+            return False
+    
+    def remove_reaction(self, message_id: int, username: str, emoji: str) -> bool:
+        """Remove a reaction from a message."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                DELETE FROM message_reactions 
+                WHERE message_id = %s AND username = %s AND emoji = %s
+            ''', (message_id, username, emoji))
+            return cursor.rowcount > 0
+    
+    def get_message_reactions(self, message_id: int) -> List[Dict]:
+        """Get all reactions for a message."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT username, emoji, emoji_type, created_at::text as created_at
+                FROM message_reactions
+                WHERE message_id = %s
+                ORDER BY created_at ASC
+            ''', (message_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_reactions_for_messages(self, message_ids: List[int]) -> Dict[int, List[Dict]]:
+        """
+        Get reactions for multiple messages.
+        
+        Args:
+            message_ids: List of message IDs to get reactions for
+            
+        Returns:
+            Dictionary mapping message IDs to lists of reaction dictionaries.
+            Each reaction dict contains: username, emoji, emoji_type, created_at
+            Example: {123: [{'username': 'alice', 'emoji': '👍', ...}], 124: [...]}
+        """
+        if not message_ids:
+            return {}
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT message_id, username, emoji, emoji_type, created_at::text as created_at
+                FROM message_reactions
+                WHERE message_id = ANY(%s)
+                ORDER BY message_id, created_at ASC
+            ''', (message_ids,))
+            
+            # Group reactions by message_id
+            reactions_by_message = {}
+            for row in cursor.fetchall():
+                msg_id = row['message_id']
+                if msg_id not in reactions_by_message:
+                    reactions_by_message[msg_id] = []
+                reactions_by_message[msg_id].append({
+                    'username': row['username'],
+                    'emoji': row['emoji'],
+                    'emoji_type': row['emoji_type'],
+                    'created_at': row['created_at']
+                })
+            
+            return reactions_by_message

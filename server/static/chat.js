@@ -47,6 +47,9 @@
     let friendRequestsReceived = [];
     let voiceMembers = {}; // Track voice members by channel: {server_id/channel_id: [usernames]}
     
+    // Server settings
+    let maxMessageLength = 2000; // Default max message length
+    
     // Video toggle constants
     const DEFAULT_SCREEN_SHARE_PRIORITY = true; // When both video and screenshare are active, show screenshare by default
     
@@ -212,6 +215,23 @@
     const bioInput = document.getElementById('bio-input');
     const saveProfileBtn = document.getElementById('save-profile-btn');
     
+    // Custom emoji and reaction elements
+    const uploadEmojiModal = document.getElementById('upload-emoji-modal');
+    const uploadEmojiForm = document.getElementById('upload-emoji-form');
+    const emojiNameInput = document.getElementById('emoji-name-input');
+    const emojiFileInput = document.getElementById('emoji-file-input');
+    const emojiPreviewContainer = document.getElementById('emoji-preview-container');
+    const emojiPreview = document.getElementById('emoji-preview');
+    const uploadEmojiError = document.getElementById('upload-emoji-error');
+    const cancelUploadEmojiBtn = document.getElementById('cancel-upload-emoji-btn');
+    const uploadCustomEmojiBtn = document.getElementById('upload-custom-emoji-btn');
+    const serverEmojisList = document.getElementById('server-emojis-list');
+    
+    const emojiPickerModal = document.getElementById('emoji-picker-modal');
+    const closeEmojiPickerBtn = document.getElementById('close-emoji-picker');
+    const standardEmojisGrid = document.getElementById('standard-emojis');
+    const customEmojisGrid = document.getElementById('custom-emojis');
+    
     // Right sidebar (members list) elements
     const rightSidebar = document.getElementById('right-sidebar');
     const toggleMembersBtn = document.getElementById('toggle-members-btn');
@@ -239,6 +259,12 @@
     let mentionQuery = '';
     let selectedMentionIndex = 0;
     let currentServerMembers = [];
+    
+    // Custom emoji and reaction state
+    let customEmojis = {}; // {server_id: [emojis]}
+    let currentPickerTargetMessageId = null;
+    let standardEmojis = ['😀', '😃', '😄', '😁', '😊', '😍', '🤩', '😎', '🥳', '😇', '🙂', '😉', '😌', '😋', '😜', '🤪', '😂', '🤣', '😅', '😆', '😏', '😒', '🙄', '😬', '🤔', '🤨', '😐', '😑', '😶', '🙃', '😯', '😲', '😮', '😱', '😨', '😰', '😥', '😓', '🤗', '🤭', '🤫', '🤥', '😦', '😧', '🥱', '😴', '🤤', '😪', '😵', '🤐', '🥴', '🤢', '🤮', '🤧', '😷', '🤒', '🤕', '🤑', '🤠', '👍', '👎', '👌', '✌️', '🤞', '🤟', '🤘', '🤙', '👈', '👉', '👆', '👇', '☝️', '👏', '🙌', '👐', '🤲', '🤝', '🙏', '✍️', '💅', '🤳', '💪', '🦾', '🦿', '🦵', '🦶', '👂', '🦻', '👃', '🧠', '🫀', '🫁', '🦷', '🦴', '👀', '👁️', '👅', '👄', '💋', '🩸', '❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '🤎', '💔', '❤️‍🔥', '❤️‍🩹', '❣️', '💕', '💞', '💓', '💗', '💖', '💘', '💝', '💟', '☮️', '✝️', '☪️', '🕉️', '☸️', '✡️', '🔯', '🕎', '☯️', '☦️', '🛐', '⛎', '♈', '♉', '♊', '♋', '♌', '♍', '♎', '♏', '♐', '♑', '♒', '♓', '🆔', '⚛️', '🉑', '☢️', '☣️', '🔰', '✅', '❌', '⭕', '🚫', '💯', '💢', '♨️', '🚷', '🚯', '🚳', '🚱', '🔞', '📵', '🚭', '❗', '❕', '❓', '❔', '‼️', '⁉️', '🔅', '🔆', '〽️', '⚠️', '🚸', '🔱', '⚜️', '♻️', '✳️', '❇️', '✴️', '💠', '🔸', '🔹', '🔶', '🔷', '🔺', '🔻', '💎', '🎉', '🎊', '🎈', '🎁', '🏆', '🥇', '🥈', '🥉', '⭐', '🌟', '✨', '🔥', '💫', '💥', '💦', '💨', '👋', '🙋'];
+    
     // Initialize notification manager
     let notificationManager = null;
     if (window.NotificationManager) {
@@ -718,8 +744,56 @@
                 }
                 break;
             
+            case 'message_edited':
+                // Update the edited message in the UI
+                const editedMessageDiv = messagesContainer.querySelector(`[data-message-id="${data.message_id}"]`);
+                if (editedMessageDiv) {
+                    const contentDiv = editedMessageDiv.querySelector('.message-content');
+                    if (contentDiv) {
+                        contentDiv.textContent = data.content;
+                    }
+                    
+                    // Add or update edited indicator
+                    const headerDiv = editedMessageDiv.querySelector('.message-header');
+                    if (headerDiv) {
+                        let editedSpan = headerDiv.querySelector('.message-edited');
+                        if (!editedSpan) {
+                            editedSpan = document.createElement('span');
+                            editedSpan.className = 'message-edited';
+                            editedSpan.textContent = '(edited)';
+                            headerDiv.appendChild(editedSpan);
+                        }
+                    }
+                }
+                break;
+            
+            case 'message_deleted':
+                // Mark the message as deleted in the UI
+                const deletedMessageDiv = messagesContainer.querySelector(`[data-message-id="${data.message_id}"]`);
+                if (deletedMessageDiv) {
+                    deletedMessageDiv.classList.add('deleted');
+                    
+                    const contentDiv = deletedMessageDiv.querySelector('.message-content');
+                    if (contentDiv) {
+                        contentDiv.textContent = '[Message deleted]';
+                        contentDiv.style.fontStyle = 'italic';
+                        contentDiv.style.opacity = '0.6';
+                    }
+                    
+                    // Remove edit/delete buttons
+                    const actionsDiv = deletedMessageDiv.querySelector('.message-actions');
+                    if (actionsDiv) {
+                        actionsDiv.remove();
+                    }
+                }
+                break;
+            
             case 'announcement_update':
                 handleAnnouncementUpdate(data);
+                // Update max message length from server settings
+                if (data.max_message_length !== undefined) {
+                    maxMessageLength = data.max_message_length;
+                }
                 break;
             
             case 'admin_status':
@@ -1050,6 +1124,54 @@
                     loadRoleMembersList(data.role_id);
                 }
                 break;
+            
+            // Custom emoji cases
+            case 'server_emojis':
+                customEmojis[data.server_id] = data.emojis;
+                if (currentlySelectedServer === data.server_id) {
+                    displayServerEmojis(data.emojis);
+                }
+                break;
+            
+            case 'custom_emoji_added':
+                if (!customEmojis[data.server_id]) {
+                    customEmojis[data.server_id] = [];
+                }
+                customEmojis[data.server_id].push(data.emoji);
+                if (currentlySelectedServer === data.server_id) {
+                    displayServerEmojis(customEmojis[data.server_id]);
+                }
+                break;
+            
+            case 'custom_emoji_deleted':
+                if (customEmojis[data.server_id]) {
+                    customEmojis[data.server_id] = customEmojis[data.server_id].filter(
+                        e => e.emoji_id !== data.emoji_id
+                    );
+                    if (currentlySelectedServer === data.server_id) {
+                        displayServerEmojis(customEmojis[data.server_id]);
+                    }
+                }
+                break;
+            
+            case 'emoji_upload_success':
+                uploadEmojiError.textContent = '';
+                alert('Emoji uploaded successfully!');
+                break;
+            
+            // Reaction cases
+            case 'reaction_added':
+            case 'reaction_removed':
+                updateMessageReactions(data.message_id, data.reactions);
+                break;
+        }
+    }
+    
+    // Update reactions for a specific message
+    function updateMessageReactions(messageId, reactions) {
+        const reactionsContainer = document.getElementById(`reactions-${messageId}`);
+        if (reactionsContainer) {
+            renderReactions(messageId, reactions, reactionsContainer);
         }
     }
     
@@ -1287,6 +1409,9 @@
         }
         
         updateChannelsForServer(serverId);
+        
+        // Load custom emojis for this server
+        loadServerEmojis(serverId);
         
         // Auto-select first text channel
         const firstTextChannel = server.channels.find(ch => ch.type === 'text');
@@ -1591,11 +1716,21 @@
         const messageDiv = document.createElement('div');
         messageDiv.className = 'message';
         
+        // Store message ID for edit/delete operations
+        if (msg.id) {
+            messageDiv.dataset.messageId = msg.id;
+        }
+        
         const isOwnMessage = msg.username === username;
         if (isOwnMessage) {
             messageDiv.classList.add('own');
         } else {
             messageDiv.classList.add('other');
+        }
+        
+        // Mark deleted messages
+        if (msg.deleted) {
+            messageDiv.classList.add('deleted');
         }
         
         const timestamp = new Date(msg.timestamp).toLocaleTimeString('en-US', {
@@ -1642,6 +1777,91 @@
         embeds.forEach(embed => {
             contentWrapper.appendChild(embed);
         });
+        // Build the edited indicator
+        let editedIndicator = '';
+        if (msg.edited_at) {
+            editedIndicator = '<span class="message-edited">(edited)</span>';
+        }
+        
+        contentWrapper.innerHTML = `
+            <div class="message-header">
+                <span class="message-username ${isOwnMessage ? 'own' : 'other'}">${escapeHtml(msg.username)}</span>
+                <span class="message-time">${timestamp}</span>
+                ${editedIndicator}
+            </div>
+            <div class="message-content">${escapeHtml(msg.content)}</div>
+        `;
+        
+        // Add reactions container
+        if (msg.id) {
+            const reactionsContainer = document.createElement('div');
+            reactionsContainer.className = 'message-reactions';
+            reactionsContainer.id = `reactions-${msg.id}`;
+            
+            // Display existing reactions
+            if (msg.reactions && msg.reactions.length > 0) {
+                renderReactions(msg.id, msg.reactions, reactionsContainer);
+            }
+            
+            // Add reaction button
+            const addReactionBtn = document.createElement('button');
+            addReactionBtn.className = 'add-reaction-btn';
+            addReactionBtn.textContent = '➕';
+            addReactionBtn.title = 'Add reaction';
+            addReactionBtn.onclick = () => openEmojiPicker(msg.id);
+            
+            reactionsContainer.appendChild(addReactionBtn);
+            contentWrapper.appendChild(reactionsContainer);
+            
+            // Store message ID on the element for later reference
+            messageDiv.dataset.messageId = msg.id;
+        // Add edit/delete buttons if message is not deleted
+        if (!msg.deleted && msg.id) {
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'message-actions';
+            
+            // Check if user has permissions for other users' messages
+            let canEditOthers = false;
+            let canDeleteOthers = false;
+            
+            if (currentContext && currentContext.type === 'server') {
+                // For server messages, apply server-based permissions for other users' messages
+                if (!isOwnMessage) {
+                    const server = servers.find(s => s.id === currentContext.serverId);
+                    if (server) {
+                        // Server owner can edit/delete all messages
+                        if (server.owner === username) {
+                            canEditOthers = true;
+                            canDeleteOthers = true;
+                        } else if (server.permissions) {
+                            // Check member permissions
+                            canEditOthers = server.permissions.can_edit_messages || false;
+                            canDeleteOthers = server.permissions.can_delete_messages || false;
+                        }
+                    }
+                }
+            } else {
+                // For DMs and other non-server contexts, users can only edit/delete their own messages.
+                // canEditOthers and canDeleteOthers remain false.
+            }
+            
+            // Show edit/delete buttons for own messages or if user has permissions
+            if (isOwnMessage || canEditOthers || canDeleteOthers) {
+                const showEdit = isOwnMessage || canEditOthers;
+                const showDelete = isOwnMessage || canDeleteOthers;
+                
+                actionsDiv.innerHTML = `
+                    ${showEdit ? `<button class="message-action-btn edit-message-btn" title="Edit message">
+                        <span>✏️</span>
+                    </button>` : ''}
+                    ${showDelete ? `<button class="message-action-btn delete-message-btn" title="Delete message">
+                        <span>🗑️</span>
+                    </button>` : ''}
+                `;
+                
+                contentWrapper.appendChild(actionsDiv);
+            }
+        }
         
         messageDiv.appendChild(avatarEl);
         messageDiv.appendChild(contentWrapper);
@@ -1753,6 +1973,237 @@
             hideMentionAutocomplete();
         }
     });
+    
+    // Handle edit and delete message button clicks using event delegation
+    messagesContainer.addEventListener('click', (e) => {
+        const editBtn = e.target.closest('.edit-message-btn');
+        const deleteBtn = e.target.closest('.delete-message-btn');
+        
+        if (editBtn) {
+            const messageDiv = editBtn.closest('.message');
+            if (messageDiv && messageDiv.dataset.messageId) {
+                startEditingMessage(messageDiv);
+            }
+        } else if (deleteBtn) {
+            const messageDiv = deleteBtn.closest('.message');
+            if (messageDiv && messageDiv.dataset.messageId) {
+                deleteMessage(messageDiv);
+            }
+        }
+    });
+    
+    // Start editing a message
+    function startEditingMessage(messageDiv) {
+        const messageId = messageDiv.dataset.messageId;
+        const contentDiv = messageDiv.querySelector('.message-content');
+        const originalContent = contentDiv.textContent;
+        
+        // Create edit form
+        const editForm = document.createElement('form');
+        editForm.className = 'message-edit-form';
+        
+        const editInput = document.createElement('input');
+        editInput.type = 'text';
+        editInput.className = 'message-edit-input';
+        editInput.value = originalContent;
+        editInput.maxLength = maxMessageLength;
+        
+        const saveBtn = document.createElement('button');
+        saveBtn.type = 'submit';
+        saveBtn.className = 'message-edit-save';
+        saveBtn.textContent = '✓ Save';
+        
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'message-edit-cancel';
+        cancelBtn.textContent = '✗ Cancel';
+        
+        editForm.appendChild(editInput);
+        editForm.appendChild(saveBtn);
+        editForm.appendChild(cancelBtn);
+        
+        // Replace content with edit form
+        contentDiv.replaceWith(editForm);
+        editInput.focus();
+        editInput.select();
+        
+        // Handle save
+        editForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const newContent = editInput.value.trim();
+
+            // Prevent saving empty messages and keep the edit form open
+            if (!newContent) {
+                // Use built-in form validation messaging for feedback
+                if (editInput.setCustomValidity) {
+                    editInput.setCustomValidity('Message cannot be empty.');
+                    editInput.reportValidity && editInput.reportValidity();
+                } else {
+                    alert('Message cannot be empty.');
+                }
+                return;
+            }
+
+            // Clear any previous validation message
+            if (editInput.setCustomValidity) {
+                editInput.setCustomValidity('');
+            }
+            
+            // Validate message length
+            if (newContent.length > maxMessageLength) {
+                if (editInput.setCustomValidity) {
+                    editInput.setCustomValidity(`Message exceeds maximum length of ${maxMessageLength} characters.`);
+                    editInput.reportValidity && editInput.reportValidity();
+                } else {
+                    alert(`Message exceeds maximum length of ${maxMessageLength} characters.`);
+                }
+                return;
+            }
+
+            // If nothing changed, just restore the original content
+            if (newContent === originalContent) {
+                const restoredContentDiv = document.createElement('div');
+                restoredContentDiv.className = 'message-content';
+                restoredContentDiv.textContent = originalContent;
+                editForm.replaceWith(restoredContentDiv);
+                return;
+            }
+            
+            // Send edit request to server
+            ws.send(JSON.stringify({
+                type: 'edit_message',
+                message_id: parseInt(messageId),
+                content: newContent
+            }));
+
+            // Optimistically update the UI to show the new content
+            const updatedContentDiv = document.createElement('div');
+            updatedContentDiv.className = 'message-content';
+            updatedContentDiv.textContent = newContent;
+            editForm.replaceWith(updatedContentDiv);
+        });
+        
+        // Handle cancel
+        cancelBtn.addEventListener('click', () => {
+            const restoredContentDiv = document.createElement('div');
+            restoredContentDiv.className = 'message-content';
+            restoredContentDiv.textContent = originalContent;
+            editForm.replaceWith(restoredContentDiv);
+        });
+    }
+    
+    // Delete confirmation modal
+    function showDeleteConfirmationDialog() {
+        return new Promise((resolve) => {
+            // Overlay
+            const overlay = document.createElement('div');
+            overlay.style.position = 'fixed';
+            overlay.style.top = '0';
+            overlay.style.left = '0';
+            overlay.style.width = '100%';
+            overlay.style.height = '100%';
+            overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+            overlay.style.display = 'flex';
+            overlay.style.alignItems = 'center';
+            overlay.style.justifyContent = 'center';
+            overlay.style.zIndex = '1000';
+            
+            // Modal container
+            const modal = document.createElement('div');
+            modal.style.backgroundColor = '#1f2933';
+            modal.style.color = '#f9fafb';
+            modal.style.padding = '16px 20px';
+            modal.style.borderRadius = '8px';
+            modal.style.boxShadow = '0 10px 25px rgba(0, 0, 0, 0.4)';
+            modal.style.maxWidth = '400px';
+            modal.style.width = '90%';
+            modal.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+            
+            const message = document.createElement('p');
+            message.textContent = 'Are you sure you want to delete this message?';
+            message.style.margin = '0 0 16px 0';
+            
+            const buttonsContainer = document.createElement('div');
+            buttonsContainer.style.display = 'flex';
+            buttonsContainer.style.justifyContent = 'flex-end';
+            buttonsContainer.style.gap = '8px';
+            
+            const cancelBtn = document.createElement('button');
+            cancelBtn.type = 'button';
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.style.padding = '6px 12px';
+            cancelBtn.style.borderRadius = '4px';
+            cancelBtn.style.border = '1px solid #4b5563';
+            cancelBtn.style.backgroundColor = '#111827';
+            cancelBtn.style.color = '#e5e7eb';
+            cancelBtn.style.cursor = 'pointer';
+            
+            const deleteBtn = document.createElement('button');
+            deleteBtn.type = 'button';
+            deleteBtn.textContent = 'Delete';
+            deleteBtn.style.padding = '6px 12px';
+            deleteBtn.style.borderRadius = '4px';
+            deleteBtn.style.border = 'none';
+            deleteBtn.style.backgroundColor = '#b91c1c';
+            deleteBtn.style.color = '#f9fafb';
+            deleteBtn.style.cursor = 'pointer';
+            
+            buttonsContainer.appendChild(cancelBtn);
+            buttonsContainer.appendChild(deleteBtn);
+            
+            modal.appendChild(message);
+            modal.appendChild(buttonsContainer);
+            overlay.appendChild(modal);
+            document.body.appendChild(overlay);
+            
+            function cleanup() {
+                document.body.removeChild(overlay);
+                document.removeEventListener('keydown', onKeyDown);
+            }
+            
+            function onKeyDown(e) {
+                if (e.key === 'Escape') {
+                    cleanup();
+                    resolve(false);
+                }
+            }
+            
+            cancelBtn.addEventListener('click', () => {
+                cleanup();
+                resolve(false);
+            });
+            
+            deleteBtn.addEventListener('click', () => {
+                cleanup();
+                resolve(true);
+            });
+            
+            // Close when clicking outside the modal
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) {
+                    cleanup();
+                    resolve(false);
+                }
+            });
+            
+            document.addEventListener('keydown', onKeyDown);
+        });
+    }
+    
+    // Delete a message
+    async function deleteMessage(messageDiv) {
+        const messageId = messageDiv.dataset.messageId;
+        
+        const confirmed = await showDeleteConfirmationDialog();
+        if (!confirmed) {
+            return;
+        }
+        
+        ws.send(JSON.stringify({
+            type: 'delete_message',
+            message_id: parseInt(messageId)
+        }));
+    }
     
     // User menu toggle
     userMenuBtn.addEventListener('click', (e) => {
@@ -2220,6 +2671,111 @@
         }
     });
 
+    // ========== Custom Emoji Event Listeners ==========
+    
+    // Upload custom emoji button
+    uploadCustomEmojiBtn.addEventListener('click', () => {
+        if (!currentlySelectedServer) return;
+        uploadEmojiModal.classList.remove('hidden');
+    });
+    
+    // Cancel upload emoji
+    cancelUploadEmojiBtn.addEventListener('click', () => {
+        uploadEmojiModal.classList.add('hidden');
+        uploadEmojiForm.reset();
+        emojiPreviewContainer.classList.add('hidden');
+        uploadEmojiError.textContent = '';
+    });
+    
+    // Preview emoji image
+    emojiFileInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        
+        // Validate file size (max 256KB)
+        if (file.size > 256 * 1024) {
+            uploadEmojiError.textContent = 'Image must be smaller than 256KB';
+            emojiFileInput.value = '';
+            emojiPreviewContainer.classList.add('hidden');
+            return;
+        }
+        
+        // Show preview
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            emojiPreview.src = e.target.result;
+            emojiPreviewContainer.classList.remove('hidden');
+            uploadEmojiError.textContent = '';
+        };
+        reader.readAsDataURL(file);
+    });
+    
+    // Submit upload emoji form
+    uploadEmojiForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        
+        const name = emojiNameInput.value.trim();
+        const file = emojiFileInput.files[0];
+        
+        if (!name || !file || !currentlySelectedServer) return;
+        
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            ws.send(JSON.stringify({
+                type: 'upload_custom_emoji',
+                server_id: currentlySelectedServer,
+                name: name,
+                image_data: e.target.result
+            }));
+            
+            uploadEmojiModal.classList.add('hidden');
+            uploadEmojiForm.reset();
+            emojiPreviewContainer.classList.add('hidden');
+        };
+        reader.readAsDataURL(file);
+    });
+    
+    // Close emoji picker
+    closeEmojiPickerBtn.addEventListener('click', closeEmojiPicker);
+    
+    // Emoji picker modal - close on background click
+    emojiPickerModal.addEventListener('click', (e) => {
+        if (e.target === emojiPickerModal) {
+            closeEmojiPicker();
+        }
+    });
+    
+    // Upload emoji modal - close on background click
+    uploadEmojiModal.addEventListener('click', (e) => {
+        if (e.target === uploadEmojiModal) {
+            uploadEmojiModal.classList.add('hidden');
+            uploadEmojiForm.reset();
+            emojiPreviewContainer.classList.add('hidden');
+            uploadEmojiError.textContent = '';
+        }
+    });
+    
+    // Emoji picker tab switching
+    document.querySelectorAll('.emoji-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            const tabName = tab.dataset.tab;
+            
+            // Update active tab
+            document.querySelectorAll('.emoji-tab').forEach(t => {
+                t.classList.toggle('active', t.dataset.tab === tabName);
+            });
+            
+            // Show corresponding emoji grid
+            if (tabName === 'standard') {
+                standardEmojisGrid.classList.remove('hidden');
+                customEmojisGrid.classList.add('hidden');
+            } else {
+                standardEmojisGrid.classList.add('hidden');
+                customEmojisGrid.classList.remove('hidden');
+            }
+        });
+    });
+    
     
     function showServerInviteCode(code) {
         serverInviteCodeText.textContent = code;
@@ -2260,11 +2816,13 @@
                 const permsDiv = document.createElement('div');
                 permsDiv.className = 'member-permissions';
                 
-                const permissions = ['can_create_channel', 'can_edit_channel', 'can_delete_channel'];
+                const permissions = ['can_create_channel', 'can_edit_channel', 'can_delete_channel', 'can_edit_messages', 'can_delete_messages'];
                 const permLabels = {
                     'can_create_channel': 'Create',
                     'can_edit_channel': 'Edit',
-                    'can_delete_channel': 'Delete'
+                    'can_delete_channel': 'Delete',
+                    'can_edit_messages': 'Edit Msgs',
+                    'can_delete_messages': 'Del Msgs'
                 };
                 
                 permissions.forEach(perm => {
@@ -2299,11 +2857,7 @@
         if (!server) return;
         
         // Get current permissions by reading from checkboxes using data attributes
-        const currentPerms = {
-            can_create_channel: false,
-            can_edit_channel: false,
-            can_delete_channel: false
-        };
+        const currentPerms = {};
         
         // Find the member's row and read all checkboxes
         document.querySelectorAll('.member-item').forEach(item => {
@@ -3430,6 +3984,31 @@
             const protocol = urlObj.protocol.toLowerCase();
             if (protocol === 'http:' || protocol === 'https:') {
                 return urlObj.toString();
+    // Sanitize image sources for custom emojis to prevent XSS
+    function sanitizeImageSrc(raw) {
+        if (typeof raw !== 'string') {
+            return null;
+        }
+        const value = raw.trim();
+        if (!value) {
+            return null;
+        }
+        // Allow data: URIs only for images
+        if (value.startsWith('data:')) {
+            // Basic check: data:[<mediatype>][;base64],...
+            const commaIndex = value.indexOf(',');
+            const header = commaIndex === -1 ? value : value.substring(0, commaIndex);
+            // header like "data:image/png;base64"
+            if (/^data:image\//i.test(header)) {
+                return value;
+            }
+            return null;
+        }
+        // Allow same-origin URLs only
+        try {
+            const url = new URL(value, window.location.origin);
+            if ((url.protocol === 'http:' || url.protocol === 'https:') && url.origin === window.location.origin) {
+                return url.href;
             }
             return null;
         } catch (e) {
@@ -3586,6 +4165,222 @@
             const escapedLabel = escapeHtml(safeUrl);
             return `<a href="${escapedHref}" target="_blank" rel="noopener noreferrer" class="message-link">${escapedLabel}</a>`;
         });
+    // ========== Custom Emoji and Reaction Functions ==========
+    
+    // Render reactions for a message
+    function renderReactions(messageId, reactions, container) {
+        container.innerHTML = '';
+        
+        // Group reactions by emoji
+        const reactionGroups = {};
+        reactions.forEach(reaction => {
+            const key = reaction.emoji;
+            if (!reactionGroups[key]) {
+                reactionGroups[key] = {
+                    emoji: reaction.emoji,
+                    emoji_type: reaction.emoji_type,
+                    users: [],
+                    count: 0
+                };
+            }
+            reactionGroups[key].users.push(reaction.username);
+            reactionGroups[key].count++;
+        });
+        
+        // Create reaction buttons
+        Object.values(reactionGroups).forEach(group => {
+            const reactionBtn = document.createElement('button');
+            reactionBtn.className = 'reaction-item';
+            
+            const userReacted = group.users.includes(username);
+            if (userReacted) {
+                reactionBtn.classList.add('user-reacted');
+            }
+            
+            const emojiSpan = document.createElement('span');
+            emojiSpan.className = 'reaction-emoji';
+            
+            if (group.emoji_type === 'custom') {
+                // Find custom emoji data
+                let emojiData = null;
+                for (const serverId in customEmojis) {
+                    const emoji = customEmojis[serverId].find(e => e.emoji_id === group.emoji);
+                    if (emoji) {
+                        emojiData = emoji;
+                        break;
+                    }
+                }
+                if (emojiData) {
+                    const safeSrc = sanitizeImageSrc(emojiData.image_data);
+                    if (safeSrc) {
+                        const img = document.createElement('img');
+                        img.src = safeSrc;
+                        img.alt = emojiData.name;
+                        emojiSpan.appendChild(img);
+                    } else {
+                        // Fallback to text emoji if the image source is not safe
+                        emojiSpan.textContent = group.emoji;
+                    }
+                } else {
+                    emojiSpan.textContent = group.emoji;
+                }
+            } else {
+                emojiSpan.textContent = group.emoji;
+            }
+            
+            const countSpan = document.createElement('span');
+            countSpan.className = 'reaction-count';
+            countSpan.textContent = group.count;
+            
+            reactionBtn.appendChild(emojiSpan);
+            reactionBtn.appendChild(countSpan);
+            reactionBtn.title = group.users.join(', ');
+            
+            reactionBtn.onclick = () => {
+                if (userReacted) {
+                    removeReaction(messageId, group.emoji);
+                } else {
+                    addReaction(messageId, group.emoji, group.emoji_type);
+                }
+            };
+            
+            container.appendChild(reactionBtn);
+        });
+        
+        // Re-add the add reaction button
+        const addReactionBtn = document.createElement('button');
+        addReactionBtn.className = 'add-reaction-btn';
+        addReactionBtn.textContent = '➕';
+        addReactionBtn.title = 'Add reaction';
+        addReactionBtn.onclick = () => openEmojiPicker(messageId);
+        container.appendChild(addReactionBtn);
+    }
+    
+    // Add reaction to a message
+    function addReaction(messageId, emoji, emojiType = 'standard') {
+        ws.send(JSON.stringify({
+            type: 'add_reaction',
+            message_id: messageId,
+            emoji: emoji,
+            emoji_type: emojiType
+        }));
+    }
+    
+    // Remove reaction from a message
+    function removeReaction(messageId, emoji) {
+        ws.send(JSON.stringify({
+            type: 'remove_reaction',
+            message_id: messageId,
+            emoji: emoji
+        }));
+    }
+    
+    // Open emoji picker for reactions
+    function openEmojiPicker(messageId) {
+        currentPickerTargetMessageId = messageId;
+        
+        // Populate standard emojis
+        standardEmojisGrid.innerHTML = '';
+        standardEmojis.forEach(emoji => {
+            const btn = document.createElement('button');
+            btn.textContent = emoji;
+            btn.onclick = () => {
+                addReaction(messageId, emoji, 'standard');
+                closeEmojiPicker();
+            };
+            standardEmojisGrid.appendChild(btn);
+        });
+        
+        // Populate custom emojis if in a server
+        customEmojisGrid.innerHTML = '';
+        if (currentContext && currentContext.type === 'server' && customEmojis[currentContext.serverId]) {
+            customEmojis[currentContext.serverId].forEach(emoji => {
+                const btn = document.createElement('button');
+                const img = document.createElement('img');
+                img.src = sanitizeImageSrc(emoji.image_data);
+                img.alt = emoji.name;
+                btn.appendChild(img);
+                btn.title = emoji.name;
+                btn.onclick = () => {
+                    addReaction(messageId, emoji.emoji_id, 'custom');
+                    closeEmojiPicker();
+                };
+                customEmojisGrid.appendChild(btn);
+            });
+        }
+        
+        emojiPickerModal.classList.remove('hidden');
+    }
+    
+    function closeEmojiPicker() {
+        emojiPickerModal.classList.add('hidden');
+        currentPickerTargetMessageId = null;
+    }
+    
+    // Load custom emojis for a server
+    function loadServerEmojis(serverId) {
+        ws.send(JSON.stringify({
+            type: 'get_server_emojis',
+            server_id: serverId
+        }));
+    }
+    
+    // Display custom emojis in server settings
+    function displayServerEmojis(emojis) {
+        serverEmojisList.innerHTML = '';
+        
+        if (emojis.length === 0) {
+            serverEmojisList.innerHTML = '<p class="empty-state">No custom emojis yet. Upload one to get started!</p>';
+            return;
+        }
+        
+        emojis.forEach(emoji => {
+            const emojiItem = document.createElement('div');
+            emojiItem.className = 'custom-emoji-item';
+            
+            const img = document.createElement('img');
+            const safeSrc = sanitizeImageSrc(emoji.image_data);
+            if (safeSrc) {
+                img.src = safeSrc;
+            } else {
+                console.warn('Discarding unsafe emoji image source', emoji.image_data);
+            }
+            img.alt = emoji.name;
+            
+            const nameDiv = document.createElement('div');
+            nameDiv.className = 'custom-emoji-name';
+            nameDiv.textContent = `:${emoji.name}:`;
+            
+            const uploaderDiv = document.createElement('div');
+            uploaderDiv.className = 'custom-emoji-uploader';
+            uploaderDiv.textContent = `by ${emoji.uploader}`;
+            
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'custom-emoji-delete';
+            deleteBtn.textContent = 'Delete';
+            deleteBtn.onclick = () => deleteCustomEmoji(emoji.emoji_id);
+            
+            emojiItem.appendChild(img);
+            emojiItem.appendChild(nameDiv);
+            emojiItem.appendChild(uploaderDiv);
+            
+            // Only show delete button for server owner or uploader
+            const currentServer = servers.find(s => s.id === currentlySelectedServer);
+            if (currentServer && (currentServer.owner === username || emoji.uploader === username)) {
+                emojiItem.appendChild(deleteBtn);
+            }
+            
+            serverEmojisList.appendChild(emojiItem);
+        });
+    }
+    
+    function deleteCustomEmoji(emojiId) {
+        if (confirm('Are you sure you want to delete this emoji?')) {
+            ws.send(JSON.stringify({
+                type: 'delete_custom_emoji',
+                emoji_id: emojiId
+            }));
+        }
     }
     
     // ========== Roles Management Functions ==========
