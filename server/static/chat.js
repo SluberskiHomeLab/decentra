@@ -3495,7 +3495,7 @@
         embedDiv.className = 'embed embed-youtube';
         
         const iframe = document.createElement('iframe');
-        iframe.src = `https://www.youtube.com/embed/${videoId}`;
+        iframe.src = `https://www.youtube.com/embed/${encodeURIComponent(videoId)}`;
         iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
         iframe.allowFullscreen = true;
         iframe.title = 'YouTube video';
