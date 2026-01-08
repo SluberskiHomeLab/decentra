@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rich Embeds Test</title>
+    <link rel="stylesheet" href="server/static/styles.css">
+    <style>
+        body {
+            background: #36393f;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+        }
+        .test-container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: #2f3136;
+            padding: 20px;
+            border-radius: 8px;
+        }
+        h1, h2 {
+            color: #fff;
+        }
+        .test-message {
+            margin: 20px 0;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 4px;
+        }
+        .test-label {
+            color: #b9bbbe;
+            font-size: 12px;
+            margin-bottom: 8px;
+        }
+        #messages {
+            background: #36393f;
+            border-radius: 4px;
+            padding: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="test-container">
+        <h1>Rich Embeds Test Page</h1>
+        
+        <div class="test-message">
+            <div class="test-label">Test 1: Regular URL</div>
+            <div id="messages"></div>
+        </div>
+        
+        <div id="test-results"></div>
+    </div>
+
+    <script>
+        // Copy the embed functions from chat.js
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // URL regex to detect links in messages
+        const URL_REGEX = /(https?:\/\/[^\s]+)/gi;
+        
+        // Image extensions
+        const IMAGE_EXTENSIONS = /\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?[^\s]*)?$/i;
+        
+        // Video extensions
+        const VIDEO_EXTENSIONS = /\.(mp4|webm|ogg|mov)(\?[^\s]*)?$/i;
+        
+        // YouTube URL patterns - requires https:// to match URL_REGEX
+        const YOUTUBE_REGEX = /https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/i;
+        
+        /**
+         * Sanitize a URL to ensure it only uses http or https protocols
+         */
+        function sanitizeEmbedUrl(rawUrl) {
+            if (typeof rawUrl !== 'string') {
+                return null;
+            }
+            try {
+                const urlObj = new URL(rawUrl, window.location.origin);
+                const protocol = urlObj.protocol.toLowerCase();
+                if (protocol === 'http:' || protocol === 'https:') {
+                    return urlObj.toString();
+                }
+                return null;
+            } catch (e) {
+                // Invalid URL
+                return null;
+            }
+        }
+        
+        function isImageUrl(url) {
+            return IMAGE_EXTENSIONS.test(url);
+        }
+        
+        function isVideoUrl(url) {
+            return VIDEO_EXTENSIONS.test(url);
+        }
+        
+        function getYouTubeVideoId(url) {
+            const match = url.match(YOUTUBE_REGEX);
+            return match ? match[1] : null;
+        }
+        
+        function createImageEmbed(url) {
+            const embedDiv = document.createElement('div');
+            embedDiv.className = 'embed embed-image';
+            
+            const safeUrl = sanitizeEmbedUrl(url);
+            if (!safeUrl) {
+                embedDiv.innerHTML = `<a href="#" class="embed-link">🖼️ Invalid URL</a>`;
+                return embedDiv;
+            }
+            
+            const img = document.createElement('img');
+            img.src = safeUrl;
+            img.alt = 'Embedded image';
+            img.loading = 'lazy';
+            
+            img.onerror = function() {
+                embedDiv.innerHTML = `<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" class="embed-link">🖼️ ${escapeHtml(safeUrl)}</a>`;
+            };
+            
+            const link = document.createElement('a');
+            link.href = safeUrl;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.appendChild(img);
+            
+            embedDiv.appendChild(link);
+            return embedDiv;
+        }
+        
+        function createVideoEmbed(url) {
+            const embedDiv = document.createElement('div');
+            embedDiv.className = 'embed embed-video';
+            
+            const safeUrl = sanitizeEmbedUrl(url);
+            if (!safeUrl) {
+                embedDiv.innerHTML = `<a href="#" class="embed-link">🎥 Invalid URL</a>`;
+                return embedDiv;
+            }
+            
+            const video = document.createElement('video');
+            video.src = safeUrl;
+            video.controls = true;
+            video.preload = 'metadata';
+            
+            video.onerror = function() {
+                embedDiv.innerHTML = `<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" class="embed-link">🎥 ${escapeHtml(safeUrl)}</a>`;
+            };
+            
+            embedDiv.appendChild(video);
+            return embedDiv;
+        }
+        
+        function createYouTubeEmbed(videoId, url) {
+            const embedDiv = document.createElement('div');
+            embedDiv.className = 'embed embed-youtube';
+            
+            const iframe = document.createElement('iframe');
+            iframe.src = `https://www.youtube.com/embed/${encodeURIComponent(videoId)}`;
+            iframe.style.border = 'none';
+            iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
+            iframe.allowFullscreen = true;
+            iframe.title = 'YouTube video';
+            
+            embedDiv.appendChild(iframe);
+            return embedDiv;
+        }
+        
+        function createLinkEmbed(url) {
+            const embedDiv = document.createElement('div');
+            embedDiv.className = 'embed embed-link';
+            
+            const safeUrl = sanitizeEmbedUrl(url);
+            if (!safeUrl) {
+                embedDiv.innerHTML = `<span class="embed-link">Invalid URL</span>`;
+                return embedDiv;
+            }
+            
+            const link = document.createElement('a');
+            link.href = safeUrl;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = safeUrl;
+            
+            embedDiv.appendChild(link);
+            return embedDiv;
+        }
+        
+        function processMessageEmbeds(content) {
+            const embeds = [];
+            const urls = content.match(URL_REGEX);
+            
+            if (!urls) {
+                return embeds;
+            }
+            
+            const processedUrls = new Set();
+            
+            urls.forEach(url => {
+                if (processedUrls.has(url)) {
+                    return;
+                }
+                processedUrls.add(url);
+                
+                // Sanitize URL first
+                const safeUrl = sanitizeEmbedUrl(url);
+                if (!safeUrl) {
+                    return; // Skip invalid URLs
+                }
+                
+                const youtubeId = getYouTubeVideoId(safeUrl);
+                if (youtubeId) {
+                    embeds.push(createYouTubeEmbed(youtubeId, safeUrl));
+                }
+                else if (isImageUrl(safeUrl)) {
+                    embeds.push(createImageEmbed(safeUrl));
+                }
+                else if (isVideoUrl(safeUrl)) {
+                    embeds.push(createVideoEmbed(safeUrl));
+                }
+                else {
+                    embeds.push(createLinkEmbed(safeUrl));
+                }
+            });
+            
+            return embeds;
+        }
+        
+        function linkifyText(text) {
+            const escapedText = escapeHtml(text);
+            return escapedText.replace(URL_REGEX, (url) => {
+                const safeUrl = sanitizeEmbedUrl(url);
+                // If the URL is not safe, render it as plain, already-escaped text
+                if (!safeUrl) {
+                    return escapeHtml(url);
+                }
+                const escapedHref = escapeHtml(safeUrl);
+                const escapedLabel = escapeHtml(safeUrl);
+                return `<a href="${escapedHref}" target="_blank" rel="noopener noreferrer" class="message-link">${escapedLabel}</a>`;
+            });
+        }
+        
+        // Run tests
+        const messagesContainer = document.getElementById('messages');
+        const testResults = document.getElementById('test-results');
+        
+        const testCases = [
+            {
+                name: 'Regular URL',
+                content: 'Check out this site: https://example.com'
+            },
+            {
+                name: 'Image URL',
+                content: 'Here is an image: https://via.placeholder.com/400x300.png'
+            },
+            {
+                name: 'YouTube URL',
+                content: 'Watch this video: https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+            },
+            {
+                name: 'Multiple URLs',
+                content: 'Link: https://github.com and image: https://via.placeholder.com/150.jpg'
+            },
+            {
+                name: 'No URLs',
+                content: 'Just a regular message without any links'
+            }
+        ];
+        
+        testCases.forEach((testCase, index) => {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+            messageDiv.style.marginBottom = '20px';
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content-wrapper';
+            
+            const header = document.createElement('div');
+            header.className = 'message-header';
+            header.innerHTML = `<span class="message-username">Test ${index + 1}</span>`;
+            
+            const content = document.createElement('div');
+            content.className = 'message-content';
+            content.innerHTML = linkifyText(testCase.content);
+            
+            contentDiv.appendChild(header);
+            contentDiv.appendChild(content);
+            
+            const embeds = processMessageEmbeds(testCase.content);
+            embeds.forEach(embed => {
+                contentDiv.appendChild(embed);
+            });
+            
+            messageDiv.appendChild(contentDiv);
+            
+            const testSection = document.createElement('div');
+            testSection.className = 'test-message';
+            testSection.innerHTML = `<div class="test-label">${testCase.name}</div>`;
+            testSection.appendChild(messageDiv);
+            
+            testResults.appendChild(testSection);
+        });
+        
+        console.log('Rich embeds test page loaded successfully');
+    </script>
+</body>
+</html>

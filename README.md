@@ -30,6 +30,12 @@ A decentralized Discord-like chat server and client that is non-federated and se
   - Customizable notification sounds
   - Notification modes: all messages, mentions only, or disabled
   - Automatic permission requests on first use
+- 🖼️ **Rich Embeds** - Auto-embedding links, images, videos in messages
+  - Automatic link detection and clickable URLs
+  - Image previews for JPG, PNG, GIF, WebP, SVG
+  - Embedded video players for MP4, WebM, OGG
+  - YouTube video embeds with full player controls
+  - Responsive sizing and lazy loading
 - 📧 **Email Notifications** - SMTP support for system emails
   - Configurable SMTP settings in admin panel
   - Welcome emails for new users
@@ -326,6 +332,31 @@ Server owners can access settings by clicking the **⚙ button** next to the ser
 - Other users' messages appear in **blue** bubbles
 - System messages (joins/leaves) appear in **gray** text
 - Message history is displayed when you first join a channel or DM
+
+#### Rich Embeds
+
+Messages automatically detect and embed various types of content:
+
+- **Links**: Regular URLs become clickable links with visual styling
+- **Images**: Image URLs (.jpg, .png, .gif, .webp, .svg) display as inline images
+  - Click images to open them in a new tab
+  - Images are lazy-loaded for better performance
+- **Videos**: Video URLs (.mp4, .webm, .ogg) embed with a video player
+  - Full playback controls included
+  - Click to play/pause, adjust volume, fullscreen
+- **YouTube**: YouTube links automatically embed with the full YouTube player
+  - Supports both `youtube.com/watch?v=...` and `youtu.be/...` formats
+  - Full YouTube controls including quality selection
+
+**Example messages:**
+```
+Check out https://github.com
+Here's a photo: https://example.com/image.png
+Watch this: https://example.com/video.mp4
+Cool video: https://www.youtube.com/watch?v=dQw4w9WgXcQ
+```
+
+For more details, see [RICH_EMBEDS.md](RICH_EMBEDS.md).
 
 ## Authentication
 
