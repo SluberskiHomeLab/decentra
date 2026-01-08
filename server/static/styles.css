@@ -439,6 +439,11 @@ body::before {
     font-weight: 600;
 }
 
+#user-menu-btn {
+    position: relative;
+    z-index: 1003;
+}
+
 .user-menu {
     position: absolute;
     bottom: 100%;
