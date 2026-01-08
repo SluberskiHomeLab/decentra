@@ -3605,8 +3605,41 @@
             emojiSpan.className = 'reaction-emoji';
             
             if (group.emoji_type === 'custom') {
-                // Find custom emoji data
-                let emojiData = null;
+                // (Reaction rendering and emoji handling code appears below)
+
+                // Helper to sanitize image sources for custom emojis to prevent XSS
+                function sanitizeImageSrc(raw) {
+                    if (typeof raw !== 'string') {
+                        return null;
+                    }
+                    const value = raw.trim();
+                    if (!value) {
+                        return null;
+                    }
+                    // Allow data: URIs only for images
+                    if (value.startsWith('data:')) {
+                        // Basic check: data:[<mediatype>][;base64],...
+                        const commaIndex = value.indexOf(',');
+                        const header = commaIndex === -1 ? value : value.substring(0, commaIndex);
+                        // header like "data:image/png;base64"
+                        if (/^data:image\//i.test(header)) {
+                            return value;
+                        }
+                        return null;
+                    }
+                    try {
+                        const url = new URL(value, window.location.origin);
+                        if (url.protocol === 'http:' || url.protocol === 'https:') {
+                            return url.href;
+                        }
+                        return null;
+                    } catch (e) {
+                        // Invalid URL
+                        return null;
+                    }
+                }
+
+                // ... more code may exist between here and the reactionGroups loop ...
                 for (const serverId in customEmojis) {
                     const emoji = customEmojis[serverId].find(e => e.emoji_id === group.emoji);
                     if (emoji) {
@@ -3615,10 +3648,16 @@
                     }
                 }
                 if (emojiData) {
-                    const img = document.createElement('img');
-                    img.src = emojiData.image_data;
-                    img.alt = emojiData.name;
-                    emojiSpan.appendChild(img);
+                    const safeSrc = sanitizeImageSrc(emojiData.image_data);
+                    if (safeSrc) {
+                        const img = document.createElement('img');
+                        img.src = safeSrc;
+                        img.alt = emojiData.name;
+                        emojiSpan.appendChild(img);
+                    } else {
+                        // Fallback to text emoji if the image source is not safe
+                        emojiSpan.textContent = group.emoji;
+                    }
                 } else {
                     emojiSpan.textContent = group.emoji;
                 }
