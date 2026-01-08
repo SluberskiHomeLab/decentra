@@ -68,8 +68,28 @@
         // Video extensions
         const VIDEO_EXTENSIONS = /\.(mp4|webm|ogg|mov)(\?[^\s]*)?$/i;
         
-        // YouTube URL patterns
-        const YOUTUBE_REGEX = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/i;
+        // YouTube URL patterns - requires https:// to match URL_REGEX
+        const YOUTUBE_REGEX = /https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/i;
+        
+        /**
+         * Sanitize a URL to ensure it only uses http or https protocols
+         */
+        function sanitizeEmbedUrl(rawUrl) {
+            if (typeof rawUrl !== 'string') {
+                return null;
+            }
+            try {
+                const urlObj = new URL(rawUrl, window.location.origin);
+                const protocol = urlObj.protocol.toLowerCase();
+                if (protocol === 'http:' || protocol === 'https:') {
+                    return urlObj.toString();
+                }
+                return null;
+            } catch (e) {
+                // Invalid URL
+                return null;
+            }
+        }
         
         function isImageUrl(url) {
             return IMAGE_EXTENSIONS.test(url);
@@ -88,17 +108,23 @@
             const embedDiv = document.createElement('div');
             embedDiv.className = 'embed embed-image';
             
+            const safeUrl = sanitizeEmbedUrl(url);
+            if (!safeUrl) {
+                embedDiv.innerHTML = `<a href="#" class="embed-link">🖼️ Invalid URL</a>`;
+                return embedDiv;
+            }
+            
             const img = document.createElement('img');
-            img.src = url;
+            img.src = safeUrl;
             img.alt = 'Embedded image';
             img.loading = 'lazy';
             
             img.onerror = function() {
-                embedDiv.innerHTML = `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="embed-link">🖼️ ${escapeHtml(url)}</a>`;
+                embedDiv.innerHTML = `<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" class="embed-link">🖼️ ${escapeHtml(safeUrl)}</a>`;
             };
             
             const link = document.createElement('a');
-            link.href = url;
+            link.href = safeUrl;
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
             link.appendChild(img);
@@ -111,13 +137,19 @@
             const embedDiv = document.createElement('div');
             embedDiv.className = 'embed embed-video';
             
+            const safeUrl = sanitizeEmbedUrl(url);
+            if (!safeUrl) {
+                embedDiv.innerHTML = `<a href="#" class="embed-link">🎥 Invalid URL</a>`;
+                return embedDiv;
+            }
+            
             const video = document.createElement('video');
-            video.src = url;
+            video.src = safeUrl;
             video.controls = true;
             video.preload = 'metadata';
             
             video.onerror = function() {
-                embedDiv.innerHTML = `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="embed-link">🎥 ${escapeHtml(url)}</a>`;
+                embedDiv.innerHTML = `<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" class="embed-link">🎥 ${escapeHtml(safeUrl)}</a>`;
             };
             
             embedDiv.appendChild(video);
@@ -129,7 +161,7 @@
             embedDiv.className = 'embed embed-youtube';
             
             const iframe = document.createElement('iframe');
-            iframe.src = `https://www.youtube.com/embed/${videoId}`;
+            iframe.src = `https://www.youtube.com/embed/${encodeURIComponent(videoId)}`;
             iframe.style.border = 'none';
             iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
             iframe.allowFullscreen = true;
@@ -143,11 +175,17 @@
             const embedDiv = document.createElement('div');
             embedDiv.className = 'embed embed-link';
             
+            const safeUrl = sanitizeEmbedUrl(url);
+            if (!safeUrl) {
+                embedDiv.innerHTML = `<span class="embed-link">Invalid URL</span>`;
+                return embedDiv;
+            }
+            
             const link = document.createElement('a');
-            link.href = url;
+            link.href = safeUrl;
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
-            link.textContent = url;
+            link.textContent = safeUrl;
             
             embedDiv.appendChild(link);
             return embedDiv;
@@ -169,18 +207,24 @@
                 }
                 processedUrls.add(url);
                 
-                const youtubeId = getYouTubeVideoId(url);
+                // Sanitize URL first
+                const safeUrl = sanitizeEmbedUrl(url);
+                if (!safeUrl) {
+                    return; // Skip invalid URLs
+                }
+                
+                const youtubeId = getYouTubeVideoId(safeUrl);
                 if (youtubeId) {
-                    embeds.push(createYouTubeEmbed(youtubeId, url));
+                    embeds.push(createYouTubeEmbed(youtubeId, safeUrl));
                 }
-                else if (isImageUrl(url)) {
-                    embeds.push(createImageEmbed(url));
+                else if (isImageUrl(safeUrl)) {
+                    embeds.push(createImageEmbed(safeUrl));
                 }
-                else if (isVideoUrl(url)) {
-                    embeds.push(createVideoEmbed(url));
+                else if (isVideoUrl(safeUrl)) {
+                    embeds.push(createVideoEmbed(safeUrl));
                 }
                 else {
-                    embeds.push(createLinkEmbed(url));
+                    embeds.push(createLinkEmbed(safeUrl));
                 }
             });
             
@@ -190,7 +234,14 @@
         function linkifyText(text) {
             const escapedText = escapeHtml(text);
             return escapedText.replace(URL_REGEX, (url) => {
-                return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="message-link">${url}</a>`;
+                const safeUrl = sanitizeEmbedUrl(url);
+                // If the URL is not safe, render it as plain, already-escaped text
+                if (!safeUrl) {
+                    return escapeHtml(url);
+                }
+                const escapedHref = escapeHtml(safeUrl);
+                const escapedLabel = escapeHtml(safeUrl);
+                return `<a href="${escapedHref}" target="_blank" rel="noopener noreferrer" class="message-link">${escapedLabel}</a>`;
             });
         }
         
