@@ -1884,7 +1884,6 @@
         editInput.className = 'message-edit-input';
         editInput.value = originalContent;
         editInput.maxLength = maxMessageLength;
-        editInput.required = true;
         
         const saveBtn = document.createElement('button');
         saveBtn.type = 'submit';

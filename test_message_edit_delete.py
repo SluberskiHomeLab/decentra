@@ -31,9 +31,11 @@ def cleanup_test_data(db, usernames, server_ids):
         with db.get_connection() as conn:
             cursor = conn.cursor()
             
-            # Delete messages for test servers
+            # Delete messages for test servers (using exact prefix match with escape)
             for server_id in server_ids:
-                cursor.execute('DELETE FROM messages WHERE context_id LIKE %s', (f'{server_id}%',))
+                # Escape special characters and match server_id followed by /
+                cursor.execute("DELETE FROM messages WHERE context_id = %s OR context_id LIKE %s", 
+                              (server_id, server_id + '/%'))
             
             # Delete servers (cascades to channels and server_members)
             for server_id in server_ids:
