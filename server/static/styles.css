@@ -442,6 +442,8 @@ body::before {
 #user-menu-btn {
     position: relative;
     z-index: 1003;
+    flex: 0 0 auto;
+    cursor: pointer;
 }
 
 .user-menu {
