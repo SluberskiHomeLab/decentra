@@ -1815,6 +1815,8 @@
             
             // Store message ID on the element for later reference
             messageDiv.dataset.messageId = msg.id;
+        }
+        
         // Add edit/delete buttons if message is not deleted
         if (!msg.deleted && msg.id) {
             const actionsDiv = document.createElement('div');
@@ -3984,6 +3986,13 @@
             const protocol = urlObj.protocol.toLowerCase();
             if (protocol === 'http:' || protocol === 'https:') {
                 return urlObj.toString();
+            }
+            return null;
+        } catch (e) {
+            return null;
+        }
+    }
+    
     // Sanitize image sources for custom emojis to prevent XSS
     function sanitizeImageSrc(raw) {
         if (typeof raw !== 'string') {
@@ -4888,4 +4897,5 @@
     console.log('chat.js: About to call connect()');
     // Initialize connection
     connect();
+}
 })();
