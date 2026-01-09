@@ -2693,6 +2693,50 @@
         }
     });
 
+    // ========== Custom Emoji Functions ==========
+    
+    // Open emoji picker for reactions
+    function openEmojiPicker(messageId) {
+        currentPickerTargetMessageId = messageId;
+        
+        // Populate standard emojis
+        standardEmojisGrid.innerHTML = '';
+        standardEmojis.forEach(emoji => {
+            const btn = document.createElement('button');
+            btn.textContent = emoji;
+            btn.onclick = () => {
+                addReaction(messageId, emoji, 'standard');
+                closeEmojiPicker();
+            };
+            standardEmojisGrid.appendChild(btn);
+        });
+        
+        // Populate custom emojis if in a server
+        customEmojisGrid.innerHTML = '';
+        if (currentContext && currentContext.type === 'server' && customEmojis[currentContext.serverId]) {
+            customEmojis[currentContext.serverId].forEach(emoji => {
+                const btn = document.createElement('button');
+                const img = document.createElement('img');
+                img.src = sanitizeImageSrc(emoji.image_data);
+                img.alt = emoji.name;
+                btn.appendChild(img);
+                btn.title = emoji.name;
+                btn.onclick = () => {
+                    addReaction(messageId, emoji.emoji_id, 'custom');
+                    closeEmojiPicker();
+                };
+                customEmojisGrid.appendChild(btn);
+            });
+        }
+        
+        emojiPickerModal.classList.remove('hidden');
+    }
+    
+    function closeEmojiPicker() {
+        emojiPickerModal.classList.add('hidden');
+        currentPickerTargetMessageId = null;
+    }
+
     // ========== Custom Emoji Event Listeners ==========
     
     // Upload custom emoji button
@@ -4345,48 +4389,6 @@
             message_id: messageId,
             emoji: emoji
         }));
-    }
-    
-    // Open emoji picker for reactions
-    function openEmojiPicker(messageId) {
-        currentPickerTargetMessageId = messageId;
-        
-        // Populate standard emojis
-        standardEmojisGrid.innerHTML = '';
-        standardEmojis.forEach(emoji => {
-            const btn = document.createElement('button');
-            btn.textContent = emoji;
-            btn.onclick = () => {
-                addReaction(messageId, emoji, 'standard');
-                closeEmojiPicker();
-            };
-            standardEmojisGrid.appendChild(btn);
-        });
-        
-        // Populate custom emojis if in a server
-        customEmojisGrid.innerHTML = '';
-        if (currentContext && currentContext.type === 'server' && customEmojis[currentContext.serverId]) {
-            customEmojis[currentContext.serverId].forEach(emoji => {
-                const btn = document.createElement('button');
-                const img = document.createElement('img');
-                img.src = sanitizeImageSrc(emoji.image_data);
-                img.alt = emoji.name;
-                btn.appendChild(img);
-                btn.title = emoji.name;
-                btn.onclick = () => {
-                    addReaction(messageId, emoji.emoji_id, 'custom');
-                    closeEmojiPicker();
-                };
-                customEmojisGrid.appendChild(btn);
-            });
-        }
-        
-        emojiPickerModal.classList.remove('hidden');
-    }
-    
-    function closeEmojiPicker() {
-        emojiPickerModal.classList.add('hidden');
-        currentPickerTargetMessageId = null;
     }
     
     // Load custom emojis for a server
