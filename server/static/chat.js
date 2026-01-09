@@ -3510,7 +3510,7 @@
             notificationManager.setNotificationMode(e.target.value);
             
             // Send to server to persist the setting
-            if (ws && ws.readyState === WebSocket.OPEN) {
+            if (ws && ws.readyState === WebSocket.OPEN && authenticated) {
                 ws.send(JSON.stringify({
                     type: 'set_notification_mode',
                     notification_mode: e.target.value
