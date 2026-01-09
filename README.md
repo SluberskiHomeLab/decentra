@@ -591,6 +591,42 @@ decentra/
 └── LICENSE               # Apache 2.0 License
 ```
 
+## Troubleshooting
+
+### Docker Build Issues
+
+**Error: "parent snapshot does not exist: not found"**
+
+This error indicates Docker's build cache has become corrupted. To resolve this:
+
+1. Clear Docker's build cache:
+```bash
+docker builder prune -a
+```
+
+2. Rebuild the images:
+```bash
+docker-compose build --no-cache
+```
+
+3. If the issue persists, try resetting Docker's BuildKit state:
+```bash
+docker buildx prune -a
+```
+
+**Note**: The Dockerfiles now pin the base image to a specific digest to prevent cache-related issues. If you need to update the base image, you'll need to update the digest in both `server/Dockerfile` and `client/Dockerfile`.
+
+### Other Common Issues
+
+**SSL Certificate Warnings**: When accessing the application in your browser, you'll see a warning about the self-signed SSL certificate. This is expected for local development. Click "Advanced" and then "Proceed to localhost" to continue.
+
+**Port Already in Use**: If port 8765 is already in use, you can change it in `docker-compose.yml` under the `server` service's `ports` section.
+
+**Database Connection Issues**: If the server can't connect to the database, ensure:
+- The `DATABASE_URL` in your `.env` file is correct
+- The PostgreSQL container is running (`docker ps | grep postgres`)
+- The database container is healthy (`docker-compose ps`)
+
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
