@@ -107,14 +107,18 @@
                 return;
             }
             
-            // Store credentials for WebSocket authentication
-            sessionStorage.setItem('username', pendingUsername);
-            sessionStorage.setItem('authMode', 'verify_email');
-            sessionStorage.setItem('verificationCode', verificationCode);
-            sessionStorage.removeItem('pendingUsername');
+            // Authenticate via WebSocket before redirecting
+            hideError();
+            loginBtn.disabled = true;
+            loginBtn.textContent = 'Verifying...';
             
-            // Redirect to chat page
-            window.location.href = '/static/chat.html';
+            try {
+                await authenticateAndRedirect('verify_email', pendingUsername, null, email, verificationCode, inviteCode);
+            } catch (error) {
+                showError(error.message || 'Verification failed');
+                loginBtn.disabled = false;
+                loginBtn.textContent = 'Verify Email';
+            }
         } else if (isSignupMode) {
             // Handle signup
             if (!username || !password || !email) {
@@ -122,15 +126,18 @@
                 return;
             }
             
-            // Store credentials for WebSocket authentication
-            sessionStorage.setItem('username', username);
-            sessionStorage.setItem('email', email);
-            sessionStorage.setItem('authMode', 'signup');
-            sessionStorage.setItem('password', password);
-            sessionStorage.setItem('inviteCode', inviteCode);
+            // Authenticate via WebSocket before redirecting
+            hideError();
+            loginBtn.disabled = true;
+            loginBtn.textContent = 'Creating Account...';
             
-            // Redirect to chat page
-            window.location.href = '/static/chat.html';
+            try {
+                await authenticateAndRedirect('signup', username, password, email, null, inviteCode);
+            } catch (error) {
+                showError(error.message || 'Signup failed');
+                loginBtn.disabled = false;
+                loginBtn.textContent = 'Create Account';
+            }
         } else {
             // Handle login
             if (!username || !password) {
@@ -138,16 +145,101 @@
                 return;
             }
             
-            // Store credentials for WebSocket authentication
-            sessionStorage.setItem('username', username);
-            sessionStorage.setItem('authMode', 'login');
-            sessionStorage.setItem('password', password);
-            sessionStorage.setItem('inviteCode', inviteCode);
+            // Authenticate via WebSocket before redirecting
+            hideError();
+            loginBtn.disabled = true;
+            loginBtn.textContent = 'Logging in...';
             
-            // Redirect to chat page
-            window.location.href = '/static/chat.html';
+            try {
+                await authenticateAndRedirect('login', username, password, null, null, inviteCode);
+            } catch (error) {
+                showError(error.message || 'Login failed');
+                loginBtn.disabled = false;
+                loginBtn.textContent = 'Login';
+            }
         }
     });
+    
+    // Authenticate via WebSocket and redirect on success
+    async function authenticateAndRedirect(authMode, username, password, email, verificationCode, inviteCode) {
+        return new Promise((resolve, reject) => {
+            // Connect to WebSocket
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            const ws = new WebSocket(wsUrl);
+            
+            // Set a timeout for authentication
+            const timeout = setTimeout(() => {
+                ws.close();
+                reject(new Error('Authentication timeout'));
+            }, 10000); // 10 second timeout
+            
+            ws.onopen = () => {
+                // Send authentication request
+                const authData = {
+                    type: authMode,
+                    username: username
+                };
+                
+                if (authMode === 'signup') {
+                    authData.password = password;
+                    authData.email = email || '';
+                    authData.invite_code = inviteCode || '';
+                } else if (authMode === 'verify_email') {
+                    authData.code = verificationCode;
+                } else {
+                    // login mode
+                    authData.password = password;
+                }
+                
+                ws.send(JSON.stringify(authData));
+            };
+            
+            ws.onmessage = (event) => {
+                clearTimeout(timeout);
+                const data = JSON.parse(event.data);
+                
+                if (data.type === 'auth_success') {
+                    // Store token and username for the chat page
+                    if (data.token) {
+                        sessionStorage.setItem('token', data.token);
+                    }
+                    sessionStorage.setItem('username', username);
+                    
+                    // Close WebSocket and redirect
+                    ws.close();
+                    window.location.href = '/static/chat.html';
+                    resolve();
+                } else if (data.type === 'auth_error') {
+                    ws.close();
+                    reject(new Error(data.message || 'Authentication failed'));
+                } else if (data.type === 'verification_required') {
+                    // Email verification is required
+                    ws.close();
+                    // Store username for verification flow
+                    sessionStorage.setItem('pendingUsername', username);
+                    // Show verification mode
+                    switchToVerificationMode(username);
+                    showError(data.message + '. Please check your email and enter the verification code.');
+                    resolve(); // Resolve successfully since we're switching to verification mode
+                }
+            };
+            
+            ws.onerror = (error) => {
+                clearTimeout(timeout);
+                ws.close();
+                reject(new Error('Connection error. Please try again.'));
+            };
+            
+            ws.onclose = (event) => {
+                clearTimeout(timeout);
+                // If connection closed without a response, reject
+                if (!event.wasClean) {
+                    reject(new Error('Connection closed unexpectedly'));
+                }
+            };
+        });
+    }
     
     function showError(message) {
         errorMessage.textContent = message;
