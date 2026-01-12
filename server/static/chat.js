@@ -278,11 +278,15 @@
     }
     
     // Connect to WebSocket
+    let reconnectAttempts = 0;
+    const maxReconnectDelay = 30000; // Maximum 30 seconds between retries
+    
     function connect() {
         ws = new WebSocket(wsUrl);
         
         ws.onopen = () => {
             console.log('WebSocket connected');
+            reconnectAttempts = 0; // Reset reconnect attempts on successful connection
             authenticate();
         };
         
@@ -293,15 +297,17 @@
         
         ws.onerror = (error) => {
             console.error('WebSocket error:', error);
-            appendSystemMessage('Connection error. Please refresh the page.');
         };
         
         ws.onclose = () => {
             console.log('WebSocket disconnected');
-            if (authenticated) {
-                appendSystemMessage('Disconnected from server. Attempting to reconnect...');
-                setTimeout(connect, 3000);
-            }
+            // Always attempt to reconnect, whether authenticated or not
+            // Use exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s (max)
+            const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), maxReconnectDelay);
+            reconnectAttempts++;
+            
+            appendSystemMessage(`Connection lost. Reconnecting in ${delay/1000} seconds...`);
+            setTimeout(connect, delay);
         };
     }
     
