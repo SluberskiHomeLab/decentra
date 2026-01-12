@@ -279,7 +279,9 @@
     
     // Connect to WebSocket
     let reconnectAttempts = 0;
+    const maxReconnectAttempts = 10; // Cap reconnection attempts to prevent infinite growth
     const maxReconnectDelay = 30000; // Maximum 30 seconds between retries
+    let isIntentionalClose = false; // Track if close was intentional (e.g., logout)
     
     function connect() {
         ws = new WebSocket(wsUrl);
@@ -301,9 +303,18 @@
         
         ws.onclose = () => {
             console.log('WebSocket disconnected');
+            
+            // Don't reconnect if this was an intentional close (e.g., user logged out)
+            if (isIntentionalClose) {
+                isIntentionalClose = false;
+                return;
+            }
+            
             // Always attempt to reconnect, whether authenticated or not
             // Use exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s (max)
-            const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), maxReconnectDelay);
+            // Cap at maxReconnectAttempts to prevent unbounded growth
+            const attemptNum = Math.min(reconnectAttempts, maxReconnectAttempts);
+            const delay = Math.min(1000 * Math.pow(2, attemptNum), maxReconnectDelay);
             reconnectAttempts++;
             
             appendSystemMessage(`Connection lost. Reconnecting in ${delay/1000} seconds...`);
@@ -3127,6 +3138,7 @@
         
         sessionStorage.clear();
         if (ws) {
+            isIntentionalClose = true; // Mark this as an intentional close
             ws.close();
         }
         window.location.href = '/static/index.html';
