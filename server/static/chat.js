@@ -315,7 +315,11 @@
             // Cap at maxReconnectAttempts to prevent unbounded growth
             const attemptNum = Math.min(reconnectAttempts, maxReconnectAttempts);
             const delay = Math.min(1000 * Math.pow(2, attemptNum), maxReconnectDelay);
-            reconnectAttempts++;
+            
+            // Cap reconnectAttempts to prevent unbounded growth
+            if (reconnectAttempts < maxReconnectAttempts) {
+                reconnectAttempts++;
+            }
             
             const delaySeconds = Math.round(delay / 1000);
             appendSystemMessage(`Connection lost. Reconnecting in ${delaySeconds} second${delaySeconds !== 1 ? 's' : ''}...`);
