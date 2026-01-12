@@ -25,16 +25,26 @@ This implementation switches from password-based authentication to JWT token-bas
 - Added support for token-based authentication (`type: 'token'`) in the WebSocket handler
 - Token authentication verifies the token and checks if the user still exists before granting access
 
-### 2. Client-Side Changes (`server/static/chat.js`)
+### 2. Client-Side Changes (`server/static/auth.js` and `server/static/chat.js`)
 
-#### Initial Check
-- Modified to accept either a valid token or password credentials
+#### Authentication Page (`auth.js`)
+- **New Authentication-First Approach**: Authentication now happens on the login page before redirecting to chat
+- Form submission establishes WebSocket connection directly
+- Credentials are validated via WebSocket before any redirect
+- Only successful authentication (`auth_success`) triggers redirect to `chat.html`
+- Failed authentication displays error messages inline without redirecting
+- JWT token is stored in `sessionStorage` upon successful authentication
+
+#### Chat Page (`chat.js`)
+- Modified to accept either a valid token or check for redirect from successful auth
 - Token authentication has priority over password-based authentication
+- If no token is present, user is redirected back to login page
 
 #### Authentication Function
-- Updated `authenticate()` to check for a stored token first
-- If token exists, use token-based authentication
-- Otherwise, fall back to password-based authentication (login/signup/verify_email)
+- **Previous Flow (Insecure)**: Credentials stored in sessionStorage → Redirect to chat → Authenticate in chat.js
+- **New Flow (Secure)**: Establish WebSocket → Send credentials → Wait for auth response → Redirect only on success
+- Token-based re-authentication for reconnections
+- Password-based authentication only on initial login/signup
 
 #### Auth Success Handler
 - Now stores the received JWT token in `sessionStorage`
@@ -42,10 +52,13 @@ This implementation switches from password-based authentication to JWT token-bas
 - Removes other sensitive temporary data (authMode, inviteCode, email, verificationCode)
 
 ### 3. Security Improvements
+- **Authentication Before Redirect**: Credentials validated before allowing access to chat interface (fixes critical bypass vulnerability)
 - Passwords are no longer stored in `sessionStorage` after initial authentication
 - JWT tokens automatically expire after 24 hours
 - Token validation includes JWT signature verification and user existence check
 - Expired or invalid tokens are properly rejected
+- Error handling for timeout, connection errors, and malformed responses
+- No access to chat interface without valid credentials
 
 ### 4. Testing
 Created comprehensive test suite (`test_token_auth.py`) that validates:
@@ -67,11 +80,13 @@ Created comprehensive test suite (`test_token_auth.py`) that validates:
 - Tokens are validated on every WebSocket connection
 
 ## Benefits
-1. **Enhanced Security**: Passwords are no longer stored in browser storage
-2. **Token Expiration**: Automatic session timeout after 24 hours
-3. **Efficient Authentication**: JWT signature verification reduces authentication overhead, with user validation performed only on connection
-4. **Seamless Reconnection**: Users can reconnect after server restarts using tokens
-5. **Industry Standard**: Uses JWT, a widely-adopted authentication standard
+1. **Critical Security Fix**: Authentication validates credentials BEFORE redirect (prevents bypass vulnerability)
+2. **Enhanced Security**: Passwords are no longer stored in browser storage
+3. **Token Expiration**: Automatic session timeout after 24 hours
+4. **Efficient Authentication**: JWT signature verification reduces authentication overhead, with user validation performed only on connection
+5. **Seamless Reconnection**: Users can reconnect after server restarts using tokens
+6. **Industry Standard**: Uses JWT, a widely-adopted authentication standard
+7. **Proper Error Handling**: Clear error messages for failed authentication, timeouts, and connection issues
 
 ## Future Enhancements
 Possible improvements for future iterations:
