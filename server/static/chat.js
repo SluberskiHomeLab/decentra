@@ -517,8 +517,8 @@
                 }
                 
                 // Handle admin status from init message
-                console.log('[DEBUG] Admin status from init message:', data.is_admin);
                 if (data.is_admin !== undefined) {
+                    console.log('[DEBUG] Admin status from init message:', data.is_admin);
                     if (data.is_admin) {
                         console.log('[DEBUG] Showing admin settings button');
                         menuAdminBtn.classList.remove('hidden');
@@ -526,8 +526,7 @@
                         console.log('[DEBUG] Hiding admin settings button');
                         menuAdminBtn.classList.add('hidden');
                     }
-                }
-                if (data.is_admin === undefined) {
+                } else {
                     console.log('[DEBUG] Admin status undefined in init message');
                 }
                 break;
