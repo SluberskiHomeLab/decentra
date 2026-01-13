@@ -21,7 +21,7 @@ I've added comprehensive logging to help diagnose the issue:
 
 ### Client-side logs (server/static/chat.js):
 - Lines 521, 523, 526, and 530: Logs admin status from init message
-- Lines 833-842: Logs admin status from admin_status message
+- Lines 837-842: Logs admin status from admin_status message
 
 ## How to Diagnose the Issue
 
