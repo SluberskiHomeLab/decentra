@@ -526,7 +526,8 @@
                         console.log('[DEBUG] Hiding admin settings button');
                         menuAdminBtn.classList.add('hidden');
                     }
-                } else {
+                }
+                if (data.is_admin === undefined) {
                     console.log('[DEBUG] Admin status undefined in init message');
                 }
                 break;
