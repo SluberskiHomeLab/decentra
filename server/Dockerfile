@@ -1,5 +1,5 @@
-# Use python:3.11-slim pinned to a specific digest for reproducible and secure builds
-FROM python:3.11-slim@sha256:1111111111111111111111111111111111111111111111111111111111111111
+# Use python:3.11-slim for reproducible builds
+FROM python:3.11-slim
 
 WORKDIR /app
 
