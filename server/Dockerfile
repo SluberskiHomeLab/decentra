@@ -1,4 +1,4 @@
-# Use python:3.11-slim for reproducible builds
+# Use python:3.11-slim base image
 FROM python:3.11-slim
 
 WORKDIR /app
