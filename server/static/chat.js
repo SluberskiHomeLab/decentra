@@ -4323,6 +4323,8 @@
             const escapedLabel = escapeHtml(safeUrl);
             return `<a href="${escapedHref}" target="_blank" rel="noopener noreferrer" class="message-link">${escapedLabel}</a>`;
         });
+    }
+    
     // ========== Custom Emoji and Reaction Functions ==========
     
     // Render reactions for a message
@@ -5004,5 +5006,4 @@
     console.log('chat.js: About to call connect()');
     // Initialize connection
     connect();
-}
 })();
