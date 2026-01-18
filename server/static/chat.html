@@ -777,6 +777,148 @@
         </div>
     </div>
     
+    <!-- Admin Settings Modal -->
+    <div id="admin-settings-modal" class="modal hidden">
+        <div class="modal-content modal-content-large">
+            <h3>⚙️ Admin Settings</h3>
+            <p style="color: #b9bbbe; font-size: 14px; margin-bottom: 20px;">Site-wide settings • Accessible only to the first user</p>
+            
+            <div id="admin-status-message" class="status-message" style="display: none;"></div>
+            
+            <div class="settings-tabs">
+                <button class="settings-tab active" data-tab="general">General</button>
+                <button class="settings-tab" data-tab="smtp">Email/SMTP</button>
+                <button class="settings-tab" data-tab="announcements">Announcements</button>
+            </div>
+            
+            <!-- General Settings Tab -->
+            <div id="admin-general-tab" class="settings-tab-content active">
+                <div class="form-group">
+                    <label for="admin-server-name">Server Name</label>
+                    <input type="text" id="admin-server-name" class="form-input" placeholder="Decentra Chat">
+                </div>
+                
+                <div class="form-group">
+                    <label for="admin-max-message-length">Maximum Message Length</label>
+                    <input type="number" id="admin-max-message-length" class="form-input" min="100" max="10000" value="2000">
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="admin-allow-registrations" checked>
+                        Allow New Registrations
+                    </label>
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="admin-require-invite" checked>
+                        Require Invite Code for Registration
+                    </label>
+                </div>
+                
+                <div class="form-group">
+                    <label for="admin-max-file-size">Maximum File Upload Size (MB)</label>
+                    <input type="number" id="admin-max-file-size" class="form-input" min="1" max="100" value="10">
+                </div>
+                
+                <div class="form-group">
+                    <label for="admin-max-servers-per-user">Max Servers Per User (0 = unlimited)</label>
+                    <input type="number" id="admin-max-servers-per-user" class="form-input" min="0" max="100" value="0">
+                </div>
+                
+                <div class="form-group">
+                    <label for="admin-max-channels-per-server">Max Channels Per Server (0 = unlimited)</label>
+                    <input type="number" id="admin-max-channels-per-server" class="form-input" min="0" max="500" value="0">
+                </div>
+            </div>
+            
+            <!-- SMTP Settings Tab -->
+            <div id="admin-smtp-tab" class="settings-tab-content" style="display: none;">
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="admin-require-email-verification">
+                        Require Email Verification
+                    </label>
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="admin-smtp-enabled">
+                        Enable Email Notifications
+                    </label>
+                </div>
+                
+                <div class="form-group">
+                    <label for="admin-smtp-host">SMTP Host</label>
+                    <input type="text" id="admin-smtp-host" class="form-input" placeholder="smtp.example.com">
+                </div>
+                
+                <div class="form-group">
+                    <label for="admin-smtp-port">SMTP Port</label>
+                    <input type="number" id="admin-smtp-port" class="form-input" min="1" max="65535" value="587">
+                </div>
+                
+                <div class="form-group">
+                    <label for="admin-smtp-username">SMTP Username</label>
+                    <input type="text" id="admin-smtp-username" class="form-input" placeholder="user@example.com">
+                </div>
+                
+                <div class="form-group">
+                    <label for="admin-smtp-password">SMTP Password</label>
+                    <input type="password" id="admin-smtp-password" class="form-input" placeholder="••••••••">
+                </div>
+                
+                <div class="form-group">
+                    <label for="admin-smtp-from-email">From Email Address</label>
+                    <input type="email" id="admin-smtp-from-email" class="form-input" placeholder="noreply@example.com">
+                </div>
+                
+                <div class="form-group">
+                    <label for="admin-smtp-from-name">From Name</label>
+                    <input type="text" id="admin-smtp-from-name" class="form-input" placeholder="Decentra">
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="admin-smtp-use-tls" checked>
+                        Use TLS/STARTTLS
+                    </label>
+                </div>
+                
+                <div class="form-group">
+                    <button id="admin-test-smtp-btn" class="btn btn-secondary">Test SMTP Connection</button>
+                    <div id="admin-smtp-test-result" style="margin-top: 10px; display: none;"></div>
+                </div>
+            </div>
+            
+            <!-- Announcements Tab -->
+            <div id="admin-announcements-tab" class="settings-tab-content" style="display: none;">
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="admin-announcement-enabled">
+                        Enable Announcement Banner
+                    </label>
+                </div>
+                
+                <div class="form-group">
+                    <label for="admin-announcement-message">Announcement Message</label>
+                    <input type="text" id="admin-announcement-message" class="form-input" placeholder="Enter announcement message" maxlength="500">
+                </div>
+                
+                <div class="form-group">
+                    <label for="admin-announcement-duration">Display Duration (minutes)</label>
+                    <input type="number" id="admin-announcement-duration" class="form-input" min="1" max="10080" value="60">
+                </div>
+            </div>
+            
+            <div class="modal-buttons">
+                <button id="admin-save-settings-btn" class="btn btn-primary">Save Settings</button>
+                <button id="admin-close-modal-btn" class="btn btn-secondary">Close</button>
+            </div>
+        </div>
+    </div>
+    
     <script src="/static/notifications.js"></script>
     <script src="/static/voice.js"></script>
     <script src="/static/chat.js"></script>
