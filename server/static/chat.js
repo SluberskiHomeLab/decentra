@@ -784,7 +784,15 @@
             case 'error':
                 // Show error in admin settings modal if it's open
                 if (adminSettingsModal && !adminSettingsModal.classList.contains('hidden')) {
-                    showAdminStatus(data.message, 'error');
+                    const statusEl = document.getElementById('admin-status-message');
+                    if (statusEl) {
+                        statusEl.textContent = data.message;
+                        statusEl.className = 'status-message error';
+                        statusEl.style.display = 'block';
+                        setTimeout(() => {
+                            statusEl.style.display = 'none';
+                        }, 5000);
+                    }
                 }
                 // Show error in join server modal if it's open
                 else if (!joinServerModal.classList.contains('hidden')) {
@@ -3363,7 +3371,7 @@
         document.getElementById('admin-smtp-password').value = settings.smtp_password || '';
         document.getElementById('admin-smtp-from-email').value = settings.smtp_from_email || '';
         document.getElementById('admin-smtp-from-name').value = settings.smtp_from_name || 'Decentra';
-        document.getElementById('admin-smtp-use-tls').checked = settings.smtp_use_tls ?? true;
+        document.getElementById('admin-smtp-use-tls').checked = settings.smtp_use_tls !== false;
         
         // Load announcement settings
         document.getElementById('admin-announcement-enabled').checked = settings.announcement_enabled || false;
