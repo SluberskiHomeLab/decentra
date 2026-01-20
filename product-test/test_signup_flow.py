@@ -8,7 +8,7 @@ import sys
 import os
 
 # Add server directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'server'))
 
 def test_signup_logic():
     """Test the signup decision logic for email verification."""

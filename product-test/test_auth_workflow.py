@@ -16,7 +16,7 @@ os.environ['JWT_SECRET_KEY'] = 'test-jwt-secret-key-for-auth-workflow-testing'
 os.environ['DECENTRA_ENCRYPTION_KEY'] = 'test-encryption-key-for-auth-workflow-testing'
 
 # Add server directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'server'))
 
 # Mock the database and other dependencies to prevent connection attempts during import
 from unittest.mock import MagicMock

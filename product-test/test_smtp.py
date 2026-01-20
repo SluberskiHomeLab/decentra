@@ -8,7 +8,7 @@ import os
 import sys
 
 # Add server directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'server'))
 
 from email_utils import EmailSender
 

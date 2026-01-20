@@ -13,7 +13,7 @@ if 'DECENTRA_ENCRYPTION_KEY' not in os.environ:
     os.environ['DECENTRA_ENCRYPTION_KEY'] = 'test-encryption-key-for-admin-settings-tests'
 
 # Add server directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'server'))
 
 
 def test_field_name_validation():

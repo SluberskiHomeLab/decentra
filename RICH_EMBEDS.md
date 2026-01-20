@@ -138,12 +138,12 @@ The rich embeds feature uses standard web APIs and should work in all modern bro
 
 Run the test suite:
 ```bash
-python3 test_rich_embeds.py
+python3 product-test/test_rich_embeds.py
 ```
 
 ### Browser Testing
 
-Open `test_rich_embeds.html` in a browser to see visual examples of all embed types.
+Open `product-test/test_rich_embeds.html` in a browser to see visual examples of all embed types.
 
 ## Future Enhancements
 

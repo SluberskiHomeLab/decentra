@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 os.environ['JWT_SECRET_KEY'] = 'test-jwt-secret-key-for-consistent-testing'
 
 # Add server directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'server'))
 
 # Mock the database and other dependencies to prevent connection attempts during import
 sys.modules['database'] = MagicMock()

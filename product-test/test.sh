@@ -15,8 +15,8 @@ echo "✓ Python3 is available"
 
 # Test Python syntax
 echo "Checking Python syntax..."
-python3 -m py_compile server/server.py
-python3 -m py_compile client/client.py
+python3 -m py_compile ../server/server.py
+python3 -m py_compile ../client/client.py
 echo "✓ Python syntax is valid"
 
 # Run SSL certificate generation tests
@@ -50,7 +50,7 @@ fi
 
 # Test server startup (with timeout)
 echo "Testing server startup..."
-timeout 5 python3 server/server.py &> /tmp/server_test.log &
+timeout 5 python3 ../server/server.py &> /tmp/server_test.log &
 SERVER_PID=$!
 sleep 3
 

@@ -9,7 +9,7 @@ import sys
 import os
 
 # Add server directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'server'))
 
 from aiohttp import web
 from ssl_utils import generate_self_signed_cert, create_ssl_context

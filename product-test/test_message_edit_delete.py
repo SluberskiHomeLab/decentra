@@ -12,7 +12,7 @@ import string
 if 'DECENTRA_ENCRYPTION_KEY' not in os.environ:
     os.environ['DECENTRA_ENCRYPTION_KEY'] = 'test-encryption-key-for-edit-delete-tests'
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'server'))
 
 from database import Database
 import bcrypt

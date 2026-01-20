@@ -9,7 +9,7 @@ import ssl
 from datetime import datetime, timezone
 
 # Add server directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'server'))
 
 from ssl_utils import generate_self_signed_cert, create_ssl_context
 
