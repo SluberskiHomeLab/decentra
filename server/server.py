@@ -2881,8 +2881,16 @@ async def handler(websocket):
                             # Clean up any existing voice state for callee
                             await cleanup_voice_state(username, 'accepted another call')
                             
-                            # Clean up any existing voice state for caller (if any)
-                            await cleanup_voice_state(caller_username, 'call accepted')
+                            # Clean up any existing voice state for caller (if any),
+                            # but avoid cleaning up the pending call from caller -> this user,
+                            # as that would send a call_ended event for the call being accepted.
+                            caller_voice_state = voice_states.get(caller_username)
+                            caller_direct_peer = None
+                            if isinstance(caller_voice_state, dict):
+                                caller_direct_peer = caller_voice_state.get('direct_call_peer')
+                            
+                            if caller_voice_state is not None and caller_direct_peer != username:
+                                await cleanup_voice_state(caller_username, 'call accepted')
                             
                             # Track direct call in voice_states for BOTH participants
                             voice_states[username] = create_voice_state(direct_call_peer=caller_username)
