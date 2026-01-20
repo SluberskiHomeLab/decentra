@@ -272,6 +272,26 @@ class Database:
                         ON message_reactions(message_id)
                     ''')
                     
+                    # Message attachments table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS message_attachments (
+                            attachment_id VARCHAR(255) PRIMARY KEY,
+                            message_id INTEGER NOT NULL,
+                            filename VARCHAR(255) NOT NULL,
+                            content_type VARCHAR(100) NOT NULL,
+                            file_size INTEGER NOT NULL,
+                            file_data TEXT NOT NULL,
+                            uploaded_at TIMESTAMP NOT NULL,
+                            FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Create index for faster attachment retrieval
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_attachments_message 
+                        ON message_attachments(message_id)
+                    ''')
+                    
                     # Add notification_mode column if it doesn't exist (migration)
                     cursor.execute('''
                         DO $$ 
@@ -474,6 +494,31 @@ class Database:
                                 WHERE table_name = 'server_members' AND column_name = 'can_delete_messages'
                             ) THEN
                                 ALTER TABLE server_members ADD COLUMN can_delete_messages BOOLEAN DEFAULT FALSE;
+                            END IF;
+                        END $$;
+                    ''')
+                    
+                    # Add file attachment settings columns if they don't exist (migration)
+                    cursor.execute('''
+                        DO $$ 
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'admin_settings' AND column_name = 'allow_file_attachments'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN allow_file_attachments BOOLEAN DEFAULT TRUE;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'admin_settings' AND column_name = 'max_attachment_size_mb'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN max_attachment_size_mb INTEGER DEFAULT 10;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'admin_settings' AND column_name = 'attachment_retention_days'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN attachment_retention_days INTEGER DEFAULT 0;
                             END IF;
                         END $$;
                     ''')
@@ -1054,24 +1099,6 @@ class Database:
             result = cursor.fetchone()
             return result['id']
     
-    def get_message(self, message_id: int) -> Optional[Dict]:
-        """Get a single message by ID."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT m.id, m.username, m.content, 
-                       m.timestamp::text as timestamp,
-                       m.context_type, m.context_id
-                FROM messages m
-                WHERE m.id = %s
-            ''', (message_id,))
-            result = cursor.fetchone()
-            if result:
-                msg = dict(result)
-                msg['content'] = self.encryption_manager.decrypt(msg['content'])
-                return msg
-            return None
-    
     def get_messages(self, context_type: str, context_id: Optional[str] = None, limit: int = 100) -> List[Dict]:
         """Get messages for a context. Message content is decrypted before returning."""
         with self.get_connection() as conn:
@@ -1145,6 +1172,55 @@ class Database:
                 msg['content'] = self.encryption_manager.decrypt(msg['content'])
                 return msg
             return None
+    
+    # Message attachment operations
+    def save_attachment(self, attachment_id: str, message_id: int, filename: str, 
+                       content_type: str, file_size: int, file_data: str) -> bool:
+        """Save a file attachment for a message."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO message_attachments 
+                (attachment_id, message_id, filename, content_type, file_size, file_data, uploaded_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ''', (attachment_id, message_id, filename, content_type, file_size, file_data, datetime.now()))
+            return cursor.rowcount > 0
+    
+    def get_attachment(self, attachment_id: str) -> Optional[Dict]:
+        """Get a file attachment by ID."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT attachment_id, message_id, filename, content_type, 
+                       file_size, file_data, uploaded_at::text as uploaded_at
+                FROM message_attachments
+                WHERE attachment_id = %s
+            ''', (attachment_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def get_message_attachments(self, message_id: int) -> List[Dict]:
+        """Get all attachments for a message."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT attachment_id, message_id, filename, content_type, 
+                       file_size, uploaded_at::text as uploaded_at
+                FROM message_attachments
+                WHERE message_id = %s
+                ORDER BY uploaded_at ASC
+            ''', (message_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def delete_old_attachments(self, days: int) -> int:
+        """Delete attachments older than specified days. Returns count of deleted attachments."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                DELETE FROM message_attachments
+                WHERE uploaded_at < NOW() - make_interval(days => %s)
+            ''', (days,))
+            return cursor.rowcount
     
     # Friendship operations
     def add_friend_request(self, requester: str, target: str) -> bool:

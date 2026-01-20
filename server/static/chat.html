@@ -108,10 +108,15 @@
             <div class="input-container">
                 <form id="message-form">
                     <div class="message-input-wrapper">
+                        <input type="file" id="file-input" style="display: none;" multiple>
+                        <button type="button" id="attach-file-btn" class="btn btn-icon" title="Attach File">📎</button>
                         <input type="text" id="message-input" placeholder="Select a channel or DM to start chatting..." autocomplete="off" disabled>
                         <div id="mention-autocomplete" class="mention-autocomplete hidden">
                             <!-- Mention suggestions will be populated here -->
                         </div>
+                    </div>
+                    <div id="attachment-preview" class="attachment-preview hidden">
+                        <!-- Attachment previews will be shown here -->
                     </div>
                     <button type="submit" class="btn btn-primary" disabled>Send</button>
                 </form>

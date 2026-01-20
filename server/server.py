@@ -2951,6 +2951,23 @@ async def cleanup_verification_codes_periodically():
             print(f"Error in periodic cleanup task: {e}")
 
 
+async def cleanup_old_attachments_periodically():
+    """Periodic task to clean up old attachments based on retention policy."""
+    while True:
+        try:
+            await asyncio.sleep(86400)  # Run once per day
+            admin_settings = db.get_admin_settings()
+            retention_days = admin_settings.get('attachment_retention_days', 0)
+            
+            # Only delete if retention policy is set (> 0 days)
+            if retention_days > 0:
+                deleted_count = db.delete_old_attachments(retention_days)
+                if deleted_count > 0:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Cleaned up {deleted_count} old attachments (older than {retention_days} days)")
+        except Exception as e:
+            print(f"Error in attachment cleanup task: {e}")
+
+
 async def main():
     """Start the HTTPS and WebSocket server."""
     print("Decentra Chat Server")
@@ -2984,8 +3001,9 @@ async def main():
     site = web.TCPSite(runner, '0.0.0.0', 8765, ssl_context=ssl_context)
     await site.start()
     
-    # Start periodic cleanup task
+    # Start periodic cleanup tasks
     asyncio.create_task(cleanup_verification_codes_periodically())
+    asyncio.create_task(cleanup_old_attachments_periodically())
     
     print("Server started successfully!")
     print("Access the web client at https://localhost:8765")

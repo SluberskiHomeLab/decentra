@@ -195,9 +195,23 @@
             <h2>File & Media Settings</h2>
             
             <div class="setting-item">
-                <label for="max-file-size">Maximum File Upload Size (MB)</label>
-                <div class="description">Maximum size for file uploads</div>
-                <input type="number" id="max-file-size" min="1" max="100" value="10">
+                <label for="allow-file-attachments">Allow File Attachments</label>
+                <div class="checkbox-wrapper">
+                    <input type="checkbox" id="allow-file-attachments" checked>
+                    <span class="description" style="margin: 0;">Allow users to attach files to messages</span>
+                </div>
+            </div>
+            
+            <div class="setting-item">
+                <label for="max-attachment-size">Maximum Attachment Size (MB)</label>
+                <div class="description">Maximum size for file attachments</div>
+                <input type="number" id="max-attachment-size" min="1" max="100" value="10">
+            </div>
+            
+            <div class="setting-item">
+                <label for="attachment-retention">Attachment Retention Period (days)</label>
+                <div class="description">How long attachments are kept (0 = indefinitely)</div>
+                <input type="number" id="attachment-retention" min="0" max="3650" value="0" placeholder="0 (indefinite)">
             </div>
             
             <div class="setting-item">
@@ -383,7 +397,9 @@
             document.getElementById('max-message-length').value = settings.max_message_length || 2000;
             document.getElementById('allow-registrations').checked = settings.allow_registration !== false;
             document.getElementById('require-invite').checked = settings.require_invite !== false;
-            document.getElementById('max-file-size').value = settings.max_file_size_mb || 10;
+            document.getElementById('allow-file-attachments').checked = settings.allow_file_attachments !== false;
+            document.getElementById('max-attachment-size').value = settings.max_attachment_size_mb || 10;
+            document.getElementById('attachment-retention').value = settings.attachment_retention_days || 0;
             document.getElementById('max-servers-per-user').value = settings.max_servers_per_user || 0;
             document.getElementById('max-channels-per-server').value = settings.max_channels_per_server || 0;
             
@@ -432,7 +448,9 @@
                 max_message_length: parseInt(document.getElementById('max-message-length').value, 10),
                 allow_registration: document.getElementById('allow-registrations').checked,
                 require_invite: document.getElementById('require-invite').checked,
-                max_file_size_mb: parseInt(document.getElementById('max-file-size').value, 10),
+                allow_file_attachments: document.getElementById('allow-file-attachments').checked,
+                max_attachment_size_mb: parseInt(document.getElementById('max-attachment-size').value, 10),
+                attachment_retention_days: parseInt(document.getElementById('attachment-retention').value, 10),
                 max_servers_per_user: parseInt(document.getElementById('max-servers-per-user').value, 10),
                 max_channels_per_server: parseInt(document.getElementById('max-channels-per-server').value, 10),
                 // SMTP settings

@@ -1014,7 +1014,127 @@ body::before {
 
 #message-form {
     display: flex;
+    flex-direction: column;
     gap: 10px;
+}
+
+#message-form > div:first-child {
+    display: flex;
+    gap: 10px;
+}
+
+#attach-file-btn {
+    padding: 11px 15px;
+    background-color: #40444b;
+    color: #dcddde;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    font-size: 18px;
+}
+
+#attach-file-btn:hover {
+    background-color: #484c54;
+}
+
+#attach-file-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.attachment-preview {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px;
+    background: #2f3136;
+    border-radius: 8px;
+}
+
+.attachment-preview.hidden {
+    display: none;
+}
+
+.attachment-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: #40444b;
+    border-radius: 6px;
+    font-size: 13px;
+    color: #dcddde;
+}
+
+.attachment-item-name {
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.attachment-item-size {
+    color: #b9bbbe;
+    font-size: 11px;
+}
+
+.attachment-item-remove {
+    background: none;
+    border: none;
+    color: #ed4245;
+    cursor: pointer;
+    padding: 0 4px;
+    font-size: 16px;
+    line-height: 1;
+}
+
+.attachment-item-remove:hover {
+    color: #ff6b6b;
+}
+
+.message-attachment {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    margin-top: 8px;
+    background: #2f3136;
+    border-radius: 6px;
+    text-decoration: none;
+    color: #00aff4;
+    font-size: 13px;
+    transition: background 0.2s;
+}
+
+.message-attachment:hover {
+    background: #36393f;
+}
+
+.message-attachment-icon {
+    font-size: 16px;
+}
+
+.message-attachment-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.message-attachment-name {
+    font-weight: 500;
+}
+
+.message-attachment-size {
+    font-size: 11px;
+    color: #b9bbbe;
+}
+
+.message-attachments {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
 }
 
 #message-input {
