@@ -76,7 +76,7 @@ All numeric fields are now validated before being sent to the server:
 
 ### Error Handling
 - Modal errors are displayed within the modal status message area
-- Null checks prevent runtime errors if DOM elements are missing
+- DOM access currently assumes required elements are present; adding null checks where appropriate can prevent runtime errors if elements are missing
 - Type checks ensure settings object is valid before processing
 
 ## Testing
