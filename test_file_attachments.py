@@ -21,7 +21,11 @@ class TestFileAttachments(unittest.TestCase):
     def setUp(self):
         """Set up test database."""
         # Use test database
-        self.db = Database('postgresql://decentra:decentra@localhost:5432/decentra_test')
+        db_url = os.environ.get(
+            'DECENTRA_TEST_DATABASE_URL',
+            'postgresql://decentra:decentra@localhost:5432/decentra_test'
+        )
+        self.db = Database(db_url)
         
         # Create a test user
         self.test_username = 'testuser_attachments'
