@@ -115,7 +115,7 @@ def test_javascript_files():
     print("\nTesting JavaScript Files")
     print("=" * 60)
     
-    js_file = 'server/static/chat.js'
+    js_file = '../server/static/chat.js'
     
     if not os.path.exists(js_file):
         print(f"✗ File not found: {js_file}")
@@ -179,7 +179,7 @@ def test_css_styles():
     print("\nTesting CSS Styles")
     print("=" * 60)
     
-    css_file = 'server/static/styles.css'
+    css_file = '../server/static/styles.css'
     
     if not os.path.exists(css_file):
         print(f"✗ File not found: {css_file}")

@@ -8,7 +8,7 @@ import sys
 # Test 1: Check that database methods exist
 print("Test 1: Checking database module...")
 try:
-    with open('server/database.py', 'r') as f:
+    with open('../server/database.py', 'r') as f:
         db_content = f.read()
     
     # Check that the update_server_icon method exists
@@ -37,7 +37,7 @@ except Exception as e:
 # Test 2: Check that server.py has the handler
 print("\nTest 2: Checking server module...")
 try:
-    with open('server/server.py', 'r') as f:
+    with open('../server/server.py', 'r') as f:
         server_content = f.read()
     
     # Check for set_server_icon handler
@@ -59,7 +59,7 @@ except Exception as e:
 # Test 3: Check frontend changes
 print("\nTest 3: Checking frontend files...")
 try:
-    with open('server/static/chat.html', 'r') as f:
+    with open('../server/static/chat.html', 'r') as f:
         html_content = f.read()
     
     # Check for server icon UI
@@ -77,7 +77,7 @@ except Exception as e:
     sys.exit(1)
 
 try:
-    with open('server/static/chat.js', 'r') as f:
+    with open('../server/static/chat.js', 'r') as f:
         js_content = f.read()
     
     # Check for icon handling code
@@ -95,7 +95,7 @@ except Exception as e:
     sys.exit(1)
 
 try:
-    with open('server/static/styles.css', 'r') as f:
+    with open('../server/static/styles.css', 'r') as f:
         css_content = f.read()
     
     # Check for server icon styles
@@ -112,7 +112,7 @@ except Exception as e:
 # Test 4: Check API changes
 print("\nTest 4: Checking API module...")
 try:
-    with open('server/api.py', 'r') as f:
+    with open('../server/api.py', 'r') as f:
         api_content = f.read()
     
     # Check that icon data is included in API responses

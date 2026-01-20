@@ -18,7 +18,7 @@ def test_server_icon_feature():
     try:
         print("\nTest 1: Testing update_server_icon method signature...")
         # We'll test the signature by reading the source since we can't import without psycopg2
-        with open('server/database.py', 'r') as f:
+        with open('../server/database.py', 'r') as f:
             db_content = f.read()
         
         # Check method exists with correct signature
@@ -55,7 +55,7 @@ def test_server_icon_feature():
         print("✓ Database migrations present for all icon columns")
         
         print("\nTest 3: Testing WebSocket handler validation...")
-        with open('server/server.py', 'r') as f:
+        with open('../server/server.py', 'r') as f:
             server_content = f.read()
         
         # Check icon_type validation
@@ -84,7 +84,7 @@ def test_server_icon_feature():
         print("✓ File size validation exists")
         
         print("\nTest 4: Testing frontend implementation...")
-        with open('server/static/chat.js', 'r') as f:
+        with open('../server/static/chat.js', 'r') as f:
             js_content = f.read()
         
         # Check emoji selection handler
@@ -108,7 +108,7 @@ def test_server_icon_feature():
         print("✓ File size validation (10MB) exists in frontend")
         
         print("\nTest 5: Testing UI components...")
-        with open('server/static/chat.html', 'r') as f:
+        with open('../server/static/chat.html', 'r') as f:
             html_content = f.read()
         
         # Check icon selector UI
@@ -129,7 +129,7 @@ def test_server_icon_feature():
         print("✓ Both emoji and upload tabs exist")
         
         print("\nTest 6: Testing CSS styles...")
-        with open('server/static/styles.css', 'r') as f:
+        with open('../server/static/styles.css', 'r') as f:
             css_content = f.read()
         
         # Check icon styles
@@ -143,7 +143,7 @@ def test_server_icon_feature():
         print("✓ Icon tab CSS styles exist")
         
         print("\nTest 7: Testing API integration...")
-        with open('server/api.py', 'r') as f:
+        with open('../server/api.py', 'r') as f:
             api_content = f.read()
         
         # Check API includes icon data
