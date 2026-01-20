@@ -1997,7 +1997,10 @@
             return false;
         }
         const idStr = String(messageId);
-        // Allow only simple, URL-safe IDs (alphanumeric, underscore, hyphen)
+        // Allow only simple, URL-safe IDs (alphanumeric, underscore, hyphen), and bound length
+        if (idStr.length === 0 || idStr.length > 64) {
+            return false;
+        }
         return /^[a-zA-Z0-9_-]+$/.test(idStr);
     }
     
@@ -2008,8 +2011,9 @@
             console.warn('Refusing to load attachments for invalid messageId:', safeMessageId);
             return;
         }
+        const encodedMessageId = encodeURIComponent(safeMessageId);
         try {
-            const response = await fetch(`/api/message-attachments/${safeMessageId}`);
+            const response = await fetch(`/api/message-attachments/${encodedMessageId}`);
             const result = await response.json();
             
             if (result.success && result.attachments && result.attachments.length > 0) {
