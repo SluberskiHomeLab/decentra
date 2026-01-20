@@ -2221,7 +2221,7 @@ async def handler(websocket):
                                         'channel_id': channel_id,
                                         'username': username,
                                         'state': 'left',
-                                        'voice_members': voice_members
+                                        'voice_members': voice_members_list
                                     }))
                             
                             del voice_states[username]
@@ -2878,11 +2878,15 @@ async def handler(websocket):
                         # Verify caller exists and is a friend
                         friends = set(db.get_friends(username))
                         if db.get_user(caller_username) and caller_username in friends:
-                            # Clean up any existing voice state
+                            # Clean up any existing voice state for callee
                             await cleanup_voice_state(username, 'accepted another call')
                             
-                            # Track direct call in voice_states for video/screen sharing
+                            # Clean up any existing voice state for caller (if any)
+                            await cleanup_voice_state(caller_username, 'call accepted')
+                            
+                            # Track direct call in voice_states for BOTH participants
                             voice_states[username] = create_voice_state(direct_call_peer=caller_username)
+                            voice_states[caller_username] = create_voice_state(direct_call_peer=username)
                             
                             await send_to_user(caller_username, json.dumps({
                                 'type': 'voice_call_accepted',
@@ -2952,7 +2956,7 @@ async def handler(websocket):
                             'channel_id': channel_id,
                             'username': username,
                             'state': 'left',
-                            'voice_members': voice_members
+                            'voice_members': voice_members_list
                         }))
                 elif direct_call_peer:
                     # User was in a direct call - notify peer
