@@ -3278,27 +3278,62 @@
                 return;
             }
             
+            // Retrieve and validate all required DOM elements before accessing their properties
+            const serverNameInput = document.getElementById('admin-server-name');
+            const allowRegistrationsInput = document.getElementById('admin-allow-registrations');
+            const requireInviteInput = document.getElementById('admin-require-invite');
+            const requireEmailVerificationInput = document.getElementById('admin-require-email-verification');
+            const smtpEnabledInput = document.getElementById('admin-smtp-enabled');
+            const smtpHostInput = document.getElementById('admin-smtp-host');
+            const smtpUsernameInput = document.getElementById('admin-smtp-username');
+            const smtpPasswordInput = document.getElementById('admin-smtp-password');
+            const smtpFromEmailInput = document.getElementById('admin-smtp-from-email');
+            const smtpFromNameInput = document.getElementById('admin-smtp-from-name');
+            const smtpUseTlsInput = document.getElementById('admin-smtp-use-tls');
+            const announcementEnabledInput = document.getElementById('admin-announcement-enabled');
+            const announcementMessageInput = document.getElementById('admin-announcement-message');
+
+            if (
+                !serverNameInput ||
+                !allowRegistrationsInput ||
+                !requireInviteInput ||
+                !requireEmailVerificationInput ||
+                !smtpEnabledInput ||
+                !smtpHostInput ||
+                !smtpUsernameInput ||
+                !smtpPasswordInput ||
+                !smtpFromEmailInput ||
+                !smtpFromNameInput ||
+                !smtpUseTlsInput ||
+                !announcementEnabledInput ||
+                !announcementMessageInput
+            ) {
+                console.error('One or more admin settings elements are missing from the DOM.');
+                showAdminStatus('Unable to save settings because some form fields are missing. Please reload the page and try again.', 'error');
+                return;
+            }
+
             const settings = {
-                server_name: document.getElementById('admin-server-name').value,
+                server_name: serverNameInput.value,
                 max_message_length: maxMessageLength,
-                allow_registration: document.getElementById('admin-allow-registrations').checked,
-                require_invite: document.getElementById('admin-require-invite').checked,
+                allow_registration: allowRegistrationsInput.checked,
+                require_invite: requireInviteInput.checked,
                 max_file_size_mb: maxFileSize,
                 max_servers_per_user: maxServersPerUser,
                 max_channels_per_server: maxChannelsPerServer,
                 // SMTP settings
-                require_email_verification: document.getElementById('admin-require-email-verification').checked,
-                smtp_enabled: document.getElementById('admin-smtp-enabled').checked,
-                smtp_host: document.getElementById('admin-smtp-host').value,
+                require_email_verification: requireEmailVerificationInput.checked,
+                smtp_enabled: smtpEnabledInput.checked,
+                smtp_host: smtpHostInput.value,
                 smtp_port: smtpPort,
-                smtp_username: document.getElementById('admin-smtp-username').value,
-                smtp_password: document.getElementById('admin-smtp-password').value,
-                smtp_from_email: document.getElementById('admin-smtp-from-email').value,
-                smtp_from_name: document.getElementById('admin-smtp-from-name').value,
-                smtp_use_tls: document.getElementById('admin-smtp-use-tls').checked,
+                smtp_username: smtpUsernameInput.value,
+                smtp_password: smtpPasswordInput.value,
+                smtp_from_email: smtpFromEmailInput.value,
+                smtp_from_name: smtpFromNameInput.value,
+                smtp_use_tls: smtpUseTlsInput.checked,
                 // Announcements
-                announcement_enabled: document.getElementById('admin-announcement-enabled').checked,
-                announcement_message: document.getElementById('admin-announcement-message').value,
+                announcement_enabled: announcementEnabledInput.checked,
+                announcement_message: announcementMessageInput.value,
                 announcement_duration_minutes: announcementDuration
             };
             
