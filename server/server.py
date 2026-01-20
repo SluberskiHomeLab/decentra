@@ -864,6 +864,7 @@ async def handler(websocket):
                         msg_content = data.get('content', '')
                         context = data.get('context', 'global')  # 'global', 'server', or 'dm'
                         context_id = data.get('context_id', None)
+                        message_key = data.get('messageKey')  # Extract messageKey for file attachment correlation
                         
                         # Get admin settings and enforce max message length
                         admin_settings = db.get_admin_settings()
@@ -890,6 +891,10 @@ async def handler(websocket):
                             'avatar_data': user_profile.get('avatar_data') if user_profile else None,
                             'reactions': []  # New messages have no reactions initially
                         }
+                        
+                        # Include messageKey if provided (for file attachment correlation)
+                        if message_key:
+                            msg_obj['messageKey'] = message_key
                         
                         # Route message based on context
                         if context == 'server' and context_id:
@@ -922,6 +927,10 @@ async def handler(websocket):
                                             'avatar_data': user_profile.get('avatar_data') if user_profile else None
                                         }
                                         
+                                        # Include messageKey if provided (for file attachment correlation)
+                                        if message_key:
+                                            msg_obj['messageKey'] = message_key
+                                        
                                         # Broadcast to server members
                                         await broadcast_to_server(server_id, json.dumps(msg_obj))
                                         print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} sent message in {server_id}/{channel_id}")
@@ -951,6 +960,10 @@ async def handler(websocket):
                                     'avatar_data': user_profile.get('avatar_data') if user_profile else None
                                 }
                                 
+                                # Include messageKey if provided (for file attachment correlation)
+                                if message_key:
+                                    msg_obj['messageKey'] = message_key
+                                
                                 # Get participants and send to both
                                 for dm in dm_users:
                                     if dm['dm_id'] == context_id:
@@ -973,6 +986,10 @@ async def handler(websocket):
                                 'avatar_type': user_profile.get('avatar_type', 'emoji') if user_profile else 'emoji',
                                 'avatar_data': user_profile.get('avatar_data') if user_profile else None
                             }
+                            
+                            # Include messageKey if provided (for file attachment correlation)
+                            if message_key:
+                                msg_obj['messageKey'] = message_key
                             messages.append(msg_obj)
                             if len(messages) > MAX_HISTORY:
                                 messages.pop(0)
