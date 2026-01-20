@@ -387,6 +387,9 @@ async def broadcast_to_dm_participants(username, dm_id, message):
 async def cleanup_voice_state(username, reason=''):
     """Clean up existing voice state when switching calls/channels.
     
+    Removes the user from voice_states and voice_members, and sends notifications
+    to other participants (direct call peer or voice channel members).
+    
     Args:
         username: The username whose state to clean up
         reason: The reason for cleanup (for notification message)
@@ -406,6 +409,8 @@ async def cleanup_voice_state(username, reason=''):
             'from': username,
             'reason': reason or 'ended'
         }))
+        # Delete the voice state entry
+        del voice_states[username]
         return True
     
     # Clean up if in voice channel
@@ -413,6 +418,8 @@ async def cleanup_voice_state(username, reason=''):
         voice_key = f"{old_state['server_id']}/{old_state['channel_id']}"
         if voice_key in voice_members:
             voice_members[voice_key].discard(username)
+        # Delete the voice state entry
+        del voice_states[username]
         return True
     
     return False
@@ -2548,7 +2555,7 @@ async def handler(websocket):
                                 # Reject unauthorized switch requests
                                 await websocket.send_str(json.dumps({
                                     'type': 'error',
-                                    'message': 'Cannot request video source switch: target user is not in the same voice channel or call'
+                                    'message': 'Cannot request video source switch: target user is not in the same voice channel or direct call'
                                 }))
                     
                     elif data.get('type') == 'video_source_changed':
@@ -2907,6 +2914,13 @@ async def handler(websocket):
                         # Verify caller exists and is a friend
                         friends = set(db.get_friends(username))
                         if db.get_user(caller_username) and caller_username in friends:
+                            # Clean up caller's voice state (orphaned from unanswered call)
+                            if caller_username in voice_states:
+                                caller_state = voice_states[caller_username]
+                                # Only clean up if they're in a pending call to this user
+                                if caller_state.get('direct_call_peer') == username:
+                                    del voice_states[caller_username]
+                            
                             await send_to_user(caller_username, json.dumps({
                                 'type': 'voice_call_rejected',
                                 'from': username
