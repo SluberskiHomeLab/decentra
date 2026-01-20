@@ -3224,12 +3224,16 @@
                 
                 // Show corresponding content
                 Object.keys(adminTabContents).forEach(key => {
+                    const contentEl = adminTabContents[key];
+                    if (!contentEl) {
+                        return;
+                    }
                     if (key === tabName) {
-                        adminTabContents[key].style.display = 'block';
-                        adminTabContents[key].classList.add('active');
+                        contentEl.style.display = 'block';
+                        contentEl.classList.add('active');
                     } else {
-                        adminTabContents[key].style.display = 'none';
-                        adminTabContents[key].classList.remove('active');
+                        contentEl.style.display = 'none';
+                        contentEl.classList.remove('active');
                     }
                 });
             });
