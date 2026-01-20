@@ -2175,9 +2175,17 @@ async def handler(websocket):
                             voice_states[username]['muted'] = muted
                             state = voice_states[username]
                             
-                            # Notify others in the same voice channel
+                            # Notify others in the same voice channel OR direct call peer
                             if state.get('server_id') and state.get('channel_id'):
+                                # In a server voice channel
                                 await broadcast_to_server(state['server_id'], json.dumps({
+                                    'type': 'voice_mute_update',
+                                    'username': username,
+                                    'muted': muted
+                                }))
+                            elif state.get('direct_call_peer'):
+                                # In a direct call
+                                await send_to_user(state['direct_call_peer'], json.dumps({
                                     'type': 'voice_mute_update',
                                     'username': username,
                                     'muted': muted
@@ -2406,9 +2414,17 @@ async def handler(websocket):
                             voice_states[username]['video'] = video
                             state = voice_states[username]
                             
-                            # Notify others in the same voice channel
+                            # Notify others in the same voice channel OR direct call peer
                             if state.get('server_id') and state.get('channel_id'):
+                                # In a server voice channel
                                 await broadcast_to_server(state['server_id'], json.dumps({
+                                    'type': 'voice_video_update',
+                                    'username': username,
+                                    'video': video
+                                }))
+                            elif state.get('direct_call_peer'):
+                                # In a direct call
+                                await send_to_user(state['direct_call_peer'], json.dumps({
                                     'type': 'voice_video_update',
                                     'username': username,
                                     'video': video
@@ -2421,9 +2437,17 @@ async def handler(websocket):
                             voice_states[username]['screen_sharing'] = screen_sharing
                             state = voice_states[username]
                             
-                            # Notify others in the same voice channel
+                            # Notify others in the same voice channel OR direct call peer
                             if state.get('server_id') and state.get('channel_id'):
+                                # In a server voice channel
                                 await broadcast_to_server(state['server_id'], json.dumps({
+                                    'type': 'voice_screen_share_update',
+                                    'username': username,
+                                    'screen_sharing': screen_sharing
+                                }))
+                            elif state.get('direct_call_peer'):
+                                # In a direct call
+                                await send_to_user(state['direct_call_peer'], json.dumps({
                                     'type': 'voice_screen_share_update',
                                     'username': username,
                                     'screen_sharing': screen_sharing
@@ -2431,7 +2455,7 @@ async def handler(websocket):
                     
                     elif data.get('type') == 'switch_video_source':
                         # Forward request to switch video source to the target user,
-                        # but only if both users are in the same voice channel
+                        # but only if both users are in the same voice channel OR direct call
                         target_user = data.get('target')
                         show_screen = data.get('show_screen', True)
                         
@@ -2439,13 +2463,24 @@ async def handler(websocket):
                             requester_state = voice_states.get(username)
                             target_state = voice_states.get(target_user)
 
-                            # Ensure both users are in a voice channel and in the same one
-                            if (
+                            # Check if in same server voice channel
+                            in_same_channel = (
                                 requester_state
                                 and target_state
                                 and requester_state.get('server_id') == target_state.get('server_id')
                                 and requester_state.get('channel_id') == target_state.get('channel_id')
-                            ):
+                            )
+                            
+                            # Check if in direct call with each other
+                            in_direct_call = (
+                                requester_state
+                                and target_state
+                                and requester_state.get('direct_call_peer') == target_user
+                                and target_state.get('direct_call_peer') == username
+                            )
+                            
+                            # Allow if in same channel or direct call
+                            if in_same_channel or in_direct_call:
                                 await send_to_user(target_user, json.dumps({
                                     'type': 'switch_video_source_request',
                                     'from': username,
@@ -2455,19 +2490,27 @@ async def handler(websocket):
                                 # Reject unauthorized switch requests
                                 await websocket.send_str(json.dumps({
                                     'type': 'error',
-                                    'message': 'Cannot request video source switch: target user is not in the same voice channel'
+                                    'message': 'Cannot request video source switch: target user is not in the same voice channel or call'
                                 }))
                     
                     elif data.get('type') == 'video_source_changed':
-                        # Broadcast to others in voice channel that video source has changed
+                        # Broadcast to others in voice channel OR direct call that video source has changed
                         if username in voice_states:
                             showing_screen = data.get('showing_screen', False)
                             voice_states[username]['showing_screen'] = showing_screen
                             state = voice_states[username]
                             
-                            # Notify others in the same voice channel
+                            # Notify others in the same voice channel OR direct call peer
                             if state.get('server_id') and state.get('channel_id'):
+                                # In a server voice channel
                                 await broadcast_to_server(state['server_id'], json.dumps({
+                                    'type': 'video_source_changed_update',
+                                    'username': username,
+                                    'showing_screen': showing_screen
+                                }))
+                            elif state.get('direct_call_peer'):
+                                # In a direct call
+                                await send_to_user(state['direct_call_peer'], json.dumps({
                                     'type': 'video_source_changed_update',
                                     'username': username,
                                     'showing_screen': showing_screen
@@ -2758,6 +2801,16 @@ async def handler(websocket):
                         # Verify mutual friendship
                         friends = set(db.get_friends(username))
                         if db.get_user(friend_username) and friend_username in friends:
+                            # Track direct call in voice_states for video/screen sharing
+                            voice_states[username] = {
+                                'in_voice': True,
+                                'direct_call_peer': friend_username,
+                                'muted': False,
+                                'video': False,
+                                'screen_sharing': False,
+                                'showing_screen': False
+                            }
+                            
                             # Notify the friend about incoming call
                             await send_to_user(friend_username, json.dumps({
                                 'type': 'incoming_voice_call',
@@ -2771,6 +2824,16 @@ async def handler(websocket):
                         # Verify caller exists and is a friend
                         friends = set(db.get_friends(username))
                         if db.get_user(caller_username) and caller_username in friends:
+                            # Track direct call in voice_states for video/screen sharing
+                            voice_states[username] = {
+                                'in_voice': True,
+                                'direct_call_peer': caller_username,
+                                'muted': False,
+                                'video': False,
+                                'screen_sharing': False,
+                                'showing_screen': False
+                            }
+                            
                             await send_to_user(caller_username, json.dumps({
                                 'type': 'voice_call_accepted',
                                 'from': username
