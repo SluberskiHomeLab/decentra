@@ -98,10 +98,10 @@ This implementation adds comprehensive file attachment functionality to the Dece
 
 ### Race Condition Prevention
 - **Problem**: Multiple rapid messages could mix up attachments
-- **Solution**: Message key correlation system
-  - Attachments queued with unique message key
-  - Key sent with message, returned in confirmation
-  - Attachments uploaded only to matching message ID
+- **Planned Solution**: Message key correlation system (not yet fully implemented)
+  - Attachments queued with a unique client-generated message key
+  - Intended behavior: key sent with message and returned in server confirmation
+  - Once server support is added, attachments will only be uploaded to the matching message ID
 
 ### Backward Compatibility
 - All database changes use migrations
