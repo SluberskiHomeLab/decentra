@@ -1194,6 +1194,16 @@
                 }
                 break;
                 
+            case 'direct_call_ended':
+                // Handle peer disconnection during direct call
+                if (voiceChat) {
+                    voiceChat.endDirectCall();
+                    hideVoiceControls();
+                    const reason = data.reason === 'disconnected' ? 'disconnected' : 'ended the call';
+                    alert(`${data.from} ${reason}`);
+                }
+                break;
+                
             case 'webrtc_offer':
                 if (voiceChat) {
                     voiceChat.handleOffer(data.from, data.offer, data.context);
