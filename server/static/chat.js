@@ -3491,30 +3491,27 @@
         }
     }
     
-    function showAdminStatus(message, type) {
-        const statusEl = document.getElementById('admin-status-message');
-        if (!statusEl) return;
+    function showStatusMessage(elementId, message, className) {
+        const el = document.getElementById(elementId);
+        if (!el) return;
         
-        statusEl.textContent = message;
-        statusEl.className = `status-message ${type}`;
-        statusEl.style.display = 'block';
+        el.textContent = message;
+        el.className = className;
+        el.style.display = 'block';
         
         setTimeout(() => {
-            statusEl.style.display = 'none';
+            el.style.display = 'none';
         }, 5000);
     }
     
+    function showAdminStatus(message, type) {
+        const className = `status-message ${type}`;
+        showStatusMessage('admin-status-message', message, className);
+    }
+    
     function showAdminSmtpTestResult(success, message) {
-        const resultEl = document.getElementById('admin-smtp-test-result');
-        if (!resultEl) return;
-        
-        resultEl.textContent = message;
-        resultEl.className = success ? 'status-message success' : 'status-message error';
-        resultEl.style.display = 'block';
-        
-        setTimeout(() => {
-            resultEl.style.display = 'none';
-        }, 5000);
+        const className = success ? 'status-message success' : 'status-message error';
+        showStatusMessage('admin-smtp-test-result', message, className);
     }
     
     function logout() {
