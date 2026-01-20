@@ -268,6 +268,220 @@ async def api_dms(request):
         }, status=500)
 
 
+async def api_upload_attachment(request):
+    """
+    POST /api/upload-attachment
+    Upload a file attachment
+    
+    Request body (multipart/form-data):
+        - file: The file to upload
+        - message_id: The message ID to attach to
+        - username: The username uploading the file
+        - password: The user's password for auth
+    
+    Response: {
+        "success": true,
+        "attachment": {
+            "attachment_id": "string",
+            "filename": "string",
+            "content_type": "string",
+            "file_size": int
+        }
+    }
+    """
+    try:
+        # Get admin settings
+        admin_settings = db.get_admin_settings()
+        
+        # Check if file attachments are allowed
+        if not admin_settings.get('allow_file_attachments', True):
+            return web.json_response({
+                'success': False,
+                'error': 'File attachments are disabled'
+            }, status=403)
+        
+        # Get multipart data
+        reader = await request.multipart()
+        
+        username = None
+        password = None
+        message_id = None
+        file_field = None
+        filename = None
+        content_type = None
+        file_data = None
+        
+        async for field in reader:
+            if field.name == 'username':
+                username = (await field.read()).decode('utf-8').strip()
+            elif field.name == 'password':
+                password = (await field.read()).decode('utf-8')
+            elif field.name == 'message_id':
+                message_id = int((await field.read()).decode('utf-8'))
+            elif field.name == 'file':
+                filename = field.filename
+                content_type = field.headers.get('Content-Type', 'application/octet-stream')
+                file_data = await field.read()
+        
+        # Validate required fields
+        if not username or not password or message_id is None or not file_data:
+            return web.json_response({
+                'success': False,
+                'error': 'Missing required fields'
+            }, status=400)
+        
+        # Authenticate user
+        user = db.get_user(username)
+        if not user or not verify_password(password, user['password_hash']):
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid credentials'
+            }, status=401)
+        
+        # Check file size
+        max_size_mb = admin_settings.get('max_attachment_size_mb', 10)
+        max_size_bytes = max_size_mb * 1024 * 1024
+        file_size = len(file_data)
+        
+        if file_size > max_size_bytes:
+            return web.json_response({
+                'success': False,
+                'error': f'File size exceeds maximum of {max_size_mb}MB'
+            }, status=413)
+        
+        # Verify message exists and user owns it
+        message = db.get_message(message_id)
+        if not message:
+            return web.json_response({
+                'success': False,
+                'error': 'Message not found'
+            }, status=404)
+        
+        if message['username'] != username:
+            return web.json_response({
+                'success': False,
+                'error': 'You can only attach files to your own messages'
+            }, status=403)
+        
+        # Generate attachment ID
+        import uuid
+        import base64
+        attachment_id = f"att_{uuid.uuid4().hex[:16]}"
+        
+        # Encode file data as base64
+        file_data_b64 = base64.b64encode(file_data).decode('utf-8')
+        
+        # Save attachment
+        db.save_attachment(
+            attachment_id=attachment_id,
+            message_id=message_id,
+            filename=filename,
+            content_type=content_type,
+            file_size=file_size,
+            file_data=file_data_b64
+        )
+        
+        return web.json_response({
+            'success': True,
+            'attachment': {
+                'attachment_id': attachment_id,
+                'filename': filename,
+                'content_type': content_type,
+                'file_size': file_size
+            }
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+async def api_download_attachment(request):
+    """
+    GET /api/download-attachment/<attachment_id>
+    Download a file attachment
+    
+    Response: Binary file data with appropriate content-type
+    """
+    try:
+        attachment_id = request.match_info.get('attachment_id')
+        if not attachment_id:
+            return web.json_response({
+                'success': False,
+                'error': 'Attachment ID is required'
+            }, status=400)
+        
+        # Get attachment
+        attachment = db.get_attachment(attachment_id)
+        if not attachment:
+            return web.json_response({
+                'success': False,
+                'error': 'Attachment not found'
+            }, status=404)
+        
+        # Decode base64 file data
+        import base64
+        file_data = base64.b64decode(attachment['file_data'])
+        
+        # Return file with appropriate headers
+        return web.Response(
+            body=file_data,
+            content_type=attachment['content_type'],
+            headers={
+                'Content-Disposition': f'attachment; filename="{attachment["filename"]}"',
+                'Content-Length': str(len(file_data))
+            }
+        )
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+async def api_get_message_attachments(request):
+    """
+    GET /api/message-attachments/<message_id>
+    Get all attachments for a message
+    
+    Response: {
+        "success": true,
+        "attachments": [
+            {
+                "attachment_id": "string",
+                "filename": "string",
+                "content_type": "string",
+                "file_size": int,
+                "uploaded_at": "string"
+            }
+        ]
+    }
+    """
+    try:
+        message_id = request.match_info.get('message_id')
+        if not message_id:
+            return web.json_response({
+                'success': False,
+                'error': 'Message ID is required'
+            }, status=400)
+        
+        # Get attachments (without file data)
+        attachments = db.get_message_attachments(int(message_id))
+        
+        return web.json_response({
+            'success': True,
+            'attachments': attachments
+        })
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
 def setup_api_routes(app, database):
     """Setup REST API routes on the aiohttp application."""
     global db
@@ -277,3 +491,6 @@ def setup_api_routes(app, database):
     app.router.add_get('/api/messages', api_messages)
     app.router.add_get('/api/friends', api_friends)
     app.router.add_get('/api/dms', api_dms)
+    app.router.add_post('/api/upload-attachment', api_upload_attachment)
+    app.router.add_get('/api/download-attachment/{attachment_id}', api_download_attachment)
+    app.router.add_get('/api/message-attachments/{message_id}', api_get_message_attachments)
