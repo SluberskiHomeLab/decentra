@@ -1991,10 +1991,25 @@
         console.log('Message appended to container');
     }
     
+    // Validate a message ID before using it in URLs
+    function isValidMessageId(messageId) {
+        if (messageId === null || messageId === undefined) {
+            return false;
+        }
+        const idStr = String(messageId);
+        // Allow only simple, URL-safe IDs (alphanumeric, underscore, hyphen)
+        return /^[a-zA-Z0-9_-]+$/.test(idStr);
+    }
+    
     // Load and display attachments for a message
     async function loadMessageAttachments(messageId, container) {
+        const safeMessageId = String(messageId);
+        if (!isValidMessageId(safeMessageId)) {
+            console.warn('Refusing to load attachments for invalid messageId:', safeMessageId);
+            return;
+        }
         try {
-            const response = await fetch(`/api/message-attachments/${messageId}`);
+            const response = await fetch(`/api/message-attachments/${safeMessageId}`);
             const result = await response.json();
             
             if (result.success && result.attachments && result.attachments.length > 0) {
