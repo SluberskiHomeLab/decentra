@@ -49,6 +49,11 @@
     
     // Server settings
     let maxMessageLength = 2000; // Default max message length
+    let allowFileAttachments = true; // Default allow attachments
+    let maxAttachmentSizeMB = 10; // Default max attachment size
+    
+    // File attachment state
+    let pendingAttachments = []; // Files to be uploaded with next message
     
     // Video toggle constants
     const DEFAULT_SCREEN_SHARE_PRIORITY = true; // When both video and screenshare are active, show screenshare by default
@@ -59,6 +64,9 @@
     const messageInput = document.getElementById('message-input');
     const submitBtn = messageForm.querySelector('button[type="submit"]');
     const chatTitle = document.getElementById('chat-title');
+    const attachFileBtn = document.getElementById('attach-file-btn');
+    const fileInput = document.getElementById('file-input');
+    const attachmentPreview = document.getElementById('attachment-preview');
     
     // Sidebar elements
     const serversList = document.getElementById('servers-list');
@@ -1994,7 +2002,147 @@
         console.log('Sending message:', msgData);
         ws.send(JSON.stringify(msgData));
         messageInput.value = '';
+        
+        // Handle file attachments after message is sent
+        // Store pending attachments for upload after we get the message ID
+        if (pendingAttachments.length > 0) {
+            // We'll upload files when we receive the message confirmation with ID
+            console.log(`${pendingAttachments.length} attachments pending upload`);
+        }
     });
+    
+    // File attachment button click
+    if (attachFileBtn) {
+        attachFileBtn.addEventListener('click', () => {
+            if (!allowFileAttachments) {
+                alert('File attachments are disabled by the administrator');
+                return;
+            }
+            fileInput.click();
+        });
+    }
+    
+    // File input change
+    if (fileInput) {
+        fileInput.addEventListener('change', (e) => {
+            const files = Array.from(e.target.files);
+            
+            // Validate file sizes
+            for (const file of files) {
+                const sizeMB = file.size / (1024 * 1024);
+                if (sizeMB > maxAttachmentSizeMB) {
+                    alert(`File "${file.name}" exceeds maximum size of ${maxAttachmentSizeMB}MB`);
+                    fileInput.value = ''; // Reset
+                    return;
+                }
+            }
+            
+            // Add files to pending attachments
+            pendingAttachments.push(...files);
+            updateAttachmentPreview();
+            
+            // Reset file input
+            fileInput.value = '';
+        });
+    }
+    
+    // Update attachment preview
+    function updateAttachmentPreview() {
+        if (pendingAttachments.length === 0) {
+            attachmentPreview.classList.add('hidden');
+            attachmentPreview.innerHTML = '';
+            return;
+        }
+        
+        attachmentPreview.classList.remove('hidden');
+        attachmentPreview.innerHTML = '';
+        
+        pendingAttachments.forEach((file, index) => {
+            const item = document.createElement('div');
+            item.className = 'attachment-item';
+            
+            const icon = document.createElement('span');
+            icon.textContent = '📎';
+            
+            const info = document.createElement('div');
+            info.style.display = 'flex';
+            info.style.flexDirection = 'column';
+            info.style.gap = '2px';
+            
+            const name = document.createElement('div');
+            name.className = 'attachment-item-name';
+            name.textContent = file.name;
+            name.title = file.name;
+            
+            const size = document.createElement('div');
+            size.className = 'attachment-item-size';
+            size.textContent = formatFileSize(file.size);
+            
+            info.appendChild(name);
+            info.appendChild(size);
+            
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'attachment-item-remove';
+            removeBtn.textContent = '×';
+            removeBtn.type = 'button';
+            removeBtn.onclick = () => {
+                pendingAttachments.splice(index, 1);
+                updateAttachmentPreview();
+            };
+            
+            item.appendChild(icon);
+            item.appendChild(info);
+            item.appendChild(removeBtn);
+            
+            attachmentPreview.appendChild(item);
+        });
+    }
+    
+    // Format file size for display
+    function formatFileSize(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+    
+    // Upload attachments for a message
+    async function uploadAttachments(messageId) {
+        if (pendingAttachments.length === 0) return;
+        
+        const password = sessionStorage.getItem('password');
+        if (!password) {
+            console.error('Cannot upload attachments: no password in session');
+            return;
+        }
+        
+        for (const file of pendingAttachments) {
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('message_id', messageId);
+                formData.append('username', username);
+                formData.append('password', password);
+                
+                const response = await fetch('/api/upload-attachment', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                if (!result.success) {
+                    console.error('Failed to upload attachment:', result.error);
+                    alert(`Failed to upload "${file.name}": ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Error uploading attachment:', error);
+                alert(`Error uploading "${file.name}": ${error.message}`);
+            }
+        }
+        
+        // Clear pending attachments
+        pendingAttachments = [];
+        updateAttachmentPreview();
+    }
     
     // Message input - handle mention autocomplete
     messageInput.addEventListener('input', (e) => {
