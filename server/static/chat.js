@@ -487,6 +487,8 @@
                 voiceChat = new VoiceChat(ws, username);
                 // Check if user is admin
                 ws.send(JSON.stringify({type: 'check_admin'}));
+                // Request admin settings to get file attachment limits
+                ws.send(JSON.stringify({type: 'get_admin_settings'}));
                 break;
                 
             case 'auth_error':
@@ -578,6 +580,12 @@
                 console.log('Received message:', data);
                 console.log('Current context:', currentContext);
                 console.log('Is for current context:', isMessageForCurrentContext(data));
+                
+                // If this is our own message and has an ID, upload pending attachments
+                if (data.username === username && data.id && pendingAttachments.length > 0) {
+                    console.log('Uploading attachments for message:', data.id);
+                    uploadAttachments(data.id);
+                }
                 
                 if (isMessageForCurrentContext(data)) {
                     console.log('Appending message to chat');
@@ -882,6 +890,20 @@
             case 'admin_settings':
                 // Load admin settings into the modal
                 loadAdminSettings(data.settings);
+                
+                // Update global settings for file attachments
+                if (data.settings.allow_file_attachments !== undefined) {
+                    allowFileAttachments = data.settings.allow_file_attachments;
+                }
+                if (data.settings.max_attachment_size_mb !== undefined) {
+                    maxAttachmentSizeMB = data.settings.max_attachment_size_mb;
+                }
+                
+                // Enable/disable attach button based on settings
+                if (attachFileBtn) {
+                    attachFileBtn.disabled = !allowFileAttachments;
+                    attachFileBtn.title = allowFileAttachments ? 'Attach File' : 'File attachments disabled';
+                }
                 break;
             
             case 'settings_saved':
@@ -1952,12 +1974,49 @@
                 
                 contentWrapper.appendChild(actionsDiv);
             }
+            
+            // Load and display attachments if message has ID
+            loadMessageAttachments(msg.id, contentWrapper);
         }
         
         messageDiv.appendChild(avatarEl);
         messageDiv.appendChild(contentWrapper);
         messagesContainer.appendChild(messageDiv);
         console.log('Message appended to container');
+    }
+    
+    // Load and display attachments for a message
+    async function loadMessageAttachments(messageId, container) {
+        try {
+            const response = await fetch(`/api/message-attachments/${messageId}`);
+            const result = await response.json();
+            
+            if (result.success && result.attachments && result.attachments.length > 0) {
+                const attachmentsDiv = document.createElement('div');
+                attachmentsDiv.className = 'message-attachments';
+                
+                for (const attachment of result.attachments) {
+                    const attachmentLink = document.createElement('a');
+                    attachmentLink.className = 'message-attachment';
+                    attachmentLink.href = `/api/download-attachment/${attachment.attachment_id}`;
+                    attachmentLink.download = attachment.filename;
+                    
+                    attachmentLink.innerHTML = `
+                        <span class="message-attachment-icon">📎</span>
+                        <div class="message-attachment-info">
+                            <div class="message-attachment-name">${escapeHtml(attachment.filename)}</div>
+                            <div class="message-attachment-size">${formatFileSize(attachment.file_size)}</div>
+                        </div>
+                    `;
+                    
+                    attachmentsDiv.appendChild(attachmentLink);
+                }
+                
+                container.appendChild(attachmentsDiv);
+            }
+        } catch (error) {
+            console.error('Error loading attachments:', error);
+        }
     }
     
     // Append system message

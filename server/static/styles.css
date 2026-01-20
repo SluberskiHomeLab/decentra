@@ -1130,6 +1130,13 @@ body::before {
     color: #b9bbbe;
 }
 
+.message-attachments {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+}
+
 #message-input {
     flex: 1;
     padding: 11px;
