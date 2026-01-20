@@ -54,7 +54,6 @@
     
     // File attachment state
     let pendingAttachments = []; // Files to be uploaded with next message
-    let lastSentMessageTime = 0; // Track when last message was sent to prevent race conditions
     let attachmentUploadQueue = new Map(); // Map of message content hash to attachments
     
     // Video toggle constants
