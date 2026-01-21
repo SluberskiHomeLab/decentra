@@ -2077,8 +2077,9 @@
                     const contentType = attachment.content_type || '';
                     
                     // Check if this is a media file that should be embedded
-                    const isImage = contentType.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i.test(filename);
-                    const isVideo = contentType.startsWith('video/') || /\.(mp4|webm|ogg|mov)$/i.test(filename);
+                    // Reuse existing regex patterns for consistency
+                    const isImage = contentType.startsWith('image/') || IMAGE_EXTENSIONS.test(filename);
+                    const isVideo = contentType.startsWith('video/') || VIDEO_EXTENSIONS.test(filename);
                     
                     if (isVideo) {
                         // Create embedded video player
@@ -2088,8 +2089,6 @@
                         const video = document.createElement('video');
                         video.controls = true;
                         video.src = downloadUrl;
-                        video.style.maxWidth = '100%';
-                        video.style.maxHeight = '400px';
                         
                         videoEmbed.appendChild(video);
                         attachmentsDiv.appendChild(videoEmbed);
@@ -2101,8 +2100,6 @@
                         const img = document.createElement('img');
                         img.src = downloadUrl;
                         img.alt = escapeHtml(filename);
-                        img.style.maxWidth = '100%';
-                        img.style.maxHeight = '400px';
                         
                         imageEmbed.appendChild(img);
                         attachmentsDiv.appendChild(imageEmbed);
