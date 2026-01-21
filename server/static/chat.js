@@ -2089,6 +2089,7 @@
                         const video = document.createElement('video');
                         video.controls = true;
                         video.src = downloadUrl;
+                        video.setAttribute('aria-label', `Video attachment: ${escapeHtml(filename)}`);
                         
                         // Add error handling for video playback issues
                         video.onerror = function() {
