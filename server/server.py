@@ -202,6 +202,49 @@ def get_next_dm_id():
     return f"dm_{dm_counter}"
 
 
+def create_message_object(username, msg_content, context, context_id, user_profile, message_key=None, message_id=None):
+    """
+    Create a message object with common fields.
+    
+    Args:
+        username: Username of the sender
+        msg_content: Message content
+        context: Message context ('server', 'dm', or 'global')
+        context_id: Context-specific ID (server/channel, dm_id, or None)
+        user_profile: User profile dict containing avatar info
+        message_key: Optional messageKey for file attachment correlation
+        message_id: Optional message ID from database
+    
+    Returns:
+        Dict containing the message object
+    """
+    msg_obj = {
+        'type': 'message',
+        'username': username,
+        'content': msg_content,
+        'timestamp': datetime.now(timezone.utc).isoformat(),
+        'context': context,
+        'context_id': context_id,
+        'avatar': user_profile.get('avatar', '👤') if user_profile else '👤',
+        'avatar_type': user_profile.get('avatar_type', 'emoji') if user_profile else 'emoji',
+        'avatar_data': user_profile.get('avatar_data') if user_profile else None
+    }
+    
+    # Add message ID if provided
+    if message_id is not None:
+        msg_obj['id'] = message_id
+    
+    # Add messageKey if provided (for file attachment correlation)
+    if message_key:
+        msg_obj['messageKey'] = message_key
+    
+    # Add reactions for new messages
+    if 'reactions' not in msg_obj:
+        msg_obj['reactions'] = []
+    
+    return msg_obj
+
+
 def init_counters_from_db():
     """Initialize ID counters from database."""
     global server_counter, channel_counter, dm_counter, role_counter
@@ -877,20 +920,8 @@ async def handler(websocket):
                             }))
                             continue
                         
-                        # Create message object
+                        # Get user profile for avatar info
                         user_profile = db.get_user(username)
-                        msg_obj = {
-                            'type': 'message',
-                            'username': username,
-                            'content': msg_content,
-                            'timestamp': datetime.now(timezone.utc).isoformat(),
-                            'context': context,
-                            'context_id': context_id,
-                            'avatar': user_profile.get('avatar', '👤') if user_profile else '👤',
-                            'avatar_type': user_profile.get('avatar_type', 'emoji') if user_profile else 'emoji',
-                            'avatar_data': user_profile.get('avatar_data') if user_profile else None,
-                            'reactions': []  # New messages have no reactions initially
-                        }
                         
                         # Route message based on context
                         if context == 'server' and context_id:
@@ -905,27 +936,17 @@ async def handler(websocket):
                                     if username in member_usernames:
                                         # Save message to database and get ID
                                         message_id = db.save_message(username, msg_content, 'server', context_id)
-                                        msg_obj['id'] = message_id
-                                        # Save message to database and get message ID
-                                        message_id = db.save_message(username, msg_content, 'server', context_id)
                                         
-                                        # Create message object with ID
-                                        msg_obj = {
-                                            'type': 'message',
-                                            'id': message_id,
-                                            'username': username,
-                                            'content': msg_content,
-                                            'timestamp': datetime.now(timezone.utc).isoformat(),
-                                            'context': context,
-                                            'context_id': context_id,
-                                            'avatar': user_profile.get('avatar', '👤') if user_profile else '👤',
-                                            'avatar_type': user_profile.get('avatar_type', 'emoji') if user_profile else 'emoji',
-                                            'avatar_data': user_profile.get('avatar_data') if user_profile else None
-                                        }
-                                        
-                                        # Include messageKey if provided (for file attachment correlation)
-                                        if message_key:
-                                            msg_obj['messageKey'] = message_key
+                                        # Create message object with ID and messageKey
+                                        msg_obj = create_message_object(
+                                            username=username,
+                                            msg_content=msg_content,
+                                            context=context,
+                                            context_id=context_id,
+                                            user_profile=user_profile,
+                                            message_key=message_key,
+                                            message_id=message_id
+                                        )
                                         
                                         # Broadcast to server members
                                         await broadcast_to_server(server_id, json.dumps(msg_obj))
@@ -938,27 +959,17 @@ async def handler(websocket):
                             if context_id in dm_ids:
                                 # Save message to database and get ID
                                 message_id = db.save_message(username, msg_content, 'dm', context_id)
-                                msg_obj['id'] = message_id
-                                # Save message to database and get message ID
-                                message_id = db.save_message(username, msg_content, 'dm', context_id)
                                 
-                                # Create message object with ID
-                                msg_obj = {
-                                    'type': 'message',
-                                    'id': message_id,
-                                    'username': username,
-                                    'content': msg_content,
-                                    'timestamp': datetime.now(timezone.utc).isoformat(),
-                                    'context': context,
-                                    'context_id': context_id,
-                                    'avatar': user_profile.get('avatar', '👤') if user_profile else '👤',
-                                    'avatar_type': user_profile.get('avatar_type', 'emoji') if user_profile else 'emoji',
-                                    'avatar_data': user_profile.get('avatar_data') if user_profile else None
-                                }
-                                
-                                # Include messageKey if provided (for file attachment correlation)
-                                if message_key:
-                                    msg_obj['messageKey'] = message_key
+                                # Create message object with ID and messageKey
+                                msg_obj = create_message_object(
+                                    username=username,
+                                    msg_content=msg_content,
+                                    context=context,
+                                    context_id=context_id,
+                                    user_profile=user_profile,
+                                    message_key=message_key,
+                                    message_id=message_id
+                                )
                                 
                                 # Get participants and send to both
                                 for dm in dm_users:
@@ -971,21 +982,15 @@ async def handler(websocket):
                         
                         else:
                             # Global chat (backward compatibility)
-                            msg_obj = {
-                                'type': 'message',
-                                'username': username,
-                                'content': msg_content,
-                                'timestamp': datetime.now(timezone.utc).isoformat(),
-                                'context': context,
-                                'context_id': context_id,
-                                'avatar': user_profile.get('avatar', '👤') if user_profile else '👤',
-                                'avatar_type': user_profile.get('avatar_type', 'emoji') if user_profile else 'emoji',
-                                'avatar_data': user_profile.get('avatar_data') if user_profile else None
-                            }
+                            msg_obj = create_message_object(
+                                username=username,
+                                msg_content=msg_content,
+                                context=context,
+                                context_id=context_id,
+                                user_profile=user_profile,
+                                message_key=message_key
+                            )
                             
-                            # Include messageKey if provided (for file attachment correlation)
-                            if message_key:
-                                msg_obj['messageKey'] = message_key
                             messages.append(msg_obj)
                             if len(messages) > MAX_HISTORY:
                                 messages.pop(0)
