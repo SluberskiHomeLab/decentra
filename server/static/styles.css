@@ -499,6 +499,29 @@ body::before {
     display: flex;
     flex-direction: column;
     background: #36393f;
+    position: relative;
+    transition: background-color 0.2s ease;
+}
+
+.chat-container.drag-over {
+    background: rgba(88, 101, 242, 0.1);
+}
+
+.chat-container.drag-over::after {
+    content: 'Drop files to attach';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(88, 101, 242, 0.9);
+    color: #ffffff;
+    padding: 20px 40px;
+    border-radius: 8px;
+    font-size: 18px;
+    font-weight: 600;
+    pointer-events: none;
+    z-index: 1000;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .chat-header {

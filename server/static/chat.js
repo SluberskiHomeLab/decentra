@@ -2199,6 +2199,76 @@
         });
     }
     
+    // Drag and drop file handling
+    const chatContainer = document.querySelector('.chat-container');
+    
+    if (chatContainer) {
+        // Prevent default drag behaviors on the entire chat container
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            chatContainer.addEventListener(eventName, (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            }, false);
+        });
+        
+        // Highlight drop zone when dragging files
+        ['dragenter', 'dragover'].forEach(eventName => {
+            chatContainer.addEventListener(eventName, () => {
+                if (allowFileAttachments) {
+                    chatContainer.classList.add('drag-over');
+                }
+            }, false);
+        });
+        
+        ['dragleave', 'drop'].forEach(eventName => {
+            chatContainer.addEventListener(eventName, () => {
+                chatContainer.classList.remove('drag-over');
+            }, false);
+        });
+        
+        // Handle dropped files
+        chatContainer.addEventListener('drop', (e) => {
+            if (!allowFileAttachments) {
+                alert('File attachments are disabled by the administrator');
+                return;
+            }
+            
+            const dt = e.dataTransfer;
+            const files = Array.from(dt.files);
+            
+            if (files.length === 0) {
+                return;
+            }
+            
+            // Validate file sizes and separate valid/invalid files
+            const validFiles = [];
+            const invalidFiles = [];
+            
+            for (const file of files) {
+                const sizeMB = file.size / (1024 * 1024);
+                if (sizeMB > maxAttachmentSizeMB) {
+                    invalidFiles.push(file);
+                } else {
+                    validFiles.push(file);
+                }
+            }
+            
+            if (invalidFiles.length > 0) {
+                const names = invalidFiles.map(f => `"${f.name}"`).join(', ');
+                alert(`The following file(s) exceed the maximum size of ${maxAttachmentSizeMB}MB and were not added: ${names}`);
+            }
+            
+            if (validFiles.length > 0) {
+                // Add only valid files to pending attachments
+                pendingAttachments.push(...validFiles);
+                updateAttachmentPreview();
+                
+                // Focus the message input for user convenience
+                messageInput.focus();
+            }
+        }, false);
+    }
+    
     // Update attachment preview
     function updateAttachmentPreview() {
         if (pendingAttachments.length === 0) {
