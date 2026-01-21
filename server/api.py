@@ -304,9 +304,11 @@ async def api_upload_attachment(request):
     Request body (multipart/form-data):
         - file: The file to upload
         - message_id: The message ID to attach to
-        - username: The username uploading the file
-        - password: The user's password for auth (optional if token provided)
         - token: JWT authentication token (optional if password provided)
+        - username: The username uploading the file (optional if token provided)
+        - password: The user's password for auth (optional if token provided)
+    
+    Note: Either 'token' OR both 'username' and 'password' must be provided for authentication.
     
     Response: {
         "success": true,

@@ -2273,6 +2273,9 @@
         
         for (const file of attachments) {
             try {
+                // Note: Token is sent in form body rather than Authorization header
+                // because this is a multipart/form-data request. The server supports
+                // this for file uploads while maintaining security through JWT validation.
                 const formData = new FormData();
                 formData.append('file', file);
                 formData.append('message_id', messageId);
