@@ -239,8 +239,7 @@ def create_message_object(username, msg_content, context, context_id, user_profi
         msg_obj['messageKey'] = message_key
     
     # Add reactions for new messages
-    if 'reactions' not in msg_obj:
-        msg_obj['reactions'] = []
+    msg_obj['reactions'] = []
     
     return msg_obj
 
