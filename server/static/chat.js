@@ -2265,9 +2265,9 @@
     async function uploadAttachmentsForMessage(messageId, attachments) {
         if (!attachments || attachments.length === 0) return;
         
-        const password = sessionStorage.getItem('password');
-        if (!password) {
-            console.error('Cannot upload attachments: no password in session');
+        const token = sessionStorage.getItem('token');
+        if (!token) {
+            console.error('Cannot upload attachments: no token in session');
             return;
         }
         
@@ -2276,8 +2276,7 @@
                 const formData = new FormData();
                 formData.append('file', file);
                 formData.append('message_id', messageId);
-                formData.append('username', username);
-                formData.append('password', password);
+                formData.append('token', token);
                 
                 const response = await fetch('/api/upload-attachment', {
                     method: 'POST',
