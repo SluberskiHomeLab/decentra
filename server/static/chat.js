@@ -2391,6 +2391,7 @@
             return;
         }
         
+        let uploadedCount = 0;
         for (const file of attachments) {
             try {
                 // Note: Token is sent in form body rather than Authorization header
@@ -2412,12 +2413,29 @@
                     alert(`Failed to upload "${file.name}": ${result.error}`);
                 } else {
                     console.log(`Uploaded attachment: ${file.name}`);
-                    // Refresh the message to show the attachment
-                    // We could reload the message here, or wait for a broadcast update
+                    uploadedCount++;
                 }
             } catch (error) {
                 console.error('Error uploading attachment:', error);
                 alert(`Error uploading "${file.name}": ${error.message}`);
+            }
+        }
+        
+        // Refresh the message to show uploaded attachments
+        if (uploadedCount > 0) {
+            const messageDiv = document.querySelector(`[data-message-id="${messageId}"]`);
+            if (messageDiv) {
+                // Find the content wrapper
+                const contentWrapper = messageDiv.querySelector('.message-content-wrapper');
+                if (contentWrapper) {
+                    // Remove existing attachments div if present
+                    const existingAttachments = contentWrapper.querySelector('.message-attachments');
+                    if (existingAttachments) {
+                        existingAttachments.remove();
+                    }
+                    // Reload attachments to display the newly uploaded ones
+                    await loadMessageAttachments(messageId, contentWrapper);
+                }
             }
         }
     }
