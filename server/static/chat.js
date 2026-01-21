@@ -2166,8 +2166,9 @@
         }
         
         const message = messageInput.value.trim();
-        if (!message || !authenticated) {
-            console.log('Cannot send message - empty or not authenticated');
+        // Allow sending if there's a message OR if there are attachments
+        if ((!message && pendingAttachments.length === 0) || !authenticated) {
+            console.log('Cannot send message - empty (no text or attachments) or not authenticated');
             return;
         }
         
