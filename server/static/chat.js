@@ -2423,13 +2423,16 @@
         
         // Refresh the message to show uploaded attachments
         if (uploadedCount > 0) {
-            // Use a small delay to ensure the message element is in the DOM
-            // This handles cases where the upload completes very quickly
-            await new Promise(resolve => setTimeout(resolve, 100));
+            // Wait for the message element to appear in the DOM
+            // Try multiple times with increasing delays to handle fast uploads
+            let messageDiv = null;
+            for (let attempt = 0; attempt < 5; attempt++) {
+                messageDiv = document.querySelector(`[data-message-id="${messageId}"]`);
+                if (messageDiv) break;
+                await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1)));
+            }
             
-            const messageDiv = document.querySelector(`[data-message-id="${messageId}"]`);
             if (messageDiv) {
-                // Find the content wrapper
                 const contentWrapper = messageDiv.querySelector('.message-content-wrapper');
                 if (contentWrapper) {
                     // Remove existing attachments div if present
