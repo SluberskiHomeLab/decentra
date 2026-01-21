@@ -1072,34 +1072,38 @@
                 break;
             
             case 'voice_video_update':
-                // Update video state in participants list
-                if (voiceChat && voiceChat.currentVoiceChannel) {
-                    const currentKey = `${voiceChat.currentVoiceServer}/${voiceChat.currentVoiceChannel}`;
-                    if (voiceMembers[currentKey]) {
-                        const participant = voiceMembers[currentKey].find(p => 
-                            (typeof p === 'object' ? p.username : p) === data.username
-                        );
-                        if (participant && typeof participant === 'object') {
-                            participant.video = data.video;
-                            // Track in voiceChat for toggle functionality
-                            if (voiceChat) {
-                                voiceChat.remoteVideoEnabled.set(data.username, data.video);
-                                // Initialize remoteShowingScreen if video is enabled and screenshare is also active
-                                if (data.video) {
-                                    const hasScreenShare = voiceChat.remoteScreenSharing.get(data.username) || false;
-                                    if (hasScreenShare) {
-                                        // Both video and screenshare are active, set to show screen by default
-                                        voiceChat.remoteShowingScreen.set(data.username, true);
-                                    }
-                                } else {
-                                    // Clean up state if both video and screenshare are disabled
-                                    const hasScreenShare = voiceChat.remoteScreenSharing.get(data.username) || false;
-                                    if (!hasScreenShare) {
-                                        voiceChat.remoteShowingScreen.delete(data.username);
-                                    }
-                                }
-                                // Update toggle button if both video and screenshare are active
-                                updateVideoToggleButton(data.username);
+                // Update video state in participants list (voice channels or direct calls)
+                if (voiceChat) {
+                    // Track video state for toggle functionality
+                    voiceChat.remoteVideoEnabled.set(data.username, data.video);
+                    
+                    // Initialize remoteShowingScreen if video is enabled and screenshare is also active
+                    if (data.video) {
+                        const hasScreenShare = voiceChat.remoteScreenSharing.get(data.username) || false;
+                        if (hasScreenShare) {
+                            // Both video and screenshare are active, set to show screen by default
+                            voiceChat.remoteShowingScreen.set(data.username, true);
+                        }
+                    } else {
+                        // Clean up state if both video and screenshare are disabled
+                        const hasScreenShare = voiceChat.remoteScreenSharing.get(data.username) || false;
+                        if (!hasScreenShare) {
+                            voiceChat.remoteShowingScreen.delete(data.username);
+                        }
+                    }
+                    
+                    // Update toggle button if both video and screenshare are active
+                    updateVideoToggleButton(data.username);
+                    
+                    // Update participant list if in a voice channel
+                    if (voiceChat.currentVoiceChannel) {
+                        const currentKey = `${voiceChat.currentVoiceServer}/${voiceChat.currentVoiceChannel}`;
+                        if (voiceMembers[currentKey]) {
+                            const participant = voiceMembers[currentKey].find(p => 
+                                (typeof p === 'object' ? p.username : p) === data.username
+                            );
+                            if (participant && typeof participant === 'object') {
+                                participant.video = data.video;
                             }
                             updateVoiceParticipants(voiceMembers[currentKey]);
                         }
@@ -1108,41 +1112,46 @@
                 break;
             
             case 'voice_screen_share_update':
-                // Update screen sharing state in participants list
-                if (voiceChat && voiceChat.currentVoiceChannel) {
-                    const currentKey = `${voiceChat.currentVoiceServer}/${voiceChat.currentVoiceChannel}`;
-                    if (voiceMembers[currentKey]) {
-                        const participant = voiceMembers[currentKey].find(p => 
-                            (typeof p === 'object' ? p.username : p) === data.username
-                        );
-                        if (participant && typeof participant === 'object') {
-                            participant.screen_sharing = data.screen_sharing;
-                            // Track in voiceChat for video display
-                            if (voiceChat) {
-                                voiceChat.remoteScreenSharing.set(data.username, data.screen_sharing);
-                                // When screenshare starts, assume they're showing screen (default behavior)
-                                if (data.screen_sharing) {
-                                    voiceChat.remoteShowingScreen.set(data.username, true);
-                                } else {
-                                    // When screenshare stops, they're showing camera if video is still enabled
-                                    const hasVideo = voiceChat.remoteVideoEnabled.get(data.username) || false;
-                                    if (hasVideo) {
-                                        voiceChat.remoteShowingScreen.set(data.username, false);
-                                    } else {
-                                        // Neither video nor screenshare active, remove from tracking
-                                        voiceChat.remoteShowingScreen.delete(data.username);
-                                    }
-                                }
-                                // Update toggle button if both video and screenshare are active
-                                updateVideoToggleButton(data.username);
-                            }
-                            // When screen sharing stops, remove any existing screen share video element
-                            if (!data.screen_sharing) {
-                                const screenShareVideo = document.getElementById(`video-${data.username}`);
-                                if (screenShareVideo && screenShareVideo.classList.contains('screen-share')) {
-                                    screenShareVideo.remove();
-                                    updateVideoGridLayout();
-                                }
+                // Update screen sharing state in participants list (voice channels or direct calls)
+                if (voiceChat) {
+                    // Track screen sharing state for video display
+                    voiceChat.remoteScreenSharing.set(data.username, data.screen_sharing);
+                    
+                    // When screenshare starts, assume they're showing screen (default behavior)
+                    if (data.screen_sharing) {
+                        voiceChat.remoteShowingScreen.set(data.username, true);
+                    } else {
+                        // When screenshare stops, they're showing camera if video is still enabled
+                        const hasVideo = voiceChat.remoteVideoEnabled.get(data.username) || false;
+                        if (hasVideo) {
+                            voiceChat.remoteShowingScreen.set(data.username, false);
+                        } else {
+                            // Neither video nor screenshare active, remove from tracking
+                            voiceChat.remoteShowingScreen.delete(data.username);
+                        }
+                    }
+                    
+                    // Update toggle button if both video and screenshare are active
+                    updateVideoToggleButton(data.username);
+                    
+                    // When screen sharing stops, remove any existing screen share video element
+                    if (!data.screen_sharing) {
+                        const screenShareVideo = document.getElementById(`video-${data.username}`);
+                        if (screenShareVideo && screenShareVideo.classList.contains('screen-share')) {
+                            screenShareVideo.remove();
+                            updateVideoGridLayout();
+                        }
+                    }
+                    
+                    // Update participant list if in a voice channel
+                    if (voiceChat.currentVoiceChannel) {
+                        const currentKey = `${voiceChat.currentVoiceServer}/${voiceChat.currentVoiceChannel}`;
+                        if (voiceMembers[currentKey]) {
+                            const participant = voiceMembers[currentKey].find(p => 
+                                (typeof p === 'object' ? p.username : p) === data.username
+                            );
+                            if (participant && typeof participant === 'object') {
+                                participant.screen_sharing = data.screen_sharing;
                             }
                             updateVoiceParticipants(voiceMembers[currentKey]);
                         }
@@ -1182,6 +1191,16 @@
                     voiceChat.endDirectCall();
                     hideVoiceControls();
                     alert(`${data.from} rejected your call`);
+                }
+                break;
+                
+            case 'direct_call_ended':
+                // Handle peer disconnection during direct call
+                if (voiceChat) {
+                    voiceChat.endDirectCall();
+                    hideVoiceControls();
+                    const reason = data.reason === 'disconnected' ? 'disconnected' : 'ended the call';
+                    alert(`${data.from} ${reason}`);
                 }
                 break;
                 
