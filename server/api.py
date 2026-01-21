@@ -13,6 +13,8 @@ import bcrypt
 
 # Database instance will be set by setup_api_routes
 db = None
+# JWT verification function will be set by setup_api_routes
+verify_jwt_token = None
 
 
 def sanitize_filename(filename):
@@ -302,8 +304,11 @@ async def api_upload_attachment(request):
     Request body (multipart/form-data):
         - file: The file to upload
         - message_id: The message ID to attach to
-        - username: The username uploading the file
-        - password: The user's password for auth
+        - token: JWT authentication token (optional if password provided)
+        - username: The username uploading the file (optional if token provided)
+        - password: The user's password for auth (optional if token provided)
+    
+    Note: Either 'token' OR both 'username' and 'password' must be provided for authentication.
     
     Response: {
         "success": true,
@@ -331,6 +336,7 @@ async def api_upload_attachment(request):
         
         username = None
         password = None
+        token = None
         message_id = None
         filename = None
         content_type = None
@@ -341,6 +347,8 @@ async def api_upload_attachment(request):
                 username = (await field.read()).decode('utf-8').strip()
             elif field.name == 'password':
                 password = (await field.read()).decode('utf-8')
+            elif field.name == 'token':
+                token = (await field.read()).decode('utf-8').strip()
             elif field.name == 'message_id':
                 message_id = int((await field.read()).decode('utf-8'))
             elif field.name == 'file':
@@ -349,19 +357,40 @@ async def api_upload_attachment(request):
                 file_data = await field.read()
         
         # Validate required fields
-        if not username or not password or message_id is None or not file_data:
+        if message_id is None or not file_data:
             return web.json_response({
                 'success': False,
-                'error': 'Missing required fields'
+                'error': 'Missing required fields (message_id and file are required)'
             }, status=400)
         
-        # Authenticate user
-        user = db.get_user(username)
-        if not user or not verify_password(password, user['password_hash']):
+        # Authenticate user - either by token or password
+        authenticated_username = None
+        
+        if token:
+            # Token-based authentication
+            authenticated_username = verify_jwt_token(token)
+            if not authenticated_username:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Invalid or expired token'
+                }, status=401)
+        elif username and password:
+            # Password-based authentication
+            user = db.get_user(username)
+            if not user or not verify_password(password, user['password_hash']):
+                return web.json_response({
+                    'success': False,
+                    'error': 'Invalid credentials'
+                }, status=401)
+            authenticated_username = username
+        else:
             return web.json_response({
                 'success': False,
-                'error': 'Invalid credentials'
+                'error': 'Authentication required (provide either token or username+password)'
             }, status=401)
+        
+        # Use authenticated username for the rest of the function
+        username = authenticated_username
         
         # Check file size
         max_size_mb = admin_settings.get('max_attachment_size_mb', 10)
@@ -517,10 +546,11 @@ async def api_get_message_attachments(request):
         }, status=500)
 
 
-def setup_api_routes(app, database):
+def setup_api_routes(app, database, jwt_verify_func):
     """Setup REST API routes on the aiohttp application."""
-    global db
+    global db, verify_jwt_token
     db = database
+    verify_jwt_token = jwt_verify_func
     app.router.add_post('/api/auth', api_auth)
     app.router.add_get('/api/servers', api_servers)
     app.router.add_get('/api/messages', api_messages)
