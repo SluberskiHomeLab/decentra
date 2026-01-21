@@ -2048,6 +2048,22 @@
         return String(filename).replace(/[\x00-\x1F\x7F\/\\]/g, '').substring(0, 255) || 'download';
     }
     
+    // Helper function to create attachment download link
+    function createAttachmentDownloadLink(downloadUrl, filename, fileSize) {
+        const attachmentLink = document.createElement('a');
+        attachmentLink.className = 'message-attachment';
+        attachmentLink.href = downloadUrl;
+        attachmentLink.download = sanitizeFilename(filename);
+        attachmentLink.innerHTML = `
+            <span class="message-attachment-icon">📎</span>
+            <div class="message-attachment-info">
+                <div class="message-attachment-name">${escapeHtml(filename)}</div>
+                <div class="message-attachment-size">${formatFileSize(fileSize)}</div>
+            </div>
+        `;
+        return attachmentLink;
+    }
+    
     // Load and display attachments for a message
     async function loadMessageAttachments(messageId, container) {
         const safeMessageId = String(messageId);
@@ -2095,18 +2111,7 @@
                         video.onerror = function() {
                             console.error('Failed to load video:', filename);
                             // Replace video with download link on error
-                            const errorLink = document.createElement('a');
-                            errorLink.className = 'message-attachment';
-                            errorLink.href = downloadUrl;
-                            errorLink.download = sanitizeFilename(filename);
-                            errorLink.innerHTML = `
-                                <span class="message-attachment-icon">📎</span>
-                                <div class="message-attachment-info">
-                                    <div class="message-attachment-name">${escapeHtml(filename)}</div>
-                                    <div class="message-attachment-size">${formatFileSize(attachment.file_size)}</div>
-                                </div>
-                            `;
-                            videoEmbed.replaceWith(errorLink);
+                            videoEmbed.replaceWith(createAttachmentDownloadLink(downloadUrl, filename, attachment.file_size));
                         };
                         
                         videoEmbed.appendChild(video);
@@ -2124,40 +2129,14 @@
                         img.onerror = function() {
                             console.error('Failed to load image:', filename);
                             // Replace image with download link on error
-                            const errorLink = document.createElement('a');
-                            errorLink.className = 'message-attachment';
-                            errorLink.href = downloadUrl;
-                            errorLink.download = sanitizeFilename(filename);
-                            errorLink.innerHTML = `
-                                <span class="message-attachment-icon">📎</span>
-                                <div class="message-attachment-info">
-                                    <div class="message-attachment-name">${escapeHtml(filename)}</div>
-                                    <div class="message-attachment-size">${formatFileSize(attachment.file_size)}</div>
-                                </div>
-                            `;
-                            imageEmbed.replaceWith(errorLink);
+                            imageEmbed.replaceWith(createAttachmentDownloadLink(downloadUrl, filename, attachment.file_size));
                         };
                         
                         imageEmbed.appendChild(img);
                         attachmentsDiv.appendChild(imageEmbed);
                     } else {
                         // Create download link for other files
-                        const attachmentLink = document.createElement('a');
-                        attachmentLink.className = 'message-attachment';
-                        attachmentLink.href = downloadUrl;
-                        
-                        // Sanitize filename for download attribute
-                        attachmentLink.download = sanitizeFilename(attachment.filename);
-                        
-                        attachmentLink.innerHTML = `
-                            <span class="message-attachment-icon">📎</span>
-                            <div class="message-attachment-info">
-                                <div class="message-attachment-name">${escapeHtml(attachment.filename)}</div>
-                                <div class="message-attachment-size">${formatFileSize(attachment.file_size)}</div>
-                            </div>
-                        `;
-                        
-                        attachmentsDiv.appendChild(attachmentLink);
+                        attachmentsDiv.appendChild(createAttachmentDownloadLink(downloadUrl, filename, attachment.file_size));
                     }
                 }
                 
@@ -2236,34 +2215,38 @@
         });
     }
     
+    // Helper function to validate and add files to pending attachments
+    function validateAndAddFiles(files) {
+        const validFiles = [];
+        const invalidFiles = [];
+        
+        for (const file of files) {
+            const sizeMB = file.size / (1024 * 1024);
+            if (sizeMB > maxAttachmentSizeMB) {
+                invalidFiles.push(file);
+            } else {
+                validFiles.push(file);
+            }
+        }
+        
+        if (invalidFiles.length > 0) {
+            const names = invalidFiles.map(f => `"${f.name}"`).join(', ');
+            alert(`The following file(s) exceed the maximum size of ${maxAttachmentSizeMB}MB and were not added: ${names}`);
+        }
+        
+        if (validFiles.length > 0) {
+            pendingAttachments.push(...validFiles);
+            updateAttachmentPreview();
+        }
+        
+        return validFiles.length > 0;
+    }
+    
     // File input change
     if (fileInput) {
         fileInput.addEventListener('change', (e) => {
             const files = Array.from(e.target.files);
-            
-            // Validate file sizes and separate valid/invalid files
-            const validFiles = [];
-            const invalidFiles = [];
-            
-            for (const file of files) {
-                const sizeMB = file.size / (1024 * 1024);
-                if (sizeMB > maxAttachmentSizeMB) {
-                    invalidFiles.push(file);
-                } else {
-                    validFiles.push(file);
-                }
-            }
-            
-            if (invalidFiles.length > 0) {
-                const names = invalidFiles.map(f => `"${f.name}"`).join(', ');
-                alert(`The following file(s) exceed the maximum size of ${maxAttachmentSizeMB}MB and were not added: ${names}`);
-            }
-            
-            if (validFiles.length > 0) {
-                // Add only valid files to pending attachments
-                pendingAttachments.push(...validFiles);
-                updateAttachmentPreview();
-            }
+            validateAndAddFiles(files);
             
             // Reset file input
             fileInput.value = '';
@@ -2272,6 +2255,7 @@
     
     // Drag and drop file handling
     const chatContainer = document.querySelector('.chat-container');
+    let dragCounter = 0; // Counter to track drag depth for preventing flickering
     
     if (chatContainer) {
         // Prevent default drag behaviors on the entire chat container
@@ -2283,25 +2267,36 @@
         });
         
         // Highlight drop zone when dragging files
-        ['dragenter', 'dragover'].forEach(eventName => {
-            chatContainer.addEventListener(eventName, () => {
-                if (allowFileAttachments) {
-                    chatContainer.classList.add('drag-over');
-                    // Announce to screen readers
-                    chatContainer.setAttribute('aria-label', 'Drop zone active. Drop files to attach them to your message.');
-                }
-            }, false);
-        });
+        chatContainer.addEventListener('dragenter', (e) => {
+            dragCounter++;
+            if (allowFileAttachments && dragCounter === 1) {
+                chatContainer.classList.add('drag-over');
+                // Announce to screen readers
+                chatContainer.setAttribute('aria-label', 'Drop zone active. Drop files to attach them to your message.');
+            }
+        }, false);
         
-        ['dragleave', 'drop'].forEach(eventName => {
-            chatContainer.addEventListener(eventName, () => {
+        chatContainer.addEventListener('dragover', (e) => {
+            // Keep drag-over state active
+            if (allowFileAttachments) {
+                chatContainer.classList.add('drag-over');
+            }
+        }, false);
+        
+        chatContainer.addEventListener('dragleave', (e) => {
+            dragCounter--;
+            if (dragCounter === 0) {
                 chatContainer.classList.remove('drag-over');
                 chatContainer.removeAttribute('aria-label');
-            }, false);
-        });
+            }
+        }, false);
         
         // Handle dropped files
         chatContainer.addEventListener('drop', (e) => {
+            dragCounter = 0; // Reset counter on drop
+            chatContainer.classList.remove('drag-over');
+            chatContainer.removeAttribute('aria-label');
+            
             if (!allowFileAttachments) {
                 alert('File attachments are disabled by the administrator');
                 return;
@@ -2314,29 +2309,8 @@
                 return;
             }
             
-            // Validate file sizes and separate valid/invalid files
-            const validFiles = [];
-            const invalidFiles = [];
-            
-            for (const file of files) {
-                const sizeMB = file.size / (1024 * 1024);
-                if (sizeMB > maxAttachmentSizeMB) {
-                    invalidFiles.push(file);
-                } else {
-                    validFiles.push(file);
-                }
-            }
-            
-            if (invalidFiles.length > 0) {
-                const names = invalidFiles.map(f => `"${f.name}"`).join(', ');
-                alert(`The following file(s) exceed the maximum size of ${maxAttachmentSizeMB}MB and were not added: ${names}`);
-            }
-            
-            if (validFiles.length > 0) {
-                // Add only valid files to pending attachments
-                pendingAttachments.push(...validFiles);
-                updateAttachmentPreview();
-                
+            // Use the extracted validation function
+            if (validateAndAddFiles(files)) {
                 // Focus the message input for user convenience
                 messageInput.focus();
             }
