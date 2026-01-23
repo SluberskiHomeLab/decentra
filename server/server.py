@@ -220,7 +220,7 @@ def verify_jwt_token(token):
         return None  # Invalid token
 
 
-def check_password_reset_rate_limit(identifier):
+def check_password_reset_rate_limit(identifier: str) -> bool:
     """
     Check if a password reset request should be allowed based on rate limiting.
     
@@ -238,11 +238,15 @@ def check_password_reset_rate_limit(identifier):
             timestamp for timestamp in password_reset_attempts[identifier]
             if (current_time - timestamp).total_seconds() < PASSWORD_RESET_TIME_WINDOW
         ]
+        
+        # Remove empty lists to keep memory clean
+        if not password_reset_attempts[identifier]:
+            del password_reset_attempts[identifier]
     
     # Check if rate limit is exceeded
-    if identifier in password_reset_attempts:
-        if len(password_reset_attempts[identifier]) >= PASSWORD_RESET_MAX_ATTEMPTS:
-            return False
+    attempts = password_reset_attempts.get(identifier, [])
+    if len(attempts) >= PASSWORD_RESET_MAX_ATTEMPTS:
+        return False
     
     # Record this attempt
     if identifier not in password_reset_attempts:
