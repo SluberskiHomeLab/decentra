@@ -78,6 +78,7 @@
         pendingUsername = '';
         resetToken = '';
         sessionStorage.removeItem('pendingUsername');
+        sessionStorage.removeItem('pending2FAPassword'); // Clear stored password for security
         
         signupBtn.textContent = 'Sign Up';
         signupBtn.classList.add('btn-secondary');
@@ -560,7 +561,10 @@
                         authCompleted = true;
                         // 2FA is required for this account
                         ws.close();
-                        // Store password temporarily for 2FA verification
+                        // Temporarily store password for 2FA verification (will be cleared after use)
+                        // Note: This is a security trade-off - password is needed for the next auth step
+                        // but storing in sessionStorage is vulnerable to XSS. Alternative would be
+                        // to require password re-entry, which degrades UX.
                         sessionStorage.setItem('pending2FAPassword', password);
                         // Show 2FA mode
                         switchTo2FAMode(username);

@@ -1184,15 +1184,6 @@ body::before {
     background: rgba(240, 71, 71, 1);
 }
 
-.btn-danger {
-    background: #f04747;
-    color: white;
-}
-
-.btn-danger:hover {
-    background: #d84040;
-}
-
 #message-input {
     flex: 1;
     padding: 11px;
