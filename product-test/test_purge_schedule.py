@@ -5,8 +5,6 @@ Test script to verify database purging schedule functionality
 
 import os
 import sys
-import time
-from datetime import datetime, timedelta
 
 # Set test encryption key before importing modules that need it
 if 'DECENTRA_ENCRYPTION_KEY' not in os.environ:
@@ -111,8 +109,8 @@ def test_purge_schedule():
     print("\nTest 5: Testing server message purging...")
     
     # Add messages to channels
-    db.save_message("testuser1", "Channel 1 message", "channel", f"{server_id}/{channel1_id}")
-    db.save_message("testuser1", "Channel 2 message", "channel", f"{server_id}/{channel2_id}")
+    db.save_message("testuser1", "Channel 1 message", "server", f"{server_id}/{channel1_id}")
+    db.save_message("testuser1", "Channel 2 message", "server", f"{server_id}/{channel2_id}")
     
     # Exempt channel2
     db.set_channel_exemption(server_id, channel2_id, True)

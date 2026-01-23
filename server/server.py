@@ -2905,7 +2905,16 @@ async def handler(websocket):
                         if server_id:
                             server = db.get_server(server_id)
                             if server and username == server['owner']:
-                                # Validate purge_schedule value
+                                # Validate purge_schedule type and value
+                                try:
+                                    purge_schedule = int(purge_schedule)
+                                except (TypeError, ValueError):
+                                    await websocket.send_str(json.dumps({
+                                        'type': 'error',
+                                        'message': 'Invalid purge schedule type'
+                                    }))
+                                    continue
+                                
                                 valid_schedules = [0, 7, 30, 90, 180, 365]
                                 if purge_schedule not in valid_schedules:
                                     await websocket.send_str(json.dumps({

@@ -1298,7 +1298,7 @@ class Database:
             placeholders = ','.join(['%s'] * len(context_ids_to_purge))
             cursor.execute(f'''
                 DELETE FROM messages
-                WHERE context_type = 'channel' 
+                WHERE context_type = 'server' 
                 AND context_id IN ({placeholders})
                 AND timestamp < NOW() - make_interval(days => %s)
             ''', (*context_ids_to_purge, days))
