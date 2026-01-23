@@ -3073,11 +3073,21 @@
         
         const purgeSchedule = parseInt(document.getElementById('server-purge-schedule').value, 10);
         
+        // Validate purge schedule value
+        const validValues = [0, 7, 30, 90, 180, 365];
+        if (!validValues.includes(purgeSchedule)) {
+            alert('Invalid purge schedule value');
+            return;
+        }
+        
         // Get exempted channels
         const exemptedChannels = [];
         const checkboxes = document.querySelectorAll('#channel-exemptions-list input[type="checkbox"]:checked');
         checkboxes.forEach(checkbox => {
-            exemptedChannels.push(checkbox.dataset.channelId);
+            const channelId = checkbox.dataset.channelId;
+            if (channelId) {  // Only add if channelId exists
+                exemptedChannels.push(channelId);
+            }
         });
         
         ws.send(JSON.stringify({

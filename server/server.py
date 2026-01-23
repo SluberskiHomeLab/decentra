@@ -82,6 +82,10 @@ messages = []
 MAX_HISTORY = 100
 MAX_AVATAR_SIZE = 2 * 1024 * 1024  # 2MB
 
+# Periodic cleanup intervals (in seconds)
+CLEANUP_INTERVAL_HOURLY = 3600  # 1 hour
+CLEANUP_INTERVAL_DAILY = 86400  # 24 hours
+
 # Runtime-only data structures (not persisted)
 # Store voice calls: {call_id: {participants: set(), type: 'direct'|'channel', server_id: str, channel_id: str}}
 voice_calls = {}
@@ -3158,7 +3162,7 @@ async def cleanup_verification_codes_periodically():
     """Periodic task to clean up expired verification codes."""
     while True:
         try:
-            await asyncio.sleep(3600)  # Run every hour
+            await asyncio.sleep(CLEANUP_INTERVAL_HOURLY)  # Run every hour
             db.cleanup_expired_verification_codes()
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Cleaned up expired verification codes")
         except Exception as e:
@@ -3169,7 +3173,7 @@ async def cleanup_old_attachments_periodically():
     """Periodic task to clean up old attachments based on retention policy."""
     while True:
         try:
-            await asyncio.sleep(86400)  # Run once per day
+            await asyncio.sleep(CLEANUP_INTERVAL_DAILY)  # Run once per day
             admin_settings = db.get_admin_settings()
             retention_days = admin_settings.get('attachment_retention_days', 0)
             
@@ -3186,7 +3190,7 @@ async def cleanup_old_messages_periodically():
     """Periodic task to clean up old messages based on purge schedules."""
     while True:
         try:
-            await asyncio.sleep(86400)  # Run once per day
+            await asyncio.sleep(CLEANUP_INTERVAL_DAILY)  # Run once per day
             
             # Purge old DM messages
             admin_settings = db.get_admin_settings()

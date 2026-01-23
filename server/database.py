@@ -1290,6 +1290,8 @@ class Database:
                 return 0
             
             # Delete messages from non-exempted channels
+            # Note: Using f-string for placeholders only (safe - not for user data)
+            # The actual channel IDs are passed as parameterized values
             placeholders = ','.join(['%s'] * len(channels_to_purge))
             cursor.execute(f'''
                 DELETE FROM messages
