@@ -78,6 +78,14 @@ JWT_EXPIRATION_HOURS = 24  # Token expires after 24 hours
 # For production environments with multiple server instances, consider using Redis or a database table.
 pending_signups = {}
 
+# Rate limiting for password reset requests (in-memory)
+# Format: {identifier: [timestamp1, timestamp2, ...]}
+# NOTE: This is an in-memory store and will be cleared on server restart.
+# For production environments with multiple server instances, consider using Redis or a database table.
+password_reset_attempts = {}
+PASSWORD_RESET_MAX_ATTEMPTS = 3  # Maximum attempts per time window
+PASSWORD_RESET_TIME_WINDOW = 3600  # Time window in seconds (1 hour)
+
 # Store connected clients: {websocket: username}
 clients = {}
 # Store message history (deprecated - now per server/channel)
@@ -210,6 +218,38 @@ def verify_jwt_token(token):
         return None  # Token has expired
     except jwt.InvalidTokenError:
         return None  # Invalid token
+
+
+def check_password_reset_rate_limit(identifier):
+    """
+    Check if a password reset request should be allowed based on rate limiting.
+    
+    Args:
+        identifier: Username or email requesting password reset
+        
+    Returns:
+        True if request is allowed, False if rate limit exceeded
+    """
+    current_time = datetime.now(timezone.utc)
+    
+    # Clean up old attempts outside the time window
+    if identifier in password_reset_attempts:
+        password_reset_attempts[identifier] = [
+            timestamp for timestamp in password_reset_attempts[identifier]
+            if (current_time - timestamp).total_seconds() < PASSWORD_RESET_TIME_WINDOW
+        ]
+    
+    # Check if rate limit is exceeded
+    if identifier in password_reset_attempts:
+        if len(password_reset_attempts[identifier]) >= PASSWORD_RESET_MAX_ATTEMPTS:
+            return False
+    
+    # Record this attempt
+    if identifier not in password_reset_attempts:
+        password_reset_attempts[identifier] = []
+    password_reset_attempts[identifier].append(current_time)
+    
+    return True
 
 
 def is_valid_email(email):
@@ -930,6 +970,15 @@ async def handler(websocket):
                         'type': 'auth_error',
                         'message': 'Username or email is required'
                     }))
+                    continue
+                
+                # Check rate limiting to prevent abuse
+                if not check_password_reset_rate_limit(identifier):
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'Too many password reset requests. Please try again later.'
+                    }))
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Rate limit exceeded for password reset: {identifier}")
                     continue
                 
                 # Try to find user by username or email
