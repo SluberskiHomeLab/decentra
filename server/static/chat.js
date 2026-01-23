@@ -2166,8 +2166,9 @@
         }
         
         const message = messageInput.value.trim();
-        if (!message || !authenticated) {
-            console.log('Cannot send message - empty or not authenticated');
+        // Allow sending if there's a message OR if there are attachments
+        if ((!message && pendingAttachments.length === 0) || !authenticated) {
+            console.log('Cannot send message - empty (no text or attachments) or not authenticated');
             return;
         }
         
@@ -2190,7 +2191,8 @@
         
         // Store attachments in queue before sending (to avoid race conditions)
         // Use timestamp + random component + message for uniqueness
-        const messageKey = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}_${message}`;
+        // Use 'attachment_only' as fallback when message is empty
+        const messageKey = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}_${message || 'attachment_only'}`;
         if (pendingAttachments.length > 0) {
             attachmentUploadQueue.set(messageKey, [...pendingAttachments]);
             console.log(`Queued ${pendingAttachments.length} attachments for message`);
@@ -2389,6 +2391,7 @@
             return;
         }
         
+        let uploadedCount = 0;
         for (const file of attachments) {
             try {
                 // Note: Token is sent in form body rather than Authorization header
@@ -2410,12 +2413,38 @@
                     alert(`Failed to upload "${file.name}": ${result.error}`);
                 } else {
                     console.log(`Uploaded attachment: ${file.name}`);
-                    // Refresh the message to show the attachment
-                    // We could reload the message here, or wait for a broadcast update
+                    uploadedCount++;
                 }
             } catch (error) {
                 console.error('Error uploading attachment:', error);
                 alert(`Error uploading "${file.name}": ${error.message}`);
+            }
+        }
+        
+        // Refresh the message to show uploaded attachments
+        if (uploadedCount > 0) {
+            // Wait for the message element to appear in the DOM
+            // Try multiple times with increasing delays to handle fast uploads
+            let messageDiv = null;
+            for (let attempt = 0; attempt < 5; attempt++) {
+                messageDiv = document.querySelector(`[data-message-id="${messageId}"]`);
+                if (messageDiv) break;
+                await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1)));
+            }
+            
+            if (messageDiv) {
+                const contentWrapper = messageDiv.querySelector('.message-content-wrapper');
+                if (contentWrapper) {
+                    // Remove existing attachments div if present
+                    const existingAttachments = contentWrapper.querySelector('.message-attachments');
+                    if (existingAttachments) {
+                        existingAttachments.remove();
+                    }
+                    // Reload attachments to display the newly uploaded ones
+                    await loadMessageAttachments(messageId, contentWrapper);
+                }
+            } else {
+                console.warn(`Message element not found for ID ${messageId}, attachments may not display until refresh`);
             }
         }
     }
