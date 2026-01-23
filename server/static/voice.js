@@ -66,6 +66,16 @@ class VoiceChat {
             console.log('Requesting microphone access with constraints:', constraints);
             this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
             console.log('Microphone access granted, stream:', this.localStream);
+            
+            // Apply PTT state if enabled - mute by default in PTT mode
+            if (this.isPushToTalkEnabled) {
+                this.isMuted = true;
+                this.localStream.getAudioTracks().forEach(track => {
+                    track.enabled = false;
+                });
+                console.log('PTT enabled: starting muted');
+            }
+            
             return true;
         } catch (error) {
             console.error('Error accessing microphone:', error);
@@ -1028,6 +1038,9 @@ class VoiceChat {
         localStorage.setItem('pushToTalkEnabled', enabled);
 
         // Whenever toggling PTT, clear any stale key-pressed state
+        this.pushToTalkKeyPressed = false;
+        
+        // Reset key pressed state when toggling PTT
         this.pushToTalkKeyPressed = false;
         
         // If disabling PTT and we're in a call, unmute if we were PTT-muted

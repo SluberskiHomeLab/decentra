@@ -4602,23 +4602,19 @@
         
         // Handle push-to-talk when not recording
         // handlePushToTalkKeyDown checks internally if PTT is enabled and user is in a call
-        if (voiceChat && voiceChat.handlePushToTalkKeyDown(e)) {
-            // Prevent default action if message input is not focused
-            // (allows PTT key to work in chat without triggering other actions)
-            if (document.activeElement !== messageInput) {
-                e.preventDefault();
-            }
+        // Don't trigger PTT when typing in message input
+        if (voiceChat && document.activeElement !== messageInput && voiceChat.handlePushToTalkKeyDown(e)) {
+            // Prevent default action to avoid key triggering other actions
+            e.preventDefault();
         }
     });
     
     // Global keyup handler for push-to-talk
     document.addEventListener('keyup', (e) => {
-        if (!isRecordingKeybind && voiceChat) {
+        if (!isRecordingKeybind && voiceChat && document.activeElement !== messageInput) {
             if (voiceChat.handlePushToTalkKeyUp(e)) {
-                // Prevent default action if message input is not focused
-                if (document.activeElement !== messageInput) {
-                    e.preventDefault();
-                }
+                // Prevent default action
+                e.preventDefault();
             }
         }
     });
