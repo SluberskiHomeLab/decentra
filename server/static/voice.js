@@ -23,6 +23,15 @@ class VoiceChat {
         this.remoteShowingScreen = new Map(); // Track which peers are currently showing screen (vs camera)
         this.showingScreen = true; // Default/preferred source when both video and screenshare are active (true = screen, false = camera)
         
+        // Push-to-talk settings
+        this.isPushToTalkEnabled = false;
+        this.pushToTalkKey = 'Space'; // Default key
+        this.pushToTalkKeyPressed = false;
+        this.pttKeyDisplayName = 'Space'; // Display name for the key
+        
+        // Load push-to-talk settings from localStorage
+        this.loadPushToTalkSettings();
+        
         // Video configuration constants
         this.VIDEO_WIDTH = 640;
         this.VIDEO_HEIGHT = 480;
@@ -57,6 +66,16 @@ class VoiceChat {
             console.log('Requesting microphone access with constraints:', constraints);
             this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
             console.log('Microphone access granted, stream:', this.localStream);
+            
+            // Apply PTT state if enabled - mute by default in PTT mode
+            if (this.isPushToTalkEnabled) {
+                this.isMuted = true;
+                this.localStream.getAudioTracks().forEach(track => {
+                    track.enabled = false;
+                });
+                console.log('PTT enabled: starting muted');
+            }
+            
             return true;
         } catch (error) {
             console.error('Error accessing microphone:', error);
@@ -954,6 +973,12 @@ class VoiceChat {
     }
     
     toggleMute() {
+        // Prevent toggle while actively transmitting in PTT mode
+        // (User should release PTT key before using manual mute)
+        if (this.isPushToTalkEnabled && this.pushToTalkKeyPressed) {
+            return this.isMuted;
+        }
+        
         if (this.localStream) {
             this.isMuted = !this.isMuted;
             this.localStream.getAudioTracks().forEach(track => {
@@ -987,5 +1012,125 @@ class VoiceChat {
             // User left, close connection
             this.handlePeerDisconnected(username);
         }
+    }
+    
+    // Push-to-talk methods
+    loadPushToTalkSettings() {
+        const pttEnabled = localStorage.getItem('pushToTalkEnabled');
+        this.isPushToTalkEnabled = pttEnabled === 'true';
+        
+        const pttKey = localStorage.getItem('pushToTalkKey');
+        if (pttKey) {
+            this.pushToTalkKey = pttKey;
+        }
+        
+        const pttKeyDisplay = localStorage.getItem('pushToTalkKeyDisplay');
+        if (pttKeyDisplay) {
+            this.pttKeyDisplayName = pttKeyDisplay;
+        }
+
+        // Ensure push-to-talk key state starts in a non-pressed state
+        this.pushToTalkKeyPressed = false;
+    }
+    
+    setPushToTalkEnabled(enabled) {
+        this.isPushToTalkEnabled = enabled;
+        localStorage.setItem('pushToTalkEnabled', enabled);
+
+        // Reset key pressed state when toggling PTT to prevent stuck state
+        this.pushToTalkKeyPressed = false;
+        
+        // If disabling PTT and we're in a call, unmute if we were PTT-muted
+        if (!enabled && this.localStream && this.isMuted) {
+            this.isMuted = false;
+            this.localStream.getAudioTracks().forEach(track => {
+                track.enabled = true;
+            });
+            
+            // Notify server
+            this.ws.send(JSON.stringify({
+                type: 'voice_mute',
+                muted: false
+            }));
+        }
+        
+        // If enabling PTT, mute by default
+        if (enabled && this.localStream && !this.isMuted) {
+            this.isMuted = true;
+            this.localStream.getAudioTracks().forEach(track => {
+                track.enabled = false;
+            });
+            
+            // Notify server
+            this.ws.send(JSON.stringify({
+                type: 'voice_mute',
+                muted: true
+            }));
+        }
+    }
+    
+    setPushToTalkKey(key, displayName) {
+        this.pushToTalkKey = key;
+        this.pttKeyDisplayName = displayName || key;
+        localStorage.setItem('pushToTalkKey', key);
+        localStorage.setItem('pushToTalkKeyDisplay', displayName || key);
+    }
+    
+    handlePushToTalkKeyDown(event) {
+        // Only handle if PTT is enabled and we're in a voice call
+        if (!this.isPushToTalkEnabled || !this.localStream) {
+            return false;
+        }
+        
+        // Check if the pressed key matches our PTT key
+        if (event.code === this.pushToTalkKey || event.key === this.pushToTalkKey) {
+            // Prevent key from being used elsewhere (e.g., typing space in chat)
+            if (!event.repeat) {
+                this.pushToTalkKeyPressed = true;
+                
+                // Unmute when PTT key is pressed
+                this.isMuted = false;
+                this.localStream.getAudioTracks().forEach(track => {
+                    track.enabled = true;
+                });
+                
+                // Notify server
+                this.ws.send(JSON.stringify({
+                    type: 'voice_mute',
+                    muted: false
+                }));
+            }
+            return true; // Indicate that we handled the key
+        }
+        
+        return false;
+    }
+    
+    handlePushToTalkKeyUp(event) {
+        // Only handle if PTT is enabled and we're in a voice call
+        if (!this.isPushToTalkEnabled || !this.localStream) {
+            return false;
+        }
+        
+        // Check if the released key matches our PTT key
+        if (event.code === this.pushToTalkKey || event.key === this.pushToTalkKey) {
+            this.pushToTalkKeyPressed = false;
+            
+            // Always mute when PTT key is released (should always be muted in PTT mode)
+            this.isMuted = true;
+            this.localStream.getAudioTracks().forEach(track => {
+                track.enabled = false;
+            });
+            
+            // Notify server
+            this.ws.send(JSON.stringify({
+                type: 'voice_mute',
+                muted: true
+            }));
+            
+            return true; // Indicate that we handled the key
+        }
+        
+        return false;
     }
 }

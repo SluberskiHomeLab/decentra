@@ -52,6 +52,7 @@
                     <button id="menu-profile-btn" class="menu-item">Profile Settings</button>
                     <button id="menu-avatar-btn" class="menu-item">Set Avatar</button>
                     <button id="menu-notifications-btn" class="menu-item">Notification Settings</button>
+                    <button id="menu-voice-settings-btn" class="menu-item">Voice Settings</button>
                     <button id="menu-friends-btn" class="menu-item">Friends</button>
                     <button id="menu-create-server-btn" class="menu-item">Create Server</button>
                     <button id="menu-join-server-btn" class="menu-item">Join Server</button>
@@ -585,6 +586,36 @@
             </div>
             
             <button id="close-notification-settings-modal" class="btn btn-secondary">Close</button>
+        </div>
+    </div>
+    
+    <!-- Voice Settings Modal -->
+    <div id="voice-settings-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Voice Settings</h3>
+            
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" id="enable-push-to-talk">
+                    Enable Push-to-Talk
+                </label>
+                <p style="font-size: 12px; color: #b9bbbe; margin-top: 5px;">
+                    Hold a key to transmit voice instead of using the mute button
+                </p>
+            </div>
+            
+            <div class="form-group" id="ptt-keybind-group" style="display: none;">
+                <label for="ptt-keybind-display">Push-to-Talk Key</label>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <input type="text" id="ptt-keybind-display" class="form-input" readonly style="flex: 1; cursor: pointer; background-color: #40444b;" placeholder="Press 'Change Key' to set keybind">
+                    <button id="set-ptt-keybind-btn" class="btn btn-small">Change Key</button>
+                </div>
+                <p style="font-size: 12px; color: #b9bbbe; margin-top: 5px;">
+                    Click "Change Key" then press any key to set as your push-to-talk key
+                </p>
+            </div>
+            
+            <button id="close-voice-settings-modal" class="btn btn-secondary">Close</button>
         </div>
     </div>
     
