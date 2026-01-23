@@ -2905,16 +2905,29 @@ async def handler(websocket):
                         if server_id:
                             server = db.get_server(server_id)
                             if server and username == server['owner']:
-                                # Update purge schedule
-                                db.update_server_settings(server_id, purge_schedule)
+                                # Validate purge_schedule value
+                                valid_schedules = [0, 7, 30, 90, 180, 365]
+                                if purge_schedule not in valid_schedules:
+                                    await websocket.send_str(json.dumps({
+                                        'type': 'error',
+                                        'message': 'Invalid purge schedule value'
+                                    }))
+                                    continue
                                 
                                 # Get all channels for this server
                                 channels = db.get_server_channels(server_id)
+                                valid_channel_ids = {channel['channel_id'] for channel in channels}
+                                
+                                # Validate exempted_channels - only allow channels that belong to this server
+                                validated_exemptions = [ch_id for ch_id in exempted_channels if ch_id in valid_channel_ids]
+                                
+                                # Update purge schedule
+                                db.update_server_settings(server_id, purge_schedule)
                                 
                                 # Update exemptions for each channel
                                 for channel in channels:
                                     channel_id = channel['channel_id']
-                                    is_exempted = channel_id in exempted_channels
+                                    is_exempted = channel_id in validated_exemptions
                                     db.set_channel_exemption(server_id, channel_id, is_exempted)
                                 
                                 await websocket.send_str(json.dumps({
