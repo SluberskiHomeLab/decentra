@@ -885,11 +885,15 @@
                 document.getElementById('qr-code-img').src = data.qr_code;
                 document.getElementById('manual-secret').textContent = data.secret;
                 
-                // Display backup codes
+                // Display backup codes (using textContent for security)
                 const backupCodesContainer = document.getElementById('backup-codes-container');
-                backupCodesContainer.innerHTML = data.backup_codes.map((code, i) => 
-                    `<div style="margin: 5px 0;">${i + 1}. ${code}</div>`
-                ).join('');
+                backupCodesContainer.innerHTML = ''; // Clear existing content
+                data.backup_codes.forEach((code, i) => {
+                    const codeDiv = document.createElement('div');
+                    codeDiv.style.margin = '5px 0';
+                    codeDiv.textContent = `${i + 1}. ${code}`;
+                    backupCodesContainer.appendChild(codeDiv);
+                });
                 break;
             
             case '2fa_enabled':

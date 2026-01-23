@@ -180,15 +180,6 @@
         document.getElementById('totp-code').focus();
     }
     
-    function resetToLogin() {
-        document.getElementById('email').required = false;
-        document.getElementById('verification-code').required = false;
-        document.getElementById('totp-code').required = false;
-        document.getElementById('reset-email').required = false;
-        document.getElementById('new-password').required = false;
-        document.getElementById('password').required = true;
-    }
-    
     function switchToVerificationMode(username) {
         isVerificationMode = true;
         pendingUsername = username;
@@ -340,8 +331,13 @@
             loginBtn.disabled = true;
             loginBtn.textContent = 'Verifying...';
             
+            // Get the password that was used before switching to 2FA mode
+            const savedPassword = sessionStorage.getItem('pending2FAPassword') || '';
+            
             try {
-                await authenticateAndRedirect('login', pendingUsername, document.getElementById('password').value, null, null, null, totpCode);
+                await authenticateAndRedirect('login', pendingUsername, savedPassword, null, null, null, totpCode);
+                // Clear the saved password after successful login
+                sessionStorage.removeItem('pending2FAPassword');
             } catch (error) {
                 showError(error.message || '2FA verification failed');
                 loginBtn.disabled = false;
@@ -564,6 +560,8 @@
                         authCompleted = true;
                         // 2FA is required for this account
                         ws.close();
+                        // Store password temporarily for 2FA verification
+                        sessionStorage.setItem('pending2FAPassword', password);
                         // Show 2FA mode
                         switchTo2FAMode(username);
                         const baseMessage = data.message || '2FA required';
