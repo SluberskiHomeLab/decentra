@@ -523,6 +523,41 @@ class Database:
                         END $$;
                     ''')
                     
+                    # Add DM purge schedule column if it doesn't exist (migration)
+                    cursor.execute('''
+                        DO $$ 
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'admin_settings' AND column_name = 'dm_purge_schedule'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN dm_purge_schedule INTEGER DEFAULT 0;
+                            END IF;
+                        END $$;
+                    ''')
+                    
+                    # Server settings table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS server_settings (
+                            server_id VARCHAR(255) PRIMARY KEY,
+                            purge_schedule INTEGER DEFAULT 0,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Channel purge exemptions table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS channel_purge_exemptions (
+                            server_id VARCHAR(255) NOT NULL,
+                            channel_id VARCHAR(255) NOT NULL,
+                            PRIMARY KEY (server_id, channel_id),
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (channel_id) REFERENCES channels(channel_id) ON DELETE CASCADE
+                        )
+                    ''')
+                    
                     conn.commit()
                 
                 # If we get here, connection was successful
@@ -1221,6 +1256,107 @@ class Database:
                 WHERE uploaded_at < NOW() - make_interval(days => %s)
             ''', (days,))
             return cursor.rowcount
+    
+    def purge_old_dm_messages(self, days: int) -> int:
+        """Purge DM messages older than specified days. Returns count of deleted messages."""
+        if days <= 0:
+            return 0
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                DELETE FROM messages
+                WHERE context_type = 'dm' 
+                AND timestamp < NOW() - make_interval(days => %s)
+            ''', (days,))
+            return cursor.rowcount
+    
+    def purge_old_server_messages(self, server_id: str, days: int, exempted_channels: List[str]) -> int:
+        """Purge server messages older than specified days, excluding exempted channels. 
+        Returns count of deleted messages."""
+        if days <= 0:
+            return 0
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            # Get all channels for this server
+            cursor.execute('''
+                SELECT channel_id FROM channels WHERE server_id = %s
+            ''', (server_id,))
+            all_channels = [row['channel_id'] for row in cursor.fetchall()]
+            
+            # Filter out exempted channels
+            channels_to_purge = [ch for ch in all_channels if ch not in exempted_channels]
+            
+            if not channels_to_purge:
+                return 0
+            
+            # Delete messages from non-exempted channels
+            placeholders = ','.join(['%s'] * len(channels_to_purge))
+            cursor.execute(f'''
+                DELETE FROM messages
+                WHERE context_type = 'channel' 
+                AND context_id IN ({placeholders})
+                AND timestamp < NOW() - make_interval(days => %s)
+            ''', (*channels_to_purge, days))
+            return cursor.rowcount
+    
+    # Server settings operations
+    def get_server_settings(self, server_id: str) -> Optional[Dict]:
+        """Get server-specific settings."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM server_settings WHERE server_id = %s
+            ''', (server_id,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+    
+    def update_server_settings(self, server_id: str, purge_schedule: int):
+        """Update server-specific settings."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO server_settings (server_id, purge_schedule, updated_at)
+                VALUES (%s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (server_id) 
+                DO UPDATE SET purge_schedule = EXCLUDED.purge_schedule, updated_at = CURRENT_TIMESTAMP
+            ''', (server_id, purge_schedule))
+    
+    def get_channel_exemptions(self, server_id: str) -> List[str]:
+        """Get list of exempted channel IDs for a server."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT channel_id FROM channel_purge_exemptions WHERE server_id = %s
+            ''', (server_id,))
+            return [row['channel_id'] for row in cursor.fetchall()]
+    
+    def set_channel_exemption(self, server_id: str, channel_id: str, exempted: bool):
+        """Set channel exemption status."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if exempted:
+                cursor.execute('''
+                    INSERT INTO channel_purge_exemptions (server_id, channel_id)
+                    VALUES (%s, %s)
+                    ON CONFLICT DO NOTHING
+                ''', (server_id, channel_id))
+            else:
+                cursor.execute('''
+                    DELETE FROM channel_purge_exemptions
+                    WHERE server_id = %s AND channel_id = %s
+                ''', (server_id, channel_id))
+    
+    def get_all_servers_with_purge_schedule(self) -> List[Dict]:
+        """Get all servers that have a purge schedule configured."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT server_id, purge_schedule FROM server_settings
+                WHERE purge_schedule > 0
+            ''')
+            return [dict(row) for row in cursor.fetchall()]
     
     # Friendship operations
     def add_friend_request(self, requester: str, target: str) -> bool:

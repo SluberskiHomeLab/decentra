@@ -2876,6 +2876,55 @@ async def handler(websocket):
                                 
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} removed reaction {emoji} from message {message_id}")
                     
+                    # Server purge settings handlers
+                    elif data.get('type') == 'get_server_purge_settings':
+                        server_id = data.get('server_id', '')
+                        
+                        if server_id:
+                            server = db.get_server(server_id)
+                            if server and username == server['owner']:
+                                settings = db.get_server_settings(server_id)
+                                exemptions = db.get_channel_exemptions(server_id)
+                                
+                                await websocket.send_str(json.dumps({
+                                    'type': 'server_purge_settings',
+                                    'server_id': server_id,
+                                    'purge_schedule': settings['purge_schedule'] if settings else 0,
+                                    'exempted_channels': exemptions
+                                }))
+                    
+                    elif data.get('type') == 'update_server_purge_settings':
+                        server_id = data.get('server_id', '')
+                        purge_schedule = data.get('purge_schedule', 0)
+                        exempted_channels = data.get('exempted_channels', [])
+                        
+                        if server_id:
+                            server = db.get_server(server_id)
+                            if server and username == server['owner']:
+                                # Update purge schedule
+                                db.update_server_settings(server_id, purge_schedule)
+                                
+                                # Get all channels for this server
+                                channels = db.get_server_channels(server_id)
+                                
+                                # Update exemptions for each channel
+                                for channel in channels:
+                                    channel_id = channel['channel_id']
+                                    is_exempted = channel_id in exempted_channels
+                                    db.set_channel_exemption(server_id, channel_id, is_exempted)
+                                
+                                await websocket.send_str(json.dumps({
+                                    'type': 'server_purge_settings_updated',
+                                    'server_id': server_id,
+                                    'purge_schedule': purge_schedule
+                                }))
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} updated purge settings for server {server_id}")
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Only the server owner can update purge settings'
+                                }))
+                    
                     elif data.get('type') == 'start_voice_call':
                         # Direct voice call with a friend
                         friend_username = data.get('username', '').strip()
@@ -3133,6 +3182,34 @@ async def cleanup_old_attachments_periodically():
             print(f"Error in attachment cleanup task: {e}")
 
 
+async def cleanup_old_messages_periodically():
+    """Periodic task to clean up old messages based on purge schedules."""
+    while True:
+        try:
+            await asyncio.sleep(86400)  # Run once per day
+            
+            # Purge old DM messages
+            admin_settings = db.get_admin_settings()
+            dm_purge_days = admin_settings.get('dm_purge_schedule', 0)
+            if dm_purge_days > 0:
+                deleted_count = db.purge_old_dm_messages(dm_purge_days)
+                if deleted_count > 0:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Purged {deleted_count} DM messages (older than {dm_purge_days} days)")
+            
+            # Purge old server messages
+            servers_with_schedule = db.get_all_servers_with_purge_schedule()
+            for server_settings in servers_with_schedule:
+                server_id = server_settings['server_id']
+                purge_days = server_settings['purge_schedule']
+                exempted_channels = db.get_channel_exemptions(server_id)
+                
+                deleted_count = db.purge_old_server_messages(server_id, purge_days, exempted_channels)
+                if deleted_count > 0:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Purged {deleted_count} messages from server {server_id} (older than {purge_days} days)")
+        except Exception as e:
+            print(f"Error in message purge task: {e}")
+
+
 async def main():
     """Start the HTTPS and WebSocket server."""
     print("Decentra Chat Server")
@@ -3169,6 +3246,7 @@ async def main():
     # Start periodic cleanup tasks
     asyncio.create_task(cleanup_verification_codes_periodically())
     asyncio.create_task(cleanup_old_attachments_periodically())
+    asyncio.create_task(cleanup_old_messages_periodically())
     
     print("Server started successfully!")
     print("Access the web client at https://localhost:8765")
