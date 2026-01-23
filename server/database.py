@@ -906,20 +906,26 @@ class Database:
                 result = cursor.fetchone()
                 if not result:
                     return False
-                
-                backup_codes = result['backup_codes'].split(',') if result['backup_codes'] else []
+
+                original_backup_codes = result['backup_codes'] or ''
+                backup_codes = original_backup_codes.split(',') if original_backup_codes else []
                 if code not in backup_codes:
                     return False
-                
+
                 # Remove the used code
                 backup_codes.remove(code)
                 new_codes = ','.join(backup_codes)
-                
+
+                # Optimistic concurrency control: only update if backup_codes
+                # still match the original value we read.
                 cursor.execute('''
                     UPDATE user_2fa 
                     SET backup_codes = %s
-                    WHERE username = %s
-                ''', (new_codes, username))
+                    WHERE username = %s AND backup_codes = %s
+                ''', (new_codes, username, original_backup_codes))
+                if cursor.rowcount == 0:
+                    # Another concurrent operation likely modified backup_codes
+                    return False
                 return True
         except Exception:
             return False
