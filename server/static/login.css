@@ -183,6 +183,24 @@ button:active {
     text-decoration: underline;
 }
 
+.error-message {
+    background: rgba(240, 71, 71, 0.1);
+    border: 1px solid #f04747;
+    color: #f04747;
+    padding: 10px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    font-size: 14px;
+    text-align: center;
+    position: relative;
+    z-index: 1;
+    animation: slideIn 0.3s ease;
+}
+
+.hidden {
+    display: none !important;
+}
+
 .error {
     background: rgba(240, 71, 71, 0.1);
     border: 1px solid #f04747;

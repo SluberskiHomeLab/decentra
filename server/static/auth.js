@@ -6,15 +6,31 @@
     const emailGroup = document.getElementById('email-group');
     const inviteGroup = document.getElementById('invite-group');
     const verificationGroup = document.getElementById('verification-group');
+    const totpGroup = document.getElementById('totp-group');
+    const passwordGroup = document.getElementById('password-group');
+    const resetEmailGroup = document.getElementById('reset-email-group');
+    const newPasswordGroup = document.getElementById('new-password-group');
+    const forgotPasswordLink = document.getElementById('forgot-password-link');
+    const forgotPasswordBtn = document.getElementById('forgot-password-btn');
     const errorMessage = document.getElementById('error-message');
     
     let isSignupMode = false;
     let isVerificationMode = false;
+    let isPasswordResetMode = false;
+    let isPasswordResetCompletionMode = false;
+    let is2FAMode = false;
     let pendingUsername = '';
+    let resetToken = '';
     
-    // Check if we need to show verification mode (redirected from chat.js)
+    // Check URL parameters for password reset token or verification
     const urlParams = new URLSearchParams(window.location.search);
-    if (urlParams.get('verify') === 'true') {
+    const resetTokenParam = urlParams.get('reset_token');
+    
+    if (resetTokenParam) {
+        // User clicked on password reset link from email
+        resetToken = resetTokenParam;
+        switchToPasswordResetCompletionMode();
+    } else if (urlParams.get('verify') === 'true') {
         const storedUsername = sessionStorage.getItem('pendingUsername');
         if (storedUsername) {
             document.getElementById('username').value = storedUsername;
@@ -22,14 +38,16 @@
         }
     }
     
+    // Forgot password button click handler
+    forgotPasswordBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        switchToPasswordResetMode();
+    });
+    
     // Toggle between login and signup
     signupBtn.addEventListener('click', () => {
-        if (isVerificationMode) {
-            // Reset from verification mode
-            isVerificationMode = false;
-            isSignupMode = false;
-            pendingUsername = '';
-            sessionStorage.removeItem('pendingUsername');
+        if (isVerificationMode || isPasswordResetMode || isPasswordResetCompletionMode || is2FAMode) {
+            // Reset from any special mode
             resetToLogin();
             return;
         }
@@ -52,6 +70,15 @@
     });
     
     function resetToLogin() {
+        isSignupMode = false;
+        isVerificationMode = false;
+        isPasswordResetMode = false;
+        isPasswordResetCompletionMode = false;
+        is2FAMode = false;
+        pendingUsername = '';
+        resetToken = '';
+        sessionStorage.removeItem('pendingUsername');
+        
         signupBtn.textContent = 'Sign Up';
         signupBtn.classList.add('btn-secondary');
         signupBtn.classList.remove('btn-primary');
@@ -59,12 +86,107 @@
         emailGroup.style.display = 'none';
         inviteGroup.style.display = 'none';
         verificationGroup.style.display = 'none';
+        totpGroup.style.display = 'none';
+        resetEmailGroup.style.display = 'none';
+        newPasswordGroup.style.display = 'none';
+        passwordGroup.style.display = 'block';
+        forgotPasswordLink.style.display = 'block';
         document.getElementById('email').required = false;
         document.getElementById('verification-code').required = false;
+        document.getElementById('totp-code').required = false;
+        document.getElementById('reset-email').required = false;
+        document.getElementById('new-password').required = false;
+        document.getElementById('password').required = true;
+    }
+    
+    function switchToPasswordResetMode() {
+        isPasswordResetMode = true;
+        isSignupMode = false;
+        isVerificationMode = false;
+        isPasswordResetCompletionMode = false;
+        is2FAMode = false;
         
-        // Show password field
-        const passwordGroup = document.getElementById('password').parentElement;
-        passwordGroup.style.display = 'block';
+        loginBtn.textContent = 'Send Reset Link';
+        signupBtn.textContent = 'Back to Login';
+        signupBtn.classList.add('btn-secondary');
+        signupBtn.classList.remove('btn-primary');
+        
+        // Show reset email field, hide others
+        resetEmailGroup.style.display = 'block';
+        passwordGroup.style.display = 'none';
+        emailGroup.style.display = 'none';
+        inviteGroup.style.display = 'none';
+        verificationGroup.style.display = 'none';
+        totpGroup.style.display = 'none';
+        newPasswordGroup.style.display = 'none';
+        forgotPasswordLink.style.display = 'none';
+        
+        document.getElementById('reset-email').required = true;
+        document.getElementById('password').required = false;
+        document.getElementById('reset-email').focus();
+    }
+    
+    function switchToPasswordResetCompletionMode() {
+        isPasswordResetCompletionMode = true;
+        isPasswordResetMode = false;
+        isSignupMode = false;
+        isVerificationMode = false;
+        is2FAMode = false;
+        
+        loginBtn.textContent = 'Reset Password';
+        signupBtn.textContent = 'Cancel';
+        signupBtn.classList.add('btn-secondary');
+        signupBtn.classList.remove('btn-primary');
+        
+        // Validate the token first
+        validateResetToken(resetToken);
+        
+        // Show new password field, hide others
+        newPasswordGroup.style.display = 'block';
+        passwordGroup.style.display = 'none';
+        resetEmailGroup.style.display = 'none';
+        emailGroup.style.display = 'none';
+        inviteGroup.style.display = 'none';
+        verificationGroup.style.display = 'none';
+        totpGroup.style.display = 'none';
+        forgotPasswordLink.style.display = 'none';
+        
+        document.getElementById('new-password').required = true;
+        document.getElementById('password').required = false;
+        document.getElementById('new-password').focus();
+    }
+    
+    function switchTo2FAMode(username) {
+        is2FAMode = true;
+        pendingUsername = username;
+        
+        loginBtn.textContent = 'Verify 2FA';
+        signupBtn.textContent = 'Cancel';
+        signupBtn.classList.add('btn-secondary');
+        signupBtn.classList.remove('btn-primary');
+        
+        // Hide password field, show 2FA code field
+        passwordGroup.style.display = 'none';
+        totpGroup.style.display = 'block';
+        emailGroup.style.display = 'none';
+        inviteGroup.style.display = 'none';
+        verificationGroup.style.display = 'none';
+        resetEmailGroup.style.display = 'none';
+        newPasswordGroup.style.display = 'none';
+        forgotPasswordLink.style.display = 'none';
+        
+        document.getElementById('totp-code').required = true;
+        document.getElementById('password').required = false;
+        document.getElementById('totp-code').focus();
+    }
+    
+    function resetToLogin() {
+        document.getElementById('email').required = false;
+        document.getElementById('verification-code').required = false;
+        document.getElementById('totp-code').required = false;
+        document.getElementById('reset-email').required = false;
+        document.getElementById('new-password').required = false;
+        document.getElementById('password').required = true;
     }
     
     function switchToVerificationMode(username) {
@@ -78,13 +200,73 @@
         // Hide email, password, and invite fields
         emailGroup.style.display = 'none';
         inviteGroup.style.display = 'none';
-        const passwordGroup = document.getElementById('password').parentElement;
         passwordGroup.style.display = 'none';
+        totpGroup.style.display = 'none';
+        resetEmailGroup.style.display = 'none';
+        newPasswordGroup.style.display = 'none';
+        forgotPasswordLink.style.display = 'none';
         
         // Show verification field
         verificationGroup.style.display = 'block';
         document.getElementById('verification-code').required = true;
+        document.getElementById('password').required = false;
         document.getElementById('verification-code').focus();
+    }
+    
+    // Validate reset token with server
+    async function validateResetToken(token) {
+        return new Promise((resolve, reject) => {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            const ws = new WebSocket(wsUrl);
+            
+            const timeout = setTimeout(() => {
+                ws.close();
+                showError('Connection timeout. Please try again.');
+                reject();
+            }, 10000);
+            
+            ws.onopen = () => {
+                ws.send(JSON.stringify({
+                    type: 'validate_reset_token',
+                    token: token
+                }));
+            };
+            
+            ws.onmessage = (event) => {
+                clearTimeout(timeout);
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'reset_token_valid') {
+                        // Token is valid, show username
+                        document.getElementById('username').value = data.username;
+                        hideError();
+                        ws.close();
+                        resolve();
+                    } else if (data.type === 'auth_error') {
+                        showError(data.message || 'Invalid or expired reset token');
+                        ws.close();
+                        // Redirect to login after showing error
+                        setTimeout(() => {
+                            window.location.href = '/static/index.html';
+                        }, 3000);
+                        reject();
+                    }
+                } catch (error) {
+                    ws.close();
+                    showError('Invalid response from server');
+                    reject();
+                }
+            };
+            
+            ws.onerror = () => {
+                clearTimeout(timeout);
+                ws.close();
+                showError('Connection error. Please try again.');
+                reject();
+            };
+        });
     }
     
     // Handle form submission
@@ -95,12 +277,77 @@
         const email = document.getElementById('email').value.trim();
         const inviteCode = document.getElementById('invite-code').value.trim();
         const verificationCode = document.getElementById('verification-code').value.trim();
+        const totpCode = document.getElementById('totp-code').value.trim();
+        const resetEmail = document.getElementById('reset-email').value.trim();
+        const newPassword = document.getElementById('new-password').value;
         let password = '';
-        if (!isVerificationMode) {
+        if (!isVerificationMode && !isPasswordResetMode && !isPasswordResetCompletionMode && !is2FAMode) {
             password = document.getElementById('password').value;
         }
         
-        if (isVerificationMode) {
+        if (isPasswordResetMode) {
+            // Handle password reset request
+            if (!resetEmail) {
+                showError('Email or username is required');
+                return;
+            }
+            
+            hideError();
+            loginBtn.disabled = true;
+            loginBtn.textContent = 'Sending...';
+            
+            try {
+                await sendPasswordResetRequest(resetEmail);
+                showSuccess('If an account exists with that email, a password reset link has been sent.');
+                loginBtn.disabled = false;
+                loginBtn.textContent = 'Send Reset Link';
+            } catch (error) {
+                showError(error.message || 'Failed to send reset link');
+                loginBtn.disabled = false;
+                loginBtn.textContent = 'Send Reset Link';
+            }
+        } else if (isPasswordResetCompletionMode) {
+            // Handle password reset completion
+            if (!newPassword) {
+                showError('New password is required');
+                return;
+            }
+            
+            hideError();
+            loginBtn.disabled = true;
+            loginBtn.textContent = 'Resetting...';
+            
+            try {
+                await completePasswordReset(resetToken, newPassword);
+                showSuccess('Password has been reset successfully. Redirecting to login...');
+                loginBtn.disabled = false;
+                setTimeout(() => {
+                    window.location.href = '/static/index.html';
+                }, 2000);
+            } catch (error) {
+                showError(error.message || 'Failed to reset password');
+                loginBtn.disabled = false;
+                loginBtn.textContent = 'Reset Password';
+            }
+        } else if (is2FAMode) {
+            // Handle 2FA verification
+            if (!totpCode) {
+                showError('2FA code is required');
+                return;
+            }
+            
+            hideError();
+            loginBtn.disabled = true;
+            loginBtn.textContent = 'Verifying...';
+            
+            try {
+                await authenticateAndRedirect('login', pendingUsername, document.getElementById('password').value, null, null, null, totpCode);
+            } catch (error) {
+                showError(error.message || '2FA verification failed');
+                loginBtn.disabled = false;
+                loginBtn.textContent = 'Verify 2FA';
+            }
+        } else if (isVerificationMode) {
             // Handle verification code submission
             if (!verificationCode) {
                 showError('Verification code is required');
@@ -132,7 +379,7 @@
             loginBtn.textContent = 'Creating Account...';
             
             try {
-                await authenticateAndRedirect('signup', username, password, email, null, inviteCode);
+                await authenticateAndRedirect('signup', username, password, email, null, inviteCode, null);
             } catch (error) {
                 showError(error.message || 'Signup failed');
                 loginBtn.disabled = false;
@@ -151,7 +398,7 @@
             loginBtn.textContent = 'Logging in...';
             
             try {
-                await authenticateAndRedirect('login', username, password, null, null, inviteCode);
+                await authenticateAndRedirect('login', username, password, null, null, inviteCode, null);
             } catch (error) {
                 showError(error.message || 'Login failed');
                 loginBtn.disabled = false;
@@ -160,8 +407,99 @@
         }
     });
     
+    // Send password reset request
+    async function sendPasswordResetRequest(identifier) {
+        return new Promise((resolve, reject) => {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            const ws = new WebSocket(wsUrl);
+            
+            const timeout = setTimeout(() => {
+                ws.close();
+                reject(new Error('Connection timeout'));
+            }, 10000);
+            
+            ws.onopen = () => {
+                ws.send(JSON.stringify({
+                    type: 'request_password_reset',
+                    identifier: identifier
+                }));
+            };
+            
+            ws.onmessage = (event) => {
+                clearTimeout(timeout);
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'password_reset_requested') {
+                        ws.close();
+                        resolve();
+                    } else if (data.type === 'auth_error') {
+                        ws.close();
+                        reject(new Error(data.message || 'Failed to send reset link'));
+                    }
+                } catch (error) {
+                    ws.close();
+                    reject(new Error('Invalid response from server'));
+                }
+            };
+            
+            ws.onerror = () => {
+                clearTimeout(timeout);
+                ws.close();
+                reject(new Error('Connection error'));
+            };
+        });
+    }
+    
+    // Complete password reset
+    async function completePasswordReset(token, newPassword) {
+        return new Promise((resolve, reject) => {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            const ws = new WebSocket(wsUrl);
+            
+            const timeout = setTimeout(() => {
+                ws.close();
+                reject(new Error('Connection timeout'));
+            }, 10000);
+            
+            ws.onopen = () => {
+                ws.send(JSON.stringify({
+                    type: 'reset_password',
+                    token: token,
+                    new_password: newPassword
+                }));
+            };
+            
+            ws.onmessage = (event) => {
+                clearTimeout(timeout);
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'password_reset_success') {
+                        ws.close();
+                        resolve();
+                    } else if (data.type === 'auth_error') {
+                        ws.close();
+                        reject(new Error(data.message || 'Failed to reset password'));
+                    }
+                } catch (error) {
+                    ws.close();
+                    reject(new Error('Invalid response from server'));
+                }
+            };
+            
+            ws.onerror = () => {
+                clearTimeout(timeout);
+                ws.close();
+                reject(new Error('Connection error'));
+            };
+        });
+    }
+    
     // Authenticate via WebSocket and redirect on success
-    async function authenticateAndRedirect(authMode, username, password, email, verificationCode, inviteCode) {
+    async function authenticateAndRedirect(authMode, username, password, email, verificationCode, inviteCode, totpCode) {
         return new Promise((resolve, reject) => {
             // Connect to WebSocket
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -192,6 +530,9 @@
                 } else {
                     // login mode
                     authData.password = password;
+                    if (totpCode) {
+                        authData.totp_code = totpCode;
+                    }
                 }
                 
                 ws.send(JSON.stringify(authData));
@@ -219,6 +560,19 @@
                         authCompleted = true;
                         ws.close();
                         reject(new Error(data.message || 'Authentication failed'));
+                    } else if (data.type === '2fa_required') {
+                        authCompleted = true;
+                        // 2FA is required for this account
+                        ws.close();
+                        // Show 2FA mode
+                        switchTo2FAMode(username);
+                        const baseMessage = data.message || '2FA required';
+                        const extraMessage = 'Please enter your authenticator code or backup code.';
+                        const fullMessage = /[.!?]$/.test(baseMessage)
+                            ? baseMessage + ' ' + extraMessage
+                            : baseMessage + '. ' + extraMessage;
+                        showError(fullMessage);
+                        resolve(); // Resolve successfully since we're switching to 2FA mode
                     } else if (data.type === 'verification_required') {
                         authCompleted = true;
                         // Email verification is required
@@ -267,6 +621,15 @@
     function showError(message) {
         errorMessage.textContent = message;
         errorMessage.classList.remove('hidden');
+        errorMessage.classList.remove('success');
+        errorMessage.classList.add('error-message');
+    }
+    
+    function showSuccess(message) {
+        errorMessage.textContent = message;
+        errorMessage.classList.remove('hidden');
+        errorMessage.classList.remove('error-message');
+        errorMessage.classList.add('success');
     }
     
     function hideError() {
