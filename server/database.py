@@ -912,11 +912,12 @@ class Database:
                 backup_codes = original_backup_codes.split(',') if original_backup_codes else []
                 
                 # Use constant-time comparison to prevent timing attacks
+                # Check all codes to avoid leaking position information
                 found = False
                 for backup_code in backup_codes:
                     if secrets.compare_digest(code, backup_code):
                         found = True
-                        break
+                        # Don't break - continue checking to maintain constant time
                 
                 if not found:
                     return False
