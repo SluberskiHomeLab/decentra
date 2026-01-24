@@ -98,6 +98,54 @@ def test_filtered_settings_structure():
     return True
 
 
+def test_datetime_serialization():
+    """Test that datetime fields are properly serialized to ISO format."""
+    print("\n" + "=" * 60)
+    print("Testing DateTime Serialization")
+    print("=" * 60)
+    
+    from datetime import datetime, timezone
+    import json
+    
+    print("\nTest 3a: Verify announcement_set_at datetime serialization...")
+    
+    # Simulate a datetime value
+    test_datetime = datetime.now(timezone.utc)
+    
+    # Simulate the serialization logic from server.py
+    set_at = test_datetime
+    serialized = set_at.isoformat() if set_at and hasattr(set_at, 'isoformat') else None
+    
+    # Verify it's a string
+    if not isinstance(serialized, str):
+        print(f"❌ FAIL: Serialized datetime should be a string, got {type(serialized)}")
+        return False
+    print(f"✓ DateTime serialized to ISO format string: {serialized[:26]}...")
+    
+    # Verify it can be JSON encoded
+    try:
+        test_settings = {
+            'announcement_set_at': serialized
+        }
+        json_str = json.dumps(test_settings)
+        print("✓ Serialized datetime can be JSON encoded")
+    except TypeError as e:
+        print(f"❌ FAIL: JSON encoding failed: {e}")
+        return False
+    
+    # Test with None value
+    print("\nTest 3b: Verify None value handling...")
+    set_at = None
+    serialized = set_at.isoformat() if set_at and hasattr(set_at, 'isoformat') else None
+    
+    if serialized is not None:
+        print(f"❌ FAIL: None should serialize to None, got {serialized}")
+        return False
+    print("✓ None value correctly handled")
+    
+    return True
+
+
 def test_admin_vs_non_admin_access():
     """Test that admins get full settings and non-admins get filtered settings."""
     print("\n" + "=" * 60)
@@ -159,6 +207,11 @@ def main():
     # Run filtered settings structure tests
     if not test_filtered_settings_structure():
         print("\n❌ Filtered settings structure tests FAILED")
+        return False
+    
+    # Run datetime serialization tests
+    if not test_datetime_serialization():
+        print("\n❌ DateTime serialization tests FAILED")
         return False
     
     # Run admin vs non-admin access tests

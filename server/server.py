@@ -1592,6 +1592,7 @@ async def handler(websocket):
                         first_user = db.get_first_user()
                         if username != first_user:
                             # Non-admin users get filtered settings (no sensitive data like SMTP credentials)
+                            set_at = settings.get('announcement_set_at')
                             filtered_settings = {
                                 'allow_file_attachments': settings.get('allow_file_attachments', True),
                                 'max_attachment_size_mb': settings.get('max_attachment_size_mb', 10),
@@ -1599,7 +1600,7 @@ async def handler(websocket):
                                 'announcement_enabled': settings.get('announcement_enabled', False),
                                 'announcement_message': settings.get('announcement_message', ''),
                                 'announcement_duration_minutes': settings.get('announcement_duration_minutes', 60),
-                                'announcement_set_at': settings.get('announcement_set_at')
+                                'announcement_set_at': set_at.isoformat() if set_at and hasattr(set_at, 'isoformat') else None
                             }
                             await websocket.send_str(json.dumps({
                                 'type': 'admin_settings',
