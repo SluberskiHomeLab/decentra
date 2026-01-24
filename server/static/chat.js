@@ -2308,19 +2308,58 @@
                         attachmentWrapper.appendChild(createAttachmentDownloadLink(downloadUrl, filename, attachment.file_size));
                     }
                     
-                    // Add delete button
-                    const deleteBtn = document.createElement('button');
-                    deleteBtn.className = 'attachment-delete-btn';
-                    deleteBtn.textContent = '🗑️';
-                    deleteBtn.title = 'Delete attachment';
-                    deleteBtn.setAttribute('data-attachment-id', attachmentId);
-                    deleteBtn.setAttribute('data-message-id', messageId);
-                    deleteBtn.onclick = (e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        showDeleteAttachmentConfirmation(attachmentId, filename);
-                    };
-                    attachmentWrapper.appendChild(deleteBtn);
+                    // Determine whether the current user can delete this attachment.
+                    // This mirrors the message deletion permissions: attachment owner,
+                    // server owner, or a can_delete_messages-style permission.
+                    let canDeleteAttachment = false;
+
+                    // Try to infer the attachment owner from common fields on the attachment object.
+                    const attachmentOwner =
+                        attachment.uploader_username ||
+                        attachment.username ||
+                        attachment.owner ||
+                        attachment.user;
+
+                    if (attachmentOwner && attachmentOwner === username) {
+                        canDeleteAttachment = true;
+                    }
+
+                    // Read server-owner and permission flags from the container, if present.
+                    const serverOwnerFromContainer = container.getAttribute('data-server-owner');
+                    if (serverOwnerFromContainer && serverOwnerFromContainer === username) {
+                        canDeleteAttachment = true;
+                    }
+
+                    const canDeleteMessagesAttr = container.getAttribute('data-can-delete-messages');
+                    if (canDeleteMessagesAttr && canDeleteMessagesAttr.toString() === 'true') {
+                        canDeleteAttachment = true;
+                    }
+
+                    // If we have no permission metadata at all, preserve previous behavior
+                    // by allowing the delete button to be shown.
+                    if (
+                        !attachmentOwner &&
+                        !serverOwnerFromContainer &&
+                        !container.hasAttribute('data-can-delete-messages')
+                    ) {
+                        canDeleteAttachment = true;
+                    }
+
+                    // Add delete button only if the user is allowed to delete this attachment.
+                    if (canDeleteAttachment) {
+                        const deleteBtn = document.createElement('button');
+                        deleteBtn.className = 'attachment-delete-btn';
+                        deleteBtn.innerHTML = '🗑️';
+                        deleteBtn.title = 'Delete attachment';
+                        deleteBtn.setAttribute('data-attachment-id', attachmentId);
+                        deleteBtn.setAttribute('data-message-id', messageId);
+                        deleteBtn.onclick = (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            showDeleteAttachmentConfirmation(attachmentId, filename);
+                        };
+                        attachmentWrapper.appendChild(deleteBtn);
+                    }
                     
                     attachmentsDiv.appendChild(attachmentWrapper);
                 }
