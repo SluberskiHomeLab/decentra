@@ -80,6 +80,7 @@
         resetToken = '';
         sessionStorage.removeItem('pendingUsername');
         sessionStorage.removeItem('pending2FAPassword'); // Clear stored password for security
+        pending2FAPassword = '';
         
         signupBtn.textContent = 'Sign Up';
         signupBtn.classList.add('btn-secondary');
