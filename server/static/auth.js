@@ -155,6 +155,7 @@
         
         document.getElementById('new-password').required = true;
         document.getElementById('password').required = false;
+        document.getElementById('username').readOnly = true;
         document.getElementById('new-password').focus();
     }
     
