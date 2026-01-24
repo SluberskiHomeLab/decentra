@@ -2228,6 +2228,97 @@ async def handler(websocket):
                                 'message': message
                             }))
                     
+                    elif data.get('type') == 'sync_data':
+                        # Handle request to sync/refresh user data (servers, DMs, friends)
+                        # Build refreshed server list
+                        refreshed_servers = []
+                        user_server_ids = db.get_user_servers(username)
+                        for server_id in user_server_ids:
+                            server_data = db.get_server(server_id)
+                            if server_data:
+                                channels = db.get_server_channels(server_id)
+                                server_info = {
+                                    'id': server_id,
+                                    'name': server_data['name'],
+                                    'owner': server_data['owner'],
+                                    'icon': server_data.get('icon', '🏠'),
+                                    'icon_type': server_data.get('icon_type', 'emoji'),
+                                    'icon_data': server_data.get('icon_data'),
+                                    'channels': [
+                                        {'id': ch['channel_id'], 'name': ch['name'], 'type': ch.get('type', 'text')}
+                                        for ch in channels
+                                    ]
+                                }
+                                # Add permissions if user is not owner
+                                if username != server_data['owner']:
+                                    members = db.get_server_members(server_id)
+                                    for member in members:
+                                        if member['username'] == username:
+                                            server_info['permissions'] = {
+                                                'can_create_channel': member.get('can_create_channel', False),
+                                                'can_edit_channel': member.get('can_edit_channel', False),
+                                                'can_delete_channel': member.get('can_delete_channel', False),
+                                                'can_edit_messages': member.get('can_edit_messages', False),
+                                                'can_delete_messages': member.get('can_delete_messages', False)
+                                            }
+                                            break
+                                refreshed_servers.append(server_info)
+                        
+                        # Build refreshed DMs list
+                        refreshed_dms = []
+                        dm_list = db.get_user_dms(username)
+                        for dm in dm_list:
+                            other_user = dm['user2'] if dm['user1'] == username else dm['user1']
+                            avatar_data = get_avatar_data(other_user)
+                            refreshed_dms.append({
+                                'id': dm['dm_id'],
+                                'username': other_user,
+                                **avatar_data
+                            })
+                        
+                        # Build refreshed friends list
+                        refreshed_friends = []
+                        for friend in db.get_friends(username):
+                            avatar_data = get_avatar_data(friend)
+                            profile_data = get_profile_data(friend)
+                            refreshed_friends.append({
+                                'username': friend,
+                                **avatar_data,
+                                **profile_data
+                            })
+                        
+                        # Build refreshed friend requests
+                        refreshed_requests_sent = []
+                        for requested_user in db.get_friend_requests_sent(username):
+                            avatar_data = get_avatar_data(requested_user)
+                            profile_data = get_profile_data(requested_user)
+                            refreshed_requests_sent.append({
+                                'username': requested_user,
+                                **avatar_data,
+                                **profile_data
+                            })
+                        
+                        refreshed_requests_received = []
+                        for requester_user in db.get_friend_requests_received(username):
+                            avatar_data = get_avatar_data(requester_user)
+                            profile_data = get_profile_data(requester_user)
+                            refreshed_requests_received.append({
+                                'username': requester_user,
+                                **avatar_data,
+                                **profile_data
+                            })
+                        
+                        # Send synced data to client
+                        await websocket.send_str(json.dumps({
+                            'type': 'data_synced',
+                            'servers': refreshed_servers,
+                            'dms': refreshed_dms,
+                            'friends': refreshed_friends,
+                            'friend_requests_sent': refreshed_requests_sent,
+                            'friend_requests_received': refreshed_requests_received
+                        }))
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Data synced for {username}")
+                    
                     # Server settings handlers
                     elif data.get('type') == 'rename_server':
                         server_id = data.get('server_id', '')

@@ -81,6 +81,7 @@
     // Button elements
     const userMenuBtn = document.getElementById('user-menu-btn');
     const userMenu = document.getElementById('user-menu');
+    const refreshServersBtn = document.getElementById('refresh-servers-btn');
     const menuCreateServerBtn = document.getElementById('menu-create-server-btn');
     const menuJoinServerBtn = document.getElementById('menu-join-server-btn');
     const menuInviteBtn = document.getElementById('menu-invite-btn');
@@ -333,6 +334,9 @@
         ws.onclose = () => {
             console.log('WebSocket disconnected');
             
+            // Stop periodic sync when disconnected
+            stopPeriodicSync();
+            
             // Don't reconnect if this was an intentional close (e.g., user logged out)
             if (isIntentionalClose) {
                 isIntentionalClose = false;
@@ -477,6 +481,34 @@
         ws.send(JSON.stringify(authData));
     }
     
+    // Function to request data sync from server
+    function requestDataSync() {
+        if (ws && ws.readyState === WebSocket.OPEN && authenticated) {
+            ws.send(JSON.stringify({ type: 'sync_data' }));
+            console.log('Requested data sync from server');
+        }
+    }
+    
+    // Set up periodic data sync (every 30 seconds)
+    let syncInterval = null;
+    function startPeriodicSync() {
+        // Clear any existing interval
+        if (syncInterval) {
+            clearInterval(syncInterval);
+        }
+        // Sync every 30 seconds
+        syncInterval = setInterval(requestDataSync, 30000);
+        console.log('Periodic data sync started (30s interval)');
+    }
+    
+    function stopPeriodicSync() {
+        if (syncInterval) {
+            clearInterval(syncInterval);
+            syncInterval = null;
+            console.log('Periodic data sync stopped');
+        }
+    }
+    
     // Handle incoming messages
     function isSafeImageUrl(url) {
         if (typeof url !== 'string') {
@@ -549,6 +581,8 @@
                 ws.send(JSON.stringify({type: 'check_admin'}));
                 // Request admin settings to get file attachment limits
                 ws.send(JSON.stringify({type: 'get_admin_settings'}));
+                // Start periodic data sync
+                startPeriodicSync();
                 break;
                 
             case 'auth_error':
@@ -609,6 +643,38 @@
                     }
                 } else {
                     console.log('[DEBUG] Admin status undefined in init message');
+                }
+                break;
+                
+            case 'data_synced':
+                // Handle periodic data sync - update servers, DMs, and friends
+                console.log('Received data sync');
+                
+                // Update servers list if changed
+                if (data.servers) {
+                    servers = data.servers;
+                    updateServersList();
+                }
+                
+                // Update DMs list if changed
+                if (data.dms) {
+                    dms = data.dms;
+                    updateDMsList();
+                }
+                
+                // Update friends lists if changed
+                if (data.friends !== undefined) {
+                    friends = data.friends || [];
+                }
+                if (data.friend_requests_sent !== undefined) {
+                    friendRequestsSent = data.friend_requests_sent || [];
+                }
+                if (data.friend_requests_received !== undefined) {
+                    friendRequestsReceived = data.friend_requests_received || [];
+                }
+                // Only update friends list if in friends view
+                if (currentContext && currentContext.type === 'friends') {
+                    updateFriendsList();
                 }
                 break;
                 
@@ -3005,6 +3071,19 @@
         serverInviteInput.focus();
     });
     
+    // Refresh servers button
+    refreshServersBtn.addEventListener('click', () => {
+        requestDataSync();
+        // Show visual feedback
+        const originalText = refreshServersBtn.textContent;
+        refreshServersBtn.textContent = '⟳';
+        refreshServersBtn.disabled = true;
+        setTimeout(() => {
+            refreshServersBtn.textContent = originalText;
+            refreshServersBtn.disabled = false;
+        }, 1000);
+    });
+    
     createServerForm.addEventListener('submit', (e) => {
         e.preventDefault();
         
@@ -4269,6 +4348,9 @@
     }
     
     function logout() {
+        // Stop periodic sync
+        stopPeriodicSync();
+        
         // Clean up voice chat
         if (voiceChat) {
             voiceChat.leaveVoiceChannel();
