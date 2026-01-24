@@ -47,6 +47,12 @@
     let friendRequestsReceived = [];
     let voiceMembers = {}; // Track voice members by channel: {server_id/channel_id: [usernames]}
     
+    // Data sync settings
+    let syncInterval = null;
+    const SYNC_INTERVAL_MS = 30000; // Sync every 30 seconds
+    const REFRESH_BUTTON_FEEDBACK_MS = 1000; // Show refresh feedback for 1 second
+    const REFRESH_SPINNER_ICON = '⟳';
+    
     // Server settings
     let maxMessageLength = 2000; // Default max message length
     let allowFileAttachments = true; // Default allow attachments
@@ -489,16 +495,15 @@
         }
     }
     
-    // Set up periodic data sync (every 30 seconds)
-    let syncInterval = null;
+    // Set up periodic data sync
     function startPeriodicSync() {
         // Clear any existing interval
         if (syncInterval) {
             clearInterval(syncInterval);
         }
-        // Sync every 30 seconds
-        syncInterval = setInterval(requestDataSync, 30000);
-        console.log('Periodic data sync started (30s interval)');
+        // Sync at regular intervals
+        syncInterval = setInterval(requestDataSync, SYNC_INTERVAL_MS);
+        console.log(`Periodic data sync started (${SYNC_INTERVAL_MS/1000}s interval)`);
     }
     
     function stopPeriodicSync() {
@@ -3076,12 +3081,12 @@
         requestDataSync();
         // Show visual feedback
         const originalText = refreshServersBtn.textContent;
-        refreshServersBtn.textContent = '⟳';
+        refreshServersBtn.textContent = REFRESH_SPINNER_ICON;
         refreshServersBtn.disabled = true;
         setTimeout(() => {
             refreshServersBtn.textContent = originalText;
             refreshServersBtn.disabled = false;
-        }, 1000);
+        }, REFRESH_BUTTON_FEEDBACK_MS);
     });
     
     createServerForm.addEventListener('submit', (e) => {
