@@ -490,9 +490,111 @@
                 <small style="color: #b9bbbe; font-size: 12px;">Maximum 500 characters</small>
             </div>
             
+            <div class="form-group">
+                <h4 style="color: #ffffff; margin-bottom: 10px;">Two-Factor Authentication (2FA)</h4>
+                <p id="2fa-status" style="color: #b9bbbe; font-size: 14px; margin-bottom: 10px;">Loading...</p>
+                <button id="setup-2fa-btn" class="btn btn-primary" style="display: none;">Enable 2FA</button>
+                <button id="disable-2fa-btn" class="btn btn-danger" style="display: none;">Disable 2FA</button>
+            </div>
+            
             <div class="modal-buttons">
                 <button id="save-profile-btn" class="btn btn-primary">Save Profile</button>
                 <button id="close-profile-modal" class="btn btn-secondary">Close</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 2FA Setup Modal -->
+    <div id="2fa-setup-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Set Up Two-Factor Authentication</h3>
+            
+            <div id="2fa-setup-step1" class="2fa-step">
+                <p style="color: #b9bbbe; margin-bottom: 15px;">
+                    Scan this QR code with your authenticator app (such as Google Authenticator, Authy, or 1Password).
+                </p>
+                <div id="qr-code-container" style="text-align: center; margin: 20px 0; background: white; padding: 20px; border-radius: 8px; display: inline-block;">
+                    <img id="qr-code-img" src="data:," alt="QR Code" style="max-width: 250px; height: auto;">
+                </div>
+                <p style="color: #b9bbbe; font-size: 12px; margin-top: 10px;">
+                    Can't scan? Manual entry code: <code id="manual-secret" style="background: rgba(0,0,0,0.3); padding: 4px 8px; border-radius: 4px;">Loading...</code>
+                </p>
+            </div>
+            
+            <div id="2fa-setup-step2" class="2fa-step" style="display: none;">
+                <p style="color: #b9bbbe; margin-bottom: 15px;">
+                    Save these backup codes in a safe place. Each code can only be used once.
+                </p>
+                <div id="backup-codes-container" style="background: rgba(0,0,0,0.3); padding: 15px; border-radius: 8px; margin: 15px 0; font-family: monospace; font-size: 14px; color: #dcddde;">
+                    <!-- Backup codes will be inserted here -->
+                </div>
+                <button id="download-backup-codes-btn" class="btn btn-secondary" style="margin-bottom: 15px;">
+                    Download Backup Codes
+                </button>
+            </div>
+            
+            <div id="2fa-setup-step3" class="2fa-step" style="display: none;">
+                <p style="color: #b9bbbe; margin-bottom: 15px;">
+                    Enter the 6-digit code from your authenticator app to verify setup.
+                </p>
+                <div class="form-group">
+                    <label for="2fa-verify-code">Verification Code</label>
+                    <input type="text" id="2fa-verify-code" class="form-input" maxlength="6" pattern="[0-9]{6}" placeholder="000000" autocomplete="off">
+                </div>
+                <div id="2fa-error" class="error-message hidden"></div>
+            </div>
+            
+            <div class="modal-buttons">
+                <button id="2fa-next-btn" class="btn btn-primary">Next</button>
+                <button id="2fa-back-btn" class="btn btn-secondary" style="display: none;">Back</button>
+                <button id="2fa-cancel-btn" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 2FA Disable Modal -->
+    <div id="2fa-disable-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Disable Two-Factor Authentication</h3>
+            
+            <p style="color: #b9bbbe; margin-bottom: 15px;">
+                To disable 2FA, please enter your password and a 2FA code.
+            </p>
+            
+            <div class="form-group">
+                <label for="2fa-disable-password">Password</label>
+                <input type="password" id="2fa-disable-password" class="form-input" autocomplete="current-password">
+            </div>
+            
+            <div class="form-group">
+                <label for="2fa-disable-code">2FA Code</label>
+                <input type="text" id="2fa-disable-code" class="form-input" maxlength="8" placeholder="6-digit code or 8-char backup code" autocomplete="off">
+            </div>
+            
+            <div id="2fa-disable-error" class="error-message hidden"></div>
+            
+            <div class="modal-buttons">
+                <button id="2fa-disable-confirm-btn" class="btn btn-danger">Disable 2FA</button>
+                <button id="2fa-disable-cancel-btn" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Delete Attachment Confirmation Modal -->
+    <div id="delete-attachment-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Delete Attachment</h3>
+            
+            <p style="color: #b9bbbe; margin-bottom: 15px;">
+                Are you sure you want to delete <strong id="delete-attachment-filename"></strong>?
+            </p>
+            <p style="color: #b9bbbe; font-size: 12px; margin-bottom: 15px;">
+                This action cannot be undone.
+            </p>
+            
+            <div class="modal-buttons">
+                <button id="delete-attachment-confirm-btn" class="btn btn-danger">Delete</button>
+                <button id="delete-attachment-cancel-btn" class="btn btn-secondary">Cancel</button>
             </div>
         </div>
     </div>
