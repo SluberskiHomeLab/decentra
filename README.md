@@ -22,6 +22,12 @@ A decentralized Discord-like chat server and client that is non-federated and se
   - 🔇 Mute/unmute controls
   - 🌐 Peer-to-peer WebRTC connections for high-quality audio
 - 🔐 Username/password authentication
+- 🔒 **Security Features** - Multiple layers of security
+  - 🛡️ Transport Layer Security (HTTPS/WSS) for encrypted communications
+  - 🔐 Two-Factor Authentication (2FA) with TOTP and backup codes
+  - 📧 Password reset flow via email
+  - 🗑️ Attachment deletion with permission controls
+  - 🔑 Data encryption at rest using Fernet
 - 🎟️ Invite code system for controlled access
 - 📜 Complete message history with database persistence
 - 🔔 **Browser Notifications** - Desktop notification popups
@@ -494,6 +500,56 @@ If notifications aren't working:
    - Windows: Settings → System → Notifications
    - macOS: System Preferences → Notifications
    - Linux: Varies by desktop environment
+
+## Security
+
+Decentra includes comprehensive security features to protect your data and communications:
+
+### Transport Layer Security
+
+- **HTTPS/WSS**: All communications are encrypted using TLS
+- **Self-Signed Certificates**: Automatically generated for local deployment
+- **Secure WebSockets**: WebSocket connections use WSS protocol
+
+### Two-Factor Authentication (2FA)
+
+Enable 2FA for enhanced account security:
+
+1. Navigate to Security Settings in the user menu
+2. Click "Enable Two-Factor Authentication"
+3. Scan the QR code with an authenticator app (Google Authenticator, Authy, etc.)
+4. Enter the verification code to complete setup
+5. Save your backup codes in a secure location
+
+When 2FA is enabled, you'll need to enter a 6-digit code from your authenticator app when logging in.
+
+### Password Reset
+
+Forgot your password? No problem:
+
+1. Click "Forgot Password" on the login page
+2. Enter your username or registered email
+3. Check your email for a password reset link
+4. Click the link and set a new password
+5. Reset links expire after 1 hour for security
+
+**Note**: Email must be configured by the administrator for password reset to work.
+
+### Attachment Management
+
+Delete attachments with proper permission controls:
+
+- Users can delete attachments from their own messages
+- Server owners can delete any attachment in their servers
+- Users with "Delete Messages" permission can delete attachments
+
+### Data Encryption
+
+- **At Rest**: Messages and sensitive data encrypted in PostgreSQL using Fernet
+- **In Transit**: TLS encryption for all network communications
+- **SMTP Passwords**: Admin-configured SMTP credentials are encrypted
+
+For detailed security information, see [SECURITY.md](SECURITY.md).
 
 ## Customization
 

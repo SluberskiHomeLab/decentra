@@ -2,6 +2,11 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: decentra-postgres
+    # NOTE: Port 5432 is exposed for development and testing purposes.
+    # In production deployments, remove this port mapping or restrict access
+    # to prevent unauthorized database access from external networks.
+    ports:
+      - "5432:5432"
     environment:
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_USER=${POSTGRES_USER}

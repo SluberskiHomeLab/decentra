@@ -215,6 +215,19 @@
             </div>
             
             <div class="setting-item">
+                <label for="dm-purge-schedule">DM Message Purge Schedule</label>
+                <div class="description">Automatically delete DM messages older than the selected period</div>
+                <select id="dm-purge-schedule">
+                    <option value="0">Disabled (keep all messages)</option>
+                    <option value="7">7 days</option>
+                    <option value="30">30 days</option>
+                    <option value="90">3 months (90 days)</option>
+                    <option value="180">6 months (180 days)</option>
+                    <option value="365">12 months (365 days)</option>
+                </select>
+            </div>
+            
+            <div class="setting-item">
                 <label for="allow-embeds">Allow URL Embeds</label>
                 <div class="checkbox-wrapper">
                     <input type="checkbox" id="allow-embeds" checked disabled>
@@ -400,6 +413,7 @@
             document.getElementById('allow-file-attachments').checked = settings.allow_file_attachments !== false;
             document.getElementById('max-attachment-size').value = settings.max_attachment_size_mb || 10;
             document.getElementById('attachment-retention').value = settings.attachment_retention_days || 0;
+            document.getElementById('dm-purge-schedule').value = settings.dm_purge_schedule || 0;
             document.getElementById('max-servers-per-user').value = settings.max_servers_per_user || 0;
             document.getElementById('max-channels-per-server').value = settings.max_channels_per_server || 0;
             
@@ -451,6 +465,7 @@
                 allow_file_attachments: document.getElementById('allow-file-attachments').checked,
                 max_attachment_size_mb: parseInt(document.getElementById('max-attachment-size').value, 10),
                 attachment_retention_days: parseInt(document.getElementById('attachment-retention').value, 10),
+                dm_purge_schedule: parseInt(document.getElementById('dm-purge-schedule').value, 10),
                 max_servers_per_user: parseInt(document.getElementById('max-servers-per-user').value, 10),
                 max_channels_per_server: parseInt(document.getElementById('max-channels-per-server').value, 10),
                 // SMTP settings

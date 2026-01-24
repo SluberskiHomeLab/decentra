@@ -282,6 +282,7 @@
                 <button class="settings-tab" data-tab="invites">Invites</button>
                 <button class="settings-tab" data-tab="roles">Roles</button>
                 <button class="settings-tab" data-tab="permissions">Permissions</button>
+                <button class="settings-tab" data-tab="purge">Purge Settings</button>
             </div>
             
             <div id="settings-tab-general" class="settings-tab-content">
@@ -385,6 +386,36 @@
                 <p>Manage what each user can do in this server.</p>
                 <div id="server-members-list" class="members-list">
                     <!-- Members will be populated here -->
+                </div>
+            </div>
+            
+            <div id="settings-tab-purge" class="settings-tab-content hidden">
+                <h4>Message Purge Settings</h4>
+                <p>Configure automatic purging of old messages from this server.</p>
+                
+                <div class="setting-item">
+                    <label for="server-purge-schedule">Purge Schedule</label>
+                    <div class="description">Automatically delete messages older than the selected period</div>
+                    <select id="server-purge-schedule">
+                        <option value="0">Disabled (keep all messages)</option>
+                        <option value="7">7 days</option>
+                        <option value="30">30 days</option>
+                        <option value="90">3 months (90 days)</option>
+                        <option value="180">6 months (180 days)</option>
+                        <option value="365">12 months (365 days)</option>
+                    </select>
+                </div>
+                
+                <div class="setting-item">
+                    <h4>Exempted Channels</h4>
+                    <div class="description">Select channels to exclude from automatic purging</div>
+                    <div id="channel-exemptions-list" class="channel-exemptions-list">
+                        <!-- Channel checkboxes will be populated here -->
+                    </div>
+                </div>
+                
+                <div class="button-group">
+                    <button id="save-server-purge-settings" class="btn btn-primary">Save Purge Settings</button>
                 </div>
             </div>
             

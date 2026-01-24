@@ -252,6 +252,9 @@
     const uploadCustomEmojiBtn = document.getElementById('upload-custom-emoji-btn');
     const serverEmojisList = document.getElementById('server-emojis-list');
     
+    // Server purge settings elements
+    const saveServerPurgeSettingsBtn = document.getElementById('save-server-purge-settings');
+    
     const emojiPickerModal = document.getElementById('emoji-picker-modal');
     const closeEmojiPickerBtn = document.getElementById('close-emoji-picker');
     const standardEmojisGrid = document.getElementById('standard-emojis');
@@ -1321,6 +1324,47 @@
             case 'emoji_upload_success':
                 uploadEmojiError.textContent = '';
                 alert('Emoji uploaded successfully!');
+                break;
+            
+            // Server purge settings cases
+            case 'server_purge_settings':
+                if (data.server_id === currentlySelectedServer) {
+                    // Set the purge schedule dropdown
+                    document.getElementById('server-purge-schedule').value = data.purge_schedule || 0;
+                    
+                    // Populate channel exemptions list
+                    const channelExemptionsList = document.getElementById('channel-exemptions-list');
+                    channelExemptionsList.innerHTML = '';
+                    
+                    // Get all channels for this server
+                    const server = servers.find(s => s.id === data.server_id);
+                    if (server && server.channels) {
+                        server.channels.forEach(channel => {
+                            const checkboxWrapper = document.createElement('div');
+                            checkboxWrapper.className = 'checkbox-wrapper';
+                            
+                            const checkbox = document.createElement('input');
+                            checkbox.type = 'checkbox';
+                            checkbox.id = `exempt-${channel.id}`;
+                            checkbox.dataset.channelId = channel.id;
+                            checkbox.checked = data.exempted_channels.includes(channel.id);
+                            
+                            const label = document.createElement('label');
+                            label.htmlFor = `exempt-${channel.id}`;
+                            label.textContent = `# ${channel.name}`;
+                            
+                            checkboxWrapper.appendChild(checkbox);
+                            checkboxWrapper.appendChild(label);
+                            channelExemptionsList.appendChild(checkboxWrapper);
+                        });
+                    }
+                }
+                break;
+            
+            case 'server_purge_settings_updated':
+                if (data.server_id === currentlySelectedServer) {
+                    alert('Purge settings saved successfully!');
+                }
                 break;
             
             // Reaction cases
@@ -2983,6 +3027,12 @@
             type: 'get_server_members',
             server_id: currentlySelectedServer
         }));
+        
+        // Load server purge settings
+        ws.send(JSON.stringify({
+            type: 'get_server_purge_settings',
+            server_id: currentlySelectedServer
+        }));
     });
     
     closeServerSettingsModalBtn.addEventListener('click', () => {
@@ -3024,6 +3074,37 @@
         }));
         
         serverSettingsModal.classList.add('hidden');
+    });
+    
+    // Save server purge settings
+    saveServerPurgeSettingsBtn.addEventListener('click', () => {
+        if (!currentlySelectedServer) return;
+        
+        const purgeSchedule = parseInt(document.getElementById('server-purge-schedule').value, 10);
+        
+        // Validate purge schedule value
+        const validValues = [0, 7, 30, 90, 180, 365];
+        if (!validValues.includes(purgeSchedule)) {
+            alert('Invalid purge schedule value');
+            return;
+        }
+        
+        // Get exempted channels
+        const exemptedChannels = [];
+        const checkboxes = document.querySelectorAll('#channel-exemptions-list input[type="checkbox"]:checked');
+        checkboxes.forEach(checkbox => {
+            const channelId = checkbox.dataset.channelId;
+            if (channelId) {  // Only add if channelId exists
+                exemptedChannels.push(channelId);
+            }
+        });
+        
+        ws.send(JSON.stringify({
+            type: 'update_server_purge_settings',
+            server_id: currentlySelectedServer,
+            purge_schedule: purgeSchedule,
+            exempted_channels: exemptedChannels
+        }));
     });
     
     // Server icon tab switching

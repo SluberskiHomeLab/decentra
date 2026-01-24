@@ -284,6 +284,95 @@ This is an automated message from {server_name}.
 """
         
         return self.send_email(to_email, subject, body_text, body_html)
+    
+    def send_password_reset_email(self, to_email: str, username: str, reset_token: str, server_name: str = "Decentra", base_url: str = None) -> bool:
+        """
+        Send a password reset email with a reset link.
+        
+        Args:
+            to_email: Recipient email address
+            username: Username requesting the reset
+            reset_token: Unique token for password reset
+            server_name: Name of the server (default: "Decentra")
+            base_url: Base URL for the reset link (e.g., "https://example.com")
+                     If not provided, uses localhost:8765
+            
+        Returns:
+            True if email was sent successfully, False otherwise
+        """
+        if not self.is_configured():
+            return False
+        
+        # Use provided base URL or fall back to localhost
+        # In production, base_url should be set via environment variable or admin settings
+        if not base_url:
+            base_url = os.environ.get('DECENTRA_BASE_URL', 'https://localhost:8765')
+        
+        reset_url = f"{base_url}/reset-password?token={reset_token}"
+        
+        subject = f"Password Reset - {server_name}"
+        
+        # Plain text version
+        body_text = f"""
+Password Reset Request
+
+Hello {username},
+
+You have requested to reset your password for your {server_name} account.
+
+To reset your password, click the following link or copy it into your browser:
+
+{reset_url}
+
+This link will expire in 1 hour for security reasons.
+
+If you did not request a password reset, please ignore this email. Your password will remain unchanged.
+
+---
+This is an automated message from {server_name}.
+"""
+        
+        # HTML version
+        body_html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+    <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #5865F2;">Password Reset Request</h2>
+        
+        <p>Hello {username},</p>
+        
+        <p>You have requested to reset your password for your {server_name} account.</p>
+        
+        <p>To reset your password, click the button below:</p>
+        
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{reset_url}" style="background-color: #5865F2; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">Reset Password</a>
+        </div>
+        
+        <p style="color: #666; font-size: 14px;">Or copy and paste this link into your browser:</p>
+        <div style="background-color: #f4f4f4; padding: 10px; border-radius: 5px; word-break: break-all; font-size: 12px;">
+            {reset_url}
+        </div>
+        
+        <p style="color: #666; font-size: 14px; margin-top: 20px;">This link will expire in 1 hour for security reasons.</p>
+        
+        <p style="color: #666; font-size: 14px;">If you did not request a password reset, please ignore this email. Your password will remain unchanged.</p>
+        
+        <hr style="margin-top: 30px; border: none; border-top: 1px solid #ddd;">
+        <p style="font-size: 12px; color: #999;">
+            This is an automated message from {server_name}.
+        </p>
+    </div>
+</body>
+</html>
+"""
+        
+        return self.send_email(to_email, subject, body_text, body_html)
 
 
 def get_email_sender(db) -> EmailSender:
