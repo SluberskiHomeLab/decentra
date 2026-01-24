@@ -9,6 +9,7 @@
     const totpGroup = document.getElementById('totp-group');
     const passwordGroup = document.getElementById('password-group');
     const resetEmailGroup = document.getElementById('reset-email-group');
+    let pending2FAPassword = '';
     const newPasswordGroup = document.getElementById('new-password-group');
     const forgotPasswordLink = document.getElementById('forgot-password-link');
     const forgotPasswordBtn = document.getElementById('forgot-password-btn');
@@ -333,12 +334,12 @@
             loginBtn.textContent = 'Verifying...';
             
             // Get the password that was used before switching to 2FA mode
-            const savedPassword = sessionStorage.getItem('pending2FAPassword') || '';
+            const savedPassword = pending2FAPassword || '';
             
             try {
                 await authenticateAndRedirect('login', pendingUsername, savedPassword, null, null, null, totpCode);
                 // Clear the saved password after successful login
-                sessionStorage.removeItem('pending2FAPassword');
+                pending2FAPassword = '';
             } catch (error) {
                 showError(error.message || '2FA verification failed');
                 loginBtn.disabled = false;
@@ -562,10 +563,8 @@
                         // 2FA is required for this account
                         ws.close();
                         // Temporarily store password for 2FA verification (will be cleared after use)
-                        // Note: This is a security trade-off - password is needed for the next auth step
-                        // but storing in sessionStorage is vulnerable to XSS. Alternative would be
-                        // to require password re-entry, which degrades UX.
-                        sessionStorage.setItem('pending2FAPassword', password);
+                        // Store the password only in memory for the next auth step instead of sessionStorage
+                        pending2FAPassword = password;
                         // Show 2FA mode
                         switchTo2FAMode(username);
                         const baseMessage = data.message || '2FA required';
