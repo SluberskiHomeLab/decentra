@@ -183,6 +183,7 @@ button:active {
     text-decoration: underline;
 }
 
+.error-message,
 .error {
     background: rgba(240, 71, 71, 0.1);
     border: 1px solid #f04747;
@@ -195,6 +196,10 @@ button:active {
     position: relative;
     z-index: 1;
     animation: slideIn 0.3s ease;
+}
+
+.hidden {
+    display: none !important;
 }
 
 @keyframes slideIn {
