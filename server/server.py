@@ -2089,17 +2089,33 @@ async def handler(websocket):
                         }))
                     
                     elif data.get('type') == 'get_admin_settings':
-                        # Verify user is admin
+                        # Load settings from database
+                        settings = db.get_admin_settings()
+                        
+                        # Serialize datetime fields to prevent JSON encoding errors
+                        set_at = settings.get('announcement_set_at')
+                        if set_at and hasattr(set_at, 'isoformat'):
+                            settings['announcement_set_at'] = set_at.isoformat()
+                        
+                        # Check if user is admin
                         first_user = db.get_first_user()
                         if username != first_user:
+                            # Non-admin users get filtered settings (no sensitive data like SMTP credentials)
+                            filtered_settings = {
+                                'allow_file_attachments': settings.get('allow_file_attachments', True),
+                                'max_attachment_size_mb': settings.get('max_attachment_size_mb', 10),
+                                'max_message_length': settings.get('max_message_length', 2000),
+                                'announcement_enabled': settings.get('announcement_enabled', False),
+                                'announcement_message': settings.get('announcement_message', ''),
+                                'announcement_duration_minutes': settings.get('announcement_duration_minutes', 60),
+                                'announcement_set_at': settings.get('announcement_set_at')
+                            }
                             await websocket.send_str(json.dumps({
-                                'type': 'error',
-                                'message': 'Access denied. Admin only.'
+                                'type': 'admin_settings',
+                                'settings': filtered_settings
                             }))
                         else:
-                            # Load settings from database
-                            settings = db.get_admin_settings()
-                            
+                            # Admin users get all settings
                             await websocket.send_str(json.dumps({
                                 'type': 'admin_settings',
                                 'settings': settings
