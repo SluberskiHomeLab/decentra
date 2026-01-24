@@ -485,10 +485,7 @@
             // Support relative URLs by resolving against current location
             const parsed = new URL(url, window.location.href);
             const protocol = parsed.protocol.toLowerCase();
-            // Allow only data URLs or same-origin http/https URLs
-            if (protocol === 'data:') {
-                return true;
-            }
+            // Allow only same-origin http/https URLs
             if (protocol === 'http:' || protocol === 'https:') {
                 // Require the URL to use the same origin as the current page
                 if (parsed.origin === window.location.origin) {
@@ -496,6 +493,7 @@
                 }
                 return false;
             }
+            // Disallow all other protocols (including data:, javascript:, etc.)
             return false;
         } catch (e) {
             // Invalid URL
