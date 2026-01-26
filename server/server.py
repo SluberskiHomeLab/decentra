@@ -2326,7 +2326,7 @@ async def handler(websocket):
                         server_id = data.get('server_id', '')
                         
                         # Check if user has permission to view invite usage
-                        if has_permission(server_id, username, 'manage_server'):
+                        if has_permission(server_id, username, 'access_settings'):
                             usage_logs = db.get_server_invite_usage(server_id)
                             
                             await websocket.send_str(json.dumps({
