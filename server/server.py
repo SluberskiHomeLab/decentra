@@ -21,6 +21,7 @@ import jwt
 import pyotp
 import qrcode
 import io
+import traceback
 from database import Database
 from api import setup_api_routes
 from email_utils import EmailSender
@@ -1287,7 +1288,6 @@ async def handler(websocket):
             print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} joined chat")
         except Exception as e:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] ERROR: Failed to send init message to {username}: {e}", flush=True)
-            import traceback
             traceback.print_exc()
             # Send error message to client
             try:
