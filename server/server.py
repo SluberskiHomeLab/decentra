@@ -1225,62 +1225,78 @@ async def handler(websocket):
                 }))
         
         # Send user data to authenticated client using helper functions
-        user_servers = build_user_servers_data(username)
-        user_dms = build_user_dms_data(username)
-        friends_list = build_user_friends_data(username)
-        friend_requests_sent, friend_requests_received = build_friend_requests_data(username)
-        
-        current_avatar = get_avatar_data(username)
-        current_profile = get_profile_data(username)
-        user = db.get_user(username)
-        notification_mode = user.get('notification_mode', 'all') if user else 'all'
-        first_user = db.get_first_user()
-        is_admin = (username == first_user)
-        log_admin_check(username, first_user, is_admin, context="init message")
-        user_data = json.dumps({
-            'type': 'init',
-            'username': username,
-            **current_avatar,
-            **current_profile,
-            'notification_mode': notification_mode,
-            'is_admin': is_admin,
-            'servers': user_servers,
-            'dms': user_dms,
-            'friends': friends_list,
-            'friend_requests_sent': friend_requests_sent,
-            'friend_requests_received': friend_requests_received
-        })
-        await websocket.send_str(user_data)
-        
-        # Send announcement data and server settings
-        admin_settings = db.get_admin_settings()
-        set_at = admin_settings.get('announcement_set_at')
-        announcement_data = {
-            'type': 'announcement_update',
-            'enabled': admin_settings.get('announcement_enabled', False),
-            'message': admin_settings.get('announcement_message', ''),
-            'duration_minutes': admin_settings.get('announcement_duration_minutes', 60),
-            'set_at': set_at.isoformat() if set_at and hasattr(set_at, 'isoformat') else None,
-            'max_message_length': admin_settings.get('max_message_length', 2000)
-        }
-        await websocket.send_str(json.dumps(announcement_data))
-        
-        # Deprecated: Send old message history for backward compatibility
-        if messages:
-            history_message = json.dumps({
-                'type': 'history',
-                'messages': messages[-MAX_HISTORY:]
+        try:
+            user_servers = build_user_servers_data(username)
+            user_dms = build_user_dms_data(username)
+            friends_list = build_user_friends_data(username)
+            friend_requests_sent, friend_requests_received = build_friend_requests_data(username)
+            
+            current_avatar = get_avatar_data(username)
+            current_profile = get_profile_data(username)
+            user = db.get_user(username)
+            notification_mode = user.get('notification_mode', 'all') if user else 'all'
+            first_user = db.get_first_user()
+            is_admin = (username == first_user)
+            log_admin_check(username, first_user, is_admin, context="init message")
+            user_data = json.dumps({
+                'type': 'init',
+                'username': username,
+                **current_avatar,
+                **current_profile,
+                'notification_mode': notification_mode,
+                'is_admin': is_admin,
+                'servers': user_servers,
+                'dms': user_dms,
+                'friends': friends_list,
+                'friend_requests_sent': friend_requests_sent,
+                'friend_requests_received': friend_requests_received
             })
-            await websocket.send_str(history_message)
-        
-        # Notify others about new user joining
-        join_message = json.dumps({
-            'type': 'system',
-            'content': f'{username} joined the chat',
-            'timestamp': datetime.now(timezone.utc).isoformat()
-        })
-        await broadcast(join_message, exclude=websocket)
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} joined chat")
+            await websocket.send_str(user_data)
+            
+            # Send announcement data and server settings
+            admin_settings = db.get_admin_settings()
+            set_at = admin_settings.get('announcement_set_at')
+            announcement_data = {
+                'type': 'announcement_update',
+                'enabled': admin_settings.get('announcement_enabled', False),
+                'message': admin_settings.get('announcement_message', ''),
+                'duration_minutes': admin_settings.get('announcement_duration_minutes', 60),
+                'set_at': set_at.isoformat() if set_at and hasattr(set_at, 'isoformat') else None,
+                'max_message_length': admin_settings.get('max_message_length', 2000)
+            }
+            await websocket.send_str(json.dumps(announcement_data))
+            
+            # Deprecated: Send old message history for backward compatibility
+            if messages:
+                history_message = json.dumps({
+                    'type': 'history',
+                    'messages': messages[-MAX_HISTORY:]
+                })
+                await websocket.send_str(history_message)
+            
+            # Notify others about new user joining
+            join_message = json.dumps({
+                'type': 'system',
+                'content': f'{username} joined the chat',
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            })
+            await broadcast(join_message, exclude=websocket)
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} joined chat")
+        except Exception as e:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ERROR: Failed to send init message to {username}: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            # Send error message to client
+            try:
+                await websocket.send_str(json.dumps({
+                    'type': 'error',
+                    'message': 'Connection error. Please refresh the page and try again.'
+                }))
+            except Exception as send_error:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] ERROR: Could not send error message: {send_error}", flush=True)
+            # Close connection to force client to reconnect
+            await websocket.close()
+            return
         
         # Handle messages from this client
         async for msg in websocket:
