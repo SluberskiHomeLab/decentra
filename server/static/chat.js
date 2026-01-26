@@ -916,6 +916,10 @@
                 showServerInviteCode(data.code);
                 break;
                 
+            case 'server_invite_usage':
+                displayInviteUsage(data.usage_logs);
+                break;
+                
             case 'server_members':
                 displayServerMembers(data.members, data.server_id);
                 // Also update the sidebar if we're viewing this server
@@ -3343,6 +3347,20 @@
             content.classList.add('hidden');
         });
         document.getElementById(`settings-tab-${tabName}`).classList.remove('hidden');
+        
+        // Fetch invite usage when switching to invites tab
+        if (tabName === 'invites' && currentlySelectedServer) {
+            try {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'get_server_invite_usage',
+                        server_id: currentlySelectedServer
+                    }));
+                }
+            } catch (error) {
+                console.error('Failed to fetch invite usage:', error);
+            }
+        }
     }
     
     // Rename server
@@ -3751,6 +3769,69 @@
         
         // Store the current invite code for later use
         serverInviteDisplay.dataset.currentInviteCode = code;
+    }
+    
+    function displayInviteUsage(usageLogs) {
+        const inviteUsageList = document.getElementById('invite-usage-list');
+        
+        if (!usageLogs || usageLogs.length === 0) {
+            inviteUsageList.innerHTML = '<div class="invite-usage-empty">No invites have been used yet.</div>';
+            return;
+        }
+        
+        inviteUsageList.innerHTML = '';
+        
+        usageLogs.forEach(log => {
+            const usageItem = document.createElement('div');
+            usageItem.className = 'invite-usage-item';
+            
+            const header = document.createElement('div');
+            header.className = 'invite-usage-header';
+            
+            const codeSpan = document.createElement('span');
+            codeSpan.className = 'invite-usage-code';
+            codeSpan.textContent = log.invite_code;
+            
+            const countSpan = document.createElement('span');
+            countSpan.className = 'invite-usage-count';
+            countSpan.textContent = `${log.use_count} use${log.use_count !== 1 ? 's' : ''}`;
+            
+            header.appendChild(codeSpan);
+            header.appendChild(countSpan);
+            
+            const details = document.createElement('div');
+            details.className = 'invite-usage-details';
+            
+            const firstUsed = new Date(log.first_used);
+            const lastUsed = new Date(log.last_used);
+            
+            details.innerHTML = `
+                <div><strong>First used:</strong> ${firstUsed.toLocaleString()}</div>
+                <div><strong>Last used:</strong> ${lastUsed.toLocaleString()}</div>
+            `;
+            
+            if (log.users && log.users.length > 0) {
+                const usersDiv = document.createElement('div');
+                usersDiv.className = 'invite-usage-users';
+                
+                const usersLabel = document.createElement('strong');
+                usersLabel.textContent = 'Used by: ';
+                usersDiv.appendChild(usersLabel);
+                
+                log.users.forEach(user => {
+                    const userSpan = document.createElement('span');
+                    userSpan.className = 'invite-usage-user';
+                    userSpan.textContent = user;
+                    usersDiv.appendChild(userSpan);
+                });
+                
+                details.appendChild(usersDiv);
+            }
+            
+            usageItem.appendChild(header);
+            usageItem.appendChild(details);
+            inviteUsageList.appendChild(usageItem);
+        });
     }
     
     function displayServerMembers(members, serverId) {

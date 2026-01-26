@@ -837,8 +837,9 @@ async def handler(websocket):
                         # Add mutual friendship
                         db.add_friend_request(inviter_username, username)
                         db.accept_friend_request(inviter_username, username)
-                        # Remove used invite code
+                        # Log invite usage and remove used invite code
                         if invite_code:
+                            db.log_invite_usage(invite_code, username, invite_data.get('server_id'))
                             db.delete_invite_code(invite_code)
                     
                     # Generate JWT token for the user
@@ -917,8 +918,11 @@ async def handler(websocket):
                     # Add mutual friendship
                     db.add_friend_request(inviter_username, username)
                     db.accept_friend_request(inviter_username, username)
-                    # Remove used invite code
+                    # Log invite usage and remove used invite code
                     if pending['invite_code']:
+                        invite_data = db.get_invite_code(pending['invite_code'])
+                        if invite_data:
+                            db.log_invite_usage(pending['invite_code'], username, invite_data.get('server_id'))
                         db.delete_invite_code(pending['invite_code'])
                 
                 # Generate JWT token for the user
@@ -2318,6 +2322,24 @@ async def handler(websocket):
                                 'message': 'You do not have permission to create server invites'
                             }))
                     
+                    elif data.get('type') == 'get_server_invite_usage':
+                        server_id = data.get('server_id', '')
+                        
+                        # Check if user has permission to view invite usage
+                        if has_permission(server_id, username, 'access_settings'):
+                            usage_logs = db.get_server_invite_usage(server_id)
+                            
+                            await websocket.send_str(json.dumps({
+                                'type': 'server_invite_usage',
+                                'server_id': server_id,
+                                'usage_logs': usage_logs
+                            }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'You do not have permission to view invite usage'
+                            }))
+                    
                     elif data.get('type') == 'join_server_with_invite':
                         invite_code = data.get('invite_code', '').strip()
                         
@@ -2347,7 +2369,8 @@ async def handler(websocket):
                                 # Add user to server
                                 db.add_server_member(server_id, username)
                                 
-                                # Remove used invite code
+                                # Log invite usage and remove used invite code
+                                db.log_invite_usage(invite_code, username, server_id)
                                 db.delete_invite_code(invite_code)
                                 
                                 # Get channels for response

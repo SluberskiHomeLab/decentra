@@ -171,6 +171,29 @@ class Database:
                         )
                     ''')
                     
+                    # Invite usage tracking table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS invite_usage (
+                            id SERIAL PRIMARY KEY,
+                            invite_code VARCHAR(255) NOT NULL,
+                            used_by VARCHAR(255) NOT NULL,
+                            server_id VARCHAR(255),
+                            used_at TIMESTAMP NOT NULL,
+                            FOREIGN KEY (used_by) REFERENCES users(username) ON DELETE CASCADE,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Create index on invite_code for better query performance
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_invite_usage_invite_code 
+                        ON invite_usage(invite_code)
+                    ''')
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_invite_usage_server_id 
+                        ON invite_usage(server_id)
+                    ''')
+                    
                     # Admin settings table
                     cursor.execute('''
                         CREATE TABLE IF NOT EXISTS admin_settings (
@@ -1766,6 +1789,33 @@ class Database:
                 WHERE server_id = %s AND code_type = 'server'
             ''', (server_id,))
             return {row['code']: row['creator'] for row in cursor.fetchall()}
+    
+    def log_invite_usage(self, invite_code: str, used_by: str, server_id: Optional[str] = None):
+        """Log when an invite code is used."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO invite_usage (invite_code, used_by, server_id, used_at)
+                VALUES (%s, %s, %s, %s)
+            ''', (invite_code, used_by, server_id, datetime.now()))
+    
+    def get_server_invite_usage(self, server_id: str) -> List[Dict]:
+        """Get invite usage logs for a server, grouped by invite code with usage counts."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT 
+                    invite_code,
+                    COUNT(*) as use_count,
+                    MIN(used_at) as first_used,
+                    MAX(used_at) as last_used,
+                    ARRAY_AGG(used_by ORDER BY used_at DESC) as users
+                FROM invite_usage
+                WHERE server_id = %s
+                GROUP BY invite_code
+                ORDER BY last_used DESC
+            ''', (server_id,))
+            return [dict(row) for row in cursor.fetchall()]
     
     # Custom emoji operations
     def create_custom_emoji(self, emoji_id: str, server_id: str, name: str, 

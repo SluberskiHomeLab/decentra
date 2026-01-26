@@ -1438,6 +1438,81 @@ body::before {
     border-radius: 50%;
 }
 
+.invite-usage-list {
+    margin-top: 16px;
+}
+
+.invite-usage-empty {
+    color: #72767d;
+    font-style: italic;
+    padding: 20px;
+    text-align: center;
+    background: #2f3136;
+    border-radius: 8px;
+}
+
+.invite-usage-item {
+    background: #2f3136;
+    padding: 16px;
+    border-radius: 8px;
+    margin-bottom: 12px;
+    border: 1px solid #202225;
+}
+
+.invite-usage-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.invite-usage-code {
+    font-family: monospace;
+    font-size: 16px;
+    font-weight: 700;
+    color: #5865F2;
+    letter-spacing: 1px;
+    background: #202225;
+    padding: 6px 12px;
+    border-radius: 6px;
+}
+
+.invite-usage-count {
+    background: #43b581;
+    color: white;
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.invite-usage-details {
+    color: #b9bbbe;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.invite-usage-details strong {
+    color: #dcddde;
+}
+
+.invite-usage-users {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid #202225;
+}
+
+.invite-usage-user {
+    display: inline-block;
+    background: #202225;
+    color: #dcddde;
+    padding: 4px 8px;
+    border-radius: 4px;
+    margin-right: 6px;
+    margin-bottom: 6px;
+    font-size: 12px;
+}
+
 .modal-actions {
     display: flex;
     gap: 12px;
