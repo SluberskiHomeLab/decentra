@@ -6648,6 +6648,13 @@
         });
     }
     
+    
+    // Attachment Deletion Functions
+    let deleteAttachmentId = null;
+    const deleteAttachmentModal = document.getElementById('delete-attachment-modal');
+    const deleteAttachmentConfirmBtn = document.getElementById('delete-attachment-confirm-btn');
+    const deleteAttachmentCancelBtn = document.getElementById('delete-attachment-cancel-btn');
+    
     if (deleteAttachmentModal) {
         deleteAttachmentModal.addEventListener('click', (e) => {
             if (e.target === deleteAttachmentModal) {
@@ -6656,13 +6663,6 @@
             }
         });
     }
-    
-    
-    // Attachment Deletion Functions
-    let deleteAttachmentId = null;
-    const deleteAttachmentModal = document.getElementById('delete-attachment-modal');
-    const deleteAttachmentConfirmBtn = document.getElementById('delete-attachment-confirm-btn');
-    const deleteAttachmentCancelBtn = document.getElementById('delete-attachment-cancel-btn');
     
     function showDeleteAttachmentConfirmation(attachmentId, filename) {
         deleteAttachmentId = attachmentId;
