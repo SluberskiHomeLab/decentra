@@ -18,7 +18,7 @@ COPY --from=build /app/dist/ /usr/share/nginx/html/
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 
-RUN chmod +x /docker-entrypoint.sh
+RUN apk add --no-cache dos2unix && dos2unix /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh
 
 EXPOSE 8443
 ENTRYPOINT ["/docker-entrypoint.sh"]
