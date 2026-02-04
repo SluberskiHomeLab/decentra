@@ -7170,15 +7170,24 @@
     function formatMessage(text) {
         // Process in order: code blocks first, then inline code, then bold, then italic, then other formats
         
+        // Helper to safely encode strings (handles Unicode)
+        function safeEncode(str) {
+            return encodeURIComponent(str);
+        }
+        
+        function safeDecode(str) {
+            return decodeURIComponent(str);
+        }
+        
         // Code block: ```code``` (must be processed first)
         text = text.replace(/```([^`]+?)```/g, function(match, code) {
             // Preserve code blocks by using a placeholder
-            return '\x00CODE_BLOCK\x00' + btoa(code) + '\x00';
+            return '\x00CODE_BLOCK\x00' + safeEncode(code) + '\x00';
         });
         
         // Inline code: `code` (must be before bold/italic to prevent conflicts)
         text = text.replace(/`([^`]+?)`/g, function(match, code) {
-            return '\x00CODE\x00' + btoa(code) + '\x00';
+            return '\x00CODE\x00' + safeEncode(code) + '\x00';
         });
         
         // Bold: **text** or __text__ (before italic)
@@ -7186,9 +7195,9 @@
         text = text.replace(/__([^_]+?)__/g, '<strong>$1</strong>');
         
         // Italic: *text* or _text_ (after bold)
-        // Only match single * or _ not preceded/followed by another
-        text = text.replace(/([^*]|^)\*([^*]+?)\*([^*]|$)/g, '$1<em>$2</em>$3');
-        text = text.replace(/([^_]|^)_([^_]+?)_([^_]|$)/g, '$1<em>$2</em>$3');
+        // Match single * or _ not preceded/followed by another, allowing end of string
+        text = text.replace(/([^*]|^)\*([^*]+?)\*($|[^*])/g, '$1<em>$2</em>$3');
+        text = text.replace(/([^_]|^)_([^_]+?)_($|[^_])/g, '$1<em>$2</em>$3');
         
         // Quote: > text
         text = text.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
@@ -7197,29 +7206,30 @@
         text = text.replace(/\|\|(.+?)\|\|/g, '<span class="spoiler">$1</span>');
         
         // @Mentions: @username (validate against current context users if available)
-        text = text.replace(/@(\w+)/g, function(match, username) {
+        const currentUser = document.getElementById('current-user').textContent;
+        text = text.replace(/@(\w+)/g, function(match, mentionedUser) {
             // Check if username exists in current context
             let isValidMention = false;
             if (currentServerMembers && currentServerMembers.length > 0) {
-                isValidMention = currentServerMembers.some(m => m.username === username);
+                isValidMention = currentServerMembers.some(m => m.username === mentionedUser);
             } else if (currentContext && currentContext.type === 'dm') {
                 // In DMs, only the other person or yourself are valid mentions
                 const dm = dms.find(d => d.id === currentContext.dmId);
-                isValidMention = dm && (dm.username === username || username === window.username);
+                isValidMention = dm && (dm.username === mentionedUser || mentionedUser === currentUser);
             } else {
                 // Fallback: apply mention styling anyway (backend will handle validation)
                 isValidMention = true;
             }
             
-            return isValidMention ? '<span class="mention">@' + username + '</span>' : match;
+            return isValidMention ? '<span class="mention">@' + mentionedUser + '</span>' : match;
         });
         
         // Restore code blocks and inline code
         text = text.replace(/\x00CODE_BLOCK\x00([^\x00]+?)\x00/g, function(match, encodedCode) {
-            return '<pre><code>' + atob(encodedCode) + '</code></pre>';
+            return '<pre><code>' + safeDecode(encodedCode) + '</code></pre>';
         });
         text = text.replace(/\x00CODE\x00([^\x00]+?)\x00/g, function(match, encodedCode) {
-            return '<code>' + atob(encodedCode) + '</code>';
+            return '<code>' + safeDecode(encodedCode) + '</code>';
         });
         
         return text;
