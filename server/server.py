@@ -3846,18 +3846,20 @@ async def handler(websocket):
                     
                     # Read/Unread tracking handlers
                     elif data.get('type') == 'mark_read':
-                        message_ids = data.get('message_ids', [])
+                        context_type = data.get('context_type', '')
+                        context_id = data.get('context_id', '')
                         
-                        if message_ids:
-                            # Support both single message_id and list of message_ids
-                            if isinstance(message_ids, int):
-                                message_ids = [message_ids]
+                        if context_type and context_id:
+                            # Get all messages in this context
+                            messages = db.get_messages(context_type, context_id, limit=1000)
+                            message_ids = [msg['id'] for msg in messages]
                             
-                            count = db.mark_messages_read_bulk(message_ids, username)
-                            await websocket.send_str(json.dumps({
-                                'type': 'messages_marked_read',
-                                'count': count
-                            }))
+                            if message_ids:
+                                count = db.mark_messages_read_bulk(message_ids, username)
+                                await websocket.send_str(json.dumps({
+                                    'type': 'messages_marked_read',
+                                    'count': count
+                                }))
                     
                     elif data.get('type') == 'get_unread_count':
                         context_type = data.get('context_type', '')

@@ -6987,14 +6987,15 @@
         if (currentContext && currentContext.type === 'server') {
             ws.send(JSON.stringify({
                 type: 'pin_message',
-                server_id: currentContext.serverId,
-                channel_id: currentContext.channelId,
+                context_type: 'server',
+                context_id: currentContext.serverId,
                 message_id: messageId
             }));
         } else if (currentContext && currentContext.type === 'dm') {
             ws.send(JSON.stringify({
                 type: 'pin_message',
-                dm_id: currentContext.dmId,
+                context_type: 'dm',
+                context_id: currentContext.dmId,
                 message_id: messageId
             }));
         }
@@ -7004,14 +7005,11 @@
         if (currentContext && currentContext.type === 'server') {
             ws.send(JSON.stringify({
                 type: 'unpin_message',
-                server_id: currentContext.serverId,
-                channel_id: currentContext.channelId,
                 message_id: messageId
             }));
         } else if (currentContext && currentContext.type === 'dm') {
             ws.send(JSON.stringify({
                 type: 'unpin_message',
-                dm_id: currentContext.dmId,
                 message_id: messageId
             }));
         }
@@ -7069,20 +7067,23 @@
         const query = searchMessagesInput.value.trim();
         if (!query) return;
         
+        let context_type = null;
+        let context_id = null;
+        
         if (currentContext && currentContext.type === 'server') {
-            ws.send(JSON.stringify({
-                type: 'search_messages',
-                server_id: currentContext.serverId,
-                channel_id: currentContext.channelId,
-                query: query
-            }));
+            context_type = 'server';
+            context_id = currentContext.serverId;
         } else if (currentContext && currentContext.type === 'dm') {
-            ws.send(JSON.stringify({
-                type: 'search_messages',
-                dm_id: currentContext.dmId,
-                query: query
-            }));
+            context_type = 'dm';
+            context_id = currentContext.dmId;
         }
+        
+        ws.send(JSON.stringify({
+            type: 'search_messages',
+            context_type: context_type,
+            context_id: context_id,
+            query: query
+        }));
     }
     
     function displaySearchResultsModal(results, query) {
@@ -7261,16 +7262,20 @@
     function markContextAsRead() {
         if (!currentContext) return;
         
+        let contextType = '';
         let contextId = '';
         if (currentContext.type === 'server') {
-            contextId = `${currentContext.serverId}/${currentContext.channelId}`;
+            contextType = 'server';
+            contextId = currentContext.serverId;
         } else if (currentContext.type === 'dm') {
+            contextType = 'dm';
             contextId = currentContext.dmId;
         }
         
         if (contextId) {
             ws.send(JSON.stringify({
                 type: 'mark_read',
+                context_type: contextType,
                 context_id: contextId
             }));
             updateUnreadCount(contextId, 0);
@@ -7279,16 +7284,20 @@
     
     function requestUnreadCount() {
         if (currentContext) {
+            let contextType = '';
             let contextId = '';
             if (currentContext.type === 'server') {
-                contextId = `${currentContext.serverId}/${currentContext.channelId}`;
+                contextType = 'server';
+                contextId = currentContext.serverId;
             } else if (currentContext.type === 'dm') {
+                contextType = 'dm';
                 contextId = currentContext.dmId;
             }
             
             if (contextId) {
                 ws.send(JSON.stringify({
                     type: 'get_unread_count',
+                    context_type: contextType,
                     context_id: contextId
                 }));
             }
