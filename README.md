@@ -14,6 +14,19 @@ A decentralized Discord-like chat server and client that is non-federated and se
   - ⚙️ Server settings for owners (rename, invites, permissions)
   - 🎫 Server-specific invite codes
   - 🔐 Granular user permissions (create/edit/delete channels)
+  - 🏷️ **Channel Categories** - Organize channels into collapsible groups
+  - 👑 **Role Hierarchy** - Position-based role system for clear authority structure
+- 🛡️ **Server Moderation Tools** - Comprehensive moderation features
+  - 🚫 Kick, ban, and timeout users
+  - ⏱️ Temporary timeouts with automatic expiration
+  - 🔓 Unban and remove timeout capabilities
+  - 👮 Role hierarchy enforcement (can't moderate higher roles)
+  - 📋 View all moderation actions
+- 📜 **Audit Logs** - Track all server actions and changes
+  - Category and channel modifications
+  - Moderation actions (kicks, bans, timeouts)
+  - Role changes and permission updates
+  - Full accountability and transparency
 - 💬 **Direct Messages** - Private conversations with friends
 - 👥 **Friend System** - Search for users and add friends
 - 🎤 **Voice Chat** - Direct voice calls and voice channels in servers
@@ -615,6 +628,16 @@ curl -k "https://localhost:8765/api/servers?username=myusername"
 **Note**: Use the `-k` flag with curl to accept the self-signed certificate.
 
 For real-time messaging and updates, desktop applications should use the WebSocket endpoint at `wss://localhost:8765/ws` in combination with the REST API.
+
+## Server Management
+
+Decentra includes comprehensive server management features:
+- **Channel Categories** - Organize channels into collapsible groups
+- **Role Hierarchy** - Position-based role system for clear authority
+- **Moderation Tools** - Kick, ban, and timeout users
+- **Audit Logs** - Track all server actions and changes
+
+See [docs/SERVER_MANAGEMENT.md](docs/SERVER_MANAGEMENT.md) for complete documentation on server management features.
 
 ## Development
 
