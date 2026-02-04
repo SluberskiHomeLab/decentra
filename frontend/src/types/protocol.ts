@@ -184,6 +184,7 @@ export type WsMessage =
   | WsAuthSuccess
   | WsAuthError
   | WsTwoFaRequired
+  | WsVerificationRequired
   | WsInit
   | WsDataSynced
   | WsSystem
@@ -207,6 +208,25 @@ export type WsOutboundLogin = {
   username: string
   password: string
   totp_code?: string
+}
+
+export type WsOutboundSignup = {
+  type: 'signup'
+  username: string
+  password: string
+  email: string
+  invite_code?: string
+}
+
+export type WsOutboundVerifyEmail = {
+  type: 'verify_email'
+  username: string
+  code: string
+}
+
+export type WsVerificationRequired = {
+  type: 'verification_required'
+  message?: string
 }
 
 export type WsOutboundTokenAuth = {

@@ -11,9 +11,11 @@ import type {
   WsOutboundJoinServerWithInvite,
   WsOutboundLogin,
   WsOutboundSendMessage,
+  WsOutboundSignup,
   WsOutboundStartDm,
   WsOutboundSyncData,
   WsOutboundTokenAuth,
+  WsOutboundVerifyEmail,
 } from '../types/protocol'
 
 type MessageHandler = (msg: WsMessage) => void
@@ -80,6 +82,14 @@ export class WsClient {
   }
 
   login(payload: WsOutboundLogin) {
+    this.send(payload)
+  }
+
+  signup(payload: WsOutboundSignup) {
+    this.send(payload)
+  }
+
+  verifyEmail(payload: WsOutboundVerifyEmail) {
     this.send(payload)
   }
 

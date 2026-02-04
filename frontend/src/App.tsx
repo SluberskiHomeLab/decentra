@@ -217,6 +217,9 @@ function LoginPage() {
             </form>
 
             <div className="mt-4 flex flex-wrap gap-3 text-sm">
+              <Link className="text-sky-300 hover:text-sky-200" to="/signup">
+                Create Account
+              </Link>
               <Link className="text-sky-300 hover:text-sky-200" to="/chat">
                 Go to Chat
               </Link>
@@ -235,6 +238,263 @@ function LoginPage() {
               >
                 Clear saved token
               </button>
+            </div>
+
+            {lastAuthError ? (
+              <div className="mt-4 rounded-xl border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-sm text-rose-50">
+                {lastAuthError}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="mt-6 text-xs text-slate-400">
+            Backend via nginx proxy: <span className="text-slate-300">/api</span> and <span className="text-slate-300">/ws</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SignUpPage() {
+  const navigate = useNavigate()
+  const setAuth = useAppStore((s) => s.setAuth)
+  const setInit = useAppStore((s) => s.setInit)
+  const setLastAuthError = useAppStore((s) => s.setLastAuthError)
+  const lastAuthError = useAppStore((s) => s.lastAuthError)
+
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [email, setEmail] = useState('')
+  const [inviteCode, setInviteCode] = useState('')
+  const [verificationCode, setVerificationCode] = useState('')
+  const [needsVerification, setNeedsVerification] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  useEffect(() => {
+    const unsubscribe = wsClient.onMessage((msg: WsMessage) => {
+      if (msg.type === 'auth_error') {
+        setIsSubmitting(false)
+        setNeedsVerification(false)
+        const message = typeof msg.message === 'string' ? msg.message : 'Authentication failed'
+        setLastAuthError(message)
+      }
+      if (msg.type === 'verification_required') {
+        setIsSubmitting(false)
+        setNeedsVerification(true)
+        setLastAuthError(null)
+      }
+      if (msg.type === 'auth_success') {
+        setIsSubmitting(false)
+        const u = username.trim()
+        if (!u) return
+        const token = typeof msg.token === 'string' ? msg.token : ''
+        if (!token) {
+          setLastAuthError('Signup succeeded but no token was returned')
+          return
+        }
+        setStoredAuth({ token, username: u })
+        setAuth({ token, username: u })
+        setLastAuthError(null)
+        navigate('/chat')
+      }
+      if (msg.type === 'init') {
+        const initUsername = typeof msg.username === 'string' ? msg.username : username.trim()
+        if (!initUsername) return
+        setInit({
+          username: initUsername,
+          is_admin: msg.is_admin,
+          notification_mode: msg.notification_mode,
+          avatar: msg.avatar,
+          avatar_type: msg.avatar_type,
+          avatar_data: msg.avatar_data,
+          bio: msg.bio,
+          status_message: msg.status_message,
+          servers: msg.servers,
+          dms: msg.dms,
+          friends: msg.friends,
+          friend_requests_sent: msg.friend_requests_sent,
+          friend_requests_received: msg.friend_requests_received,
+        })
+      }
+    })
+
+    return () => unsubscribe()
+  }, [navigate, setAuth, setInit, setLastAuthError, username])
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setLastAuthError(null)
+    setIsSubmitting(true)
+
+    const u = username.trim()
+
+    if (needsVerification) {
+      // Verification step
+      const code = verificationCode.trim()
+      if (!u || !code) {
+        setIsSubmitting(false)
+        setLastAuthError('Username and verification code are required')
+        return
+      }
+
+      const ws = wsClient.connect()
+      const sendVerify = () => {
+        wsClient.verifyEmail({
+          type: 'verify_email',
+          username: u,
+          code,
+        })
+      }
+
+      if (ws.readyState === WebSocket.OPEN) {
+        sendVerify()
+        return
+      }
+
+      ws.onopen = () => {
+        sendVerify()
+      }
+    } else {
+      // Signup step
+      if (!u || !password || !email) {
+        setIsSubmitting(false)
+        setLastAuthError('Username, password, and email are required')
+        return
+      }
+
+      const ws = wsClient.connect()
+      const sendSignup = () => {
+        wsClient.signup({
+          type: 'signup',
+          username: u,
+          password,
+          email,
+          invite_code: inviteCode.trim() || undefined,
+        })
+      }
+
+      if (ws.readyState === WebSocket.OPEN) {
+        sendSignup()
+        return
+      }
+
+      ws.onopen = () => {
+        sendSignup()
+      }
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-950">
+      <div className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4 py-10">
+        <div className="w-full max-w-md">
+          <div className="mb-6">
+            <div className="text-xs font-medium text-sky-200/70">Decentra</div>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">
+              {needsVerification ? 'Verify Email' : 'Sign Up'}
+            </h1>
+            <p className="mt-2 text-sm text-slate-300">
+              {needsVerification
+                ? 'Enter the verification code sent to your email.'
+                : 'Create a new account to get started.'}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-slate-900/40 p-5 shadow-xl">
+            <form onSubmit={onSubmit} className="flex flex-col gap-4">
+              {needsVerification ? (
+                <>
+                  <label className="text-sm">
+                    <div className="mb-1 text-slate-200">Username</div>
+                    <input
+                      value={username}
+                      readOnly
+                      className="w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-slate-400"
+                    />
+                  </label>
+                  <label className="text-sm">
+                    <div className="mb-1 text-slate-200">Verification Code</div>
+                    <input
+                      value={verificationCode}
+                      onChange={(e) => setVerificationCode(e.target.value)}
+                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      placeholder="123456"
+                      maxLength={6}
+                    />
+                  </label>
+                </>
+              ) : (
+                <>
+                  <label className="text-sm">
+                    <div className="mb-1 text-slate-200">Username</div>
+                    <input
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      placeholder="alice"
+                    />
+                  </label>
+                  <label className="text-sm">
+                    <div className="mb-1 text-slate-200">Password</div>
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      placeholder="••••••••"
+                    />
+                  </label>
+                  <label className="text-sm">
+                    <div className="mb-1 text-slate-200">Email</div>
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      placeholder="alice@example.com"
+                    />
+                  </label>
+                  <label className="text-sm">
+                    <div className="mb-1 text-slate-200">
+                      Invite Code <span className="text-xs text-slate-400">(optional, empty for first user)</span>
+                    </div>
+                    <input
+                      value={inviteCode}
+                      onChange={(e) => setInviteCode(e.target.value)}
+                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      placeholder="ABC123"
+                    />
+                  </label>
+                </>
+              )}
+
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="mt-1 inline-flex items-center justify-center rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isSubmitting ? 'Processing…' : needsVerification ? 'Verify Email' : 'Create Account'}
+              </button>
+            </form>
+
+            <div className="mt-4 flex flex-wrap gap-3 text-sm">
+              <Link className="text-sky-300 hover:text-sky-200" to="/login">
+                Already have an account? Sign In
+              </Link>
+              {needsVerification && (
+                <button
+                  type="button"
+                  className="text-slate-300 hover:text-slate-200"
+                  onClick={() => {
+                    setNeedsVerification(false)
+                    setVerificationCode('')
+                    setLastAuthError(null)
+                  }}
+                >
+                  Change Username/Email
+                </button>
+              )}
             </div>
 
             {lastAuthError ? (
@@ -1195,6 +1455,7 @@ function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/login" replace />} />
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/signup" element={<SignUpPage />} />
         <Route path="/chat" element={<ChatPage />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
