@@ -3800,12 +3800,8 @@ async def handler(websocket):
                         channel_id = data.get('channel_id', '')
                         category_id = data.get('category_id')  # Can be None to remove from category
                         
-                        # Get channel to find server_id
-                        channels = []
-                        for sid in [s['server_id'] for s in db.get_all_servers()]:
-                            channels.extend(db.get_server_channels(sid))
-                        
-                        channel = next((c for c in channels if c['channel_id'] == channel_id), None)
+                        # Get channel directly by ID
+                        channel = db.get_channel(channel_id)
                         if channel:
                             server_id = channel['server_id']
                             if has_permission(server_id, username, 'manage_channels'):

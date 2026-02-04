@@ -1241,6 +1241,16 @@ class Database:
             ''', (server_id,))
             return [dict(row) for row in cursor.fetchall()]
     
+    def get_channel(self, channel_id: str) -> Optional[Dict]:
+        """Get a specific channel by ID."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM channels WHERE channel_id = %s
+            ''', (channel_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
     # Server members operations
     def add_server_member(self, server_id: str, username: str) -> bool:
         """Add a member to a server."""
@@ -2093,6 +2103,7 @@ class Database:
             
             with self.get_connection() as conn:
                 cursor = conn.cursor()
+                # Safe: updates list contains only hardcoded strings, never user input
                 cursor.execute(f'''
                     UPDATE channel_categories
                     SET {', '.join(updates)}
