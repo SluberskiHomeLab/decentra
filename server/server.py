@@ -855,6 +855,9 @@ async def handler(websocket):
                     clients[websocket] = username
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] New user registered: {username}")
                     
+                    # Set user status to online
+                    db.update_user_status(username, 'online')
+                    
                     # Notify inviter that they are now friends
                     if inviter_username:
                         new_user_avatar = get_avatar_data(username)
@@ -937,6 +940,9 @@ async def handler(websocket):
                 authenticated = True
                 clients[websocket] = username
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] New user registered: {username}")
+                
+                # Set user status to online
+                db.update_user_status(username, 'online')
                 
                 # Notify inviter that they are now friends
                 if inviter_username:
@@ -1025,6 +1031,15 @@ async def handler(websocket):
                 authenticated = True
                 clients[websocket] = username
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] User logged in: {username}")
+                
+                # Set user status to online
+                db.update_user_status(username, 'online')
+                # Broadcast status change
+                await broadcast(json.dumps({
+                    'type': 'user_status_changed',
+                    'username': username,
+                    'status': 'online'
+                }))
             
             # Handle token-based authentication
             elif auth_data.get('type') == 'token':
@@ -1066,6 +1081,15 @@ async def handler(websocket):
                 authenticated = True
                 clients[websocket] = username
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] User authenticated via token: {username}")
+                
+                # Set user status to online
+                db.update_user_status(username, 'online')
+                # Broadcast status change
+                await broadcast(json.dumps({
+                    'type': 'user_status_changed',
+                    'username': username,
+                    'status': 'online'
+                }))
             
             # Handle password reset request
             elif auth_data.get('type') == 'request_password_reset':
@@ -3620,6 +3644,232 @@ async def handler(websocket):
                                 'type': 'voice_call_rejected',
                                 'from': username
                             }))
+                    
+                    # User Status handlers
+                    elif data.get('type') == 'set_status':
+                        status = data.get('status', 'online')
+                        # Validate status value
+                        if status in ['online', 'away', 'busy', 'invisible', 'offline']:
+                            if db.update_user_status(username, status):
+                                # Broadcast status change to all connected clients
+                                status_update = {
+                                    'type': 'user_status_changed',
+                                    'username': username,
+                                    'status': status
+                                }
+                                await broadcast(json.dumps(status_update))
+                                
+                                await websocket.send_str(json.dumps({
+                                    'type': 'status_updated',
+                                    'status': status
+                                }))
+                    
+                    elif data.get('type') == 'get_online_users':
+                        online_users = db.get_online_users()
+                        await websocket.send_str(json.dumps({
+                            'type': 'online_users',
+                            'users': online_users
+                        }))
+                    
+                    # Channel Topic handlers
+                    elif data.get('type') == 'set_channel_topic':
+                        channel_id = data.get('channel_id', '').strip()
+                        topic = data.get('topic', '').strip()
+                        
+                        # Get channel info
+                        channel = db.get_channel(channel_id)
+                        if not channel:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Channel not found'
+                            }))
+                        else:
+                            server_id = channel['server_id']
+                            server = db.get_server(server_id)
+                            
+                            # Check permissions (must be server owner or have edit channel permission)
+                            member = db.get_server_member(server_id, username)
+                            if server['owner'] == username or (member and member.get('can_edit_channel')):
+                                if db.update_channel_topic(channel_id, topic):
+                                    # Broadcast topic update to all server members
+                                    topic_update = {
+                                        'type': 'channel_topic_updated',
+                                        'channel_id': channel_id,
+                                        'topic': topic,
+                                        'updated_by': username
+                                    }
+                                    await broadcast_to_server(server_id, json.dumps(topic_update))
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'You do not have permission to edit channel topics'
+                                }))
+                    
+                    elif data.get('type') == 'get_channel_info':
+                        channel_id = data.get('channel_id', '').strip()
+                        channel = db.get_channel(channel_id)
+                        if channel:
+                            await websocket.send_str(json.dumps({
+                                'type': 'channel_info',
+                                'channel': channel
+                            }))
+                    
+                    # Pinned Messages handlers
+                    elif data.get('type') == 'pin_message':
+                        message_id = data.get('message_id')
+                        context_type = data.get('context_type', '')
+                        context_id = data.get('context_id', '')
+                        
+                        # Verify message exists
+                        message = db.get_message(message_id)
+                        if not message:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Message not found'
+                            }))
+                        else:
+                            # Check permissions
+                            can_pin = False
+                            if context_type == 'server':
+                                server = db.get_server(context_id)
+                                member = db.get_server_member(context_id, username)
+                                # Server owner or users with edit channel permission can pin
+                                if server and (server['owner'] == username or (member and member.get('can_edit_channel'))):
+                                    can_pin = True
+                            elif context_type == 'dm':
+                                # Both DM participants can pin messages
+                                can_pin = True
+                            
+                            if can_pin:
+                                if db.pin_message(message_id, context_type, context_id, username):
+                                    # Broadcast pin notification
+                                    pin_notification = {
+                                        'type': 'message_pinned',
+                                        'message_id': message_id,
+                                        'context_type': context_type,
+                                        'context_id': context_id,
+                                        'pinned_by': username
+                                    }
+                                    
+                                    if context_type == 'server':
+                                        await broadcast_to_server(context_id, json.dumps(pin_notification))
+                                    elif context_type == 'dm':
+                                        # Send to both DM participants
+                                        await broadcast_to_dm_participants(username, context_id, json.dumps(pin_notification))
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'You do not have permission to pin messages'
+                                }))
+                    
+                    elif data.get('type') == 'unpin_message':
+                        message_id = data.get('message_id')
+                        
+                        # Get message and pinned info
+                        message = db.get_message(message_id)
+                        if not message:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Message not found'
+                            }))
+                        else:
+                            context_type = message['context_type']
+                            context_id = message['context_id']
+                            
+                            # Check permissions (same as pinning)
+                            can_unpin = False
+                            if context_type == 'server':
+                                server = db.get_server(context_id)
+                                member = db.get_server_member(context_id, username)
+                                if server and (server['owner'] == username or (member and member.get('can_edit_channel'))):
+                                    can_unpin = True
+                            elif context_type == 'dm':
+                                can_unpin = True
+                            
+                            if can_unpin:
+                                if db.unpin_message(message_id):
+                                    # Broadcast unpin notification
+                                    unpin_notification = {
+                                        'type': 'message_unpinned',
+                                        'message_id': message_id,
+                                        'context_type': context_type,
+                                        'context_id': context_id
+                                    }
+                                    
+                                    if context_type == 'server':
+                                        await broadcast_to_server(context_id, json.dumps(unpin_notification))
+                                    elif context_type == 'dm':
+                                        await broadcast_to_dm_participants(username, context_id, json.dumps(unpin_notification))
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'You do not have permission to unpin messages'
+                                }))
+                    
+                    elif data.get('type') == 'get_pinned_messages':
+                        context_type = data.get('context_type', '')
+                        context_id = data.get('context_id', '')
+                        
+                        pinned = db.get_pinned_messages(context_type, context_id)
+                        await websocket.send_str(json.dumps({
+                            'type': 'pinned_messages',
+                            'messages': pinned,
+                            'context_type': context_type,
+                            'context_id': context_id
+                        }))
+                    
+                    # Message Search handler
+                    elif data.get('type') == 'search_messages':
+                        query = data.get('query', '').strip()
+                        context_type = data.get('context_type')
+                        context_id = data.get('context_id')
+                        limit = data.get('limit', 50)
+                        
+                        if query:
+                            results = db.search_messages(
+                                query=query,
+                                context_type=context_type,
+                                context_id=context_id,
+                                limit=min(limit, 100)  # Cap at 100
+                            )
+                            await websocket.send_str(json.dumps({
+                                'type': 'search_results',
+                                'query': query,
+                                'results': results
+                            }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'search_results',
+                                'query': '',
+                                'results': []
+                            }))
+                    
+                    # Read/Unread tracking handlers
+                    elif data.get('type') == 'mark_read':
+                        message_ids = data.get('message_ids', [])
+                        
+                        if message_ids:
+                            # Support both single message_id and list of message_ids
+                            if isinstance(message_ids, int):
+                                message_ids = [message_ids]
+                            
+                            count = db.mark_messages_read_bulk(message_ids, username)
+                            await websocket.send_str(json.dumps({
+                                'type': 'messages_marked_read',
+                                'count': count
+                            }))
+                    
+                    elif data.get('type') == 'get_unread_count':
+                        context_type = data.get('context_type', '')
+                        context_id = data.get('context_id', '')
+                        
+                        count = db.get_unread_count(username, context_type, context_id)
+                        await websocket.send_str(json.dumps({
+                            'type': 'unread_count',
+                            'context_type': context_type,
+                            'context_id': context_id,
+                            'count': count
+                        }))
                         
                 except json.JSONDecodeError:
                     print("Invalid JSON received")
@@ -3638,6 +3888,15 @@ async def handler(websocket):
             del clients[websocket]
         
         if username and authenticated:
+            # Set user status to offline
+            db.update_user_status(username, 'offline')
+            # Broadcast status change
+            await broadcast(json.dumps({
+                'type': 'user_status_changed',
+                'username': username,
+                'status': 'offline'
+            }))
+            
             # Clean up voice state
             if username in voice_states:
                 state = voice_states[username]
