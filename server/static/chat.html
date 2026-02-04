@@ -46,10 +46,19 @@
             </div>
             
             <div class="user-section">
+                <span id="current-user-status-dot" class="status-dot status-online"></span>
                 <span id="current-user-avatar" class="user-avatar">👤</span>
                 <span id="current-user" class="username-display"></span>
                 <button id="user-menu-btn" class="btn btn-small btn-icon" title="Menu">⚙</button>
                 <div id="user-menu" class="user-menu hidden">
+                    <div class="menu-section">
+                        <label class="menu-label">Set Status</label>
+                        <button id="status-online-btn" class="menu-item status-item"><span class="status-dot status-online"></span> Online</button>
+                        <button id="status-away-btn" class="menu-item status-item"><span class="status-dot status-away"></span> Away</button>
+                        <button id="status-busy-btn" class="menu-item status-item"><span class="status-dot status-busy"></span> Busy</button>
+                        <button id="status-invisible-btn" class="menu-item status-item"><span class="status-dot status-invisible"></span> Invisible</button>
+                    </div>
+                    <div class="menu-divider"></div>
                     <button id="menu-profile-btn" class="menu-item">Profile Settings</button>
                     <button id="menu-avatar-btn" class="menu-item">Set Avatar</button>
                     <button id="menu-notifications-btn" class="menu-item">Notification Settings</button>
@@ -91,9 +100,34 @@
         <!-- Main Chat Area -->
         <div class="chat-container">
             <div class="chat-header">
-                <button id="mobile-menu-toggle" class="mobile-menu-toggle" title="Menu" aria-label="Toggle navigation menu" aria-expanded="false">☰</button>
-                <h2 id="chat-title">Welcome to Decentra</h2>
-                <button id="dm-call-btn" class="btn btn-icon hidden" title="Voice Call">📞</button>
+                <div class="chat-header-left">
+                    <button id="mobile-menu-toggle" class="mobile-menu-toggle" title="Menu" aria-label="Toggle navigation menu" aria-expanded="false">☰</button>
+                    <div class="chat-title-container">
+                        <h2 id="chat-title">Welcome to Decentra</h2>
+                        <div id="channel-topic-display" class="channel-topic hidden">
+                            <span id="channel-topic-text"></span>
+                            <button id="edit-topic-btn" class="btn-icon-small hidden" title="Edit topic">✏️</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="chat-header-right">
+                    <div class="search-container">
+                        <input type="text" id="search-messages-input" placeholder="Search messages..." class="search-input">
+                        <button id="search-messages-btn" class="btn btn-icon" title="Search">🔍</button>
+                    </div>
+                    <button id="dm-call-btn" class="btn btn-icon hidden" title="Voice Call">📞</button>
+                </div>
+            </div>
+            
+            <div id="pinned-messages-panel" class="pinned-messages-panel hidden">
+                <div class="pinned-header">
+                    <span class="pinned-icon">📌</span>
+                    <span class="pinned-title">Pinned Messages</span>
+                    <button id="toggle-pinned-btn" class="btn-icon-small" title="Toggle pinned messages">▼</button>
+                </div>
+                <div id="pinned-messages-list" class="pinned-messages-list">
+                    <!-- Pinned messages will appear here -->
+                </div>
             </div>
             
             <div id="messages" class="messages-container">
@@ -1107,6 +1141,35 @@
                 <button id="admin-save-settings-btn" class="btn btn-primary">Save Settings</button>
                 <button id="admin-close-modal-btn" class="btn btn-secondary">Close</button>
             </div>
+        </div>
+    </div>
+    
+    <!-- Channel Topic Edit Modal -->
+    <div id="edit-topic-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Edit Channel Topic</h3>
+            <div class="form-group">
+                <label for="topic-input">Channel Topic</label>
+                <input type="text" id="topic-input" class="form-input" placeholder="Enter channel topic..." maxlength="200">
+                <small style="color: #b9bbbe; font-size: 12px;">Maximum 200 characters</small>
+            </div>
+            <div class="modal-buttons">
+                <button id="save-topic-btn" class="btn btn-primary">Save</button>
+                <button id="cancel-topic-btn" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Search Results Modal -->
+    <div id="search-results-modal" class="modal hidden">
+        <div class="modal-content modal-content-large">
+            <h3>Search Results</h3>
+            <div id="search-results-container" class="search-results-container">
+                <div id="search-results-list" class="search-results-list">
+                    <!-- Search results will be displayed here -->
+                </div>
+            </div>
+            <button id="close-search-results-btn" class="btn btn-secondary">Close</button>
         </div>
     </div>
     

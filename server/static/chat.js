@@ -47,6 +47,12 @@
     let friendRequestsReceived = [];
     let voiceMembers = {}; // Track voice members by channel: {server_id/channel_id: [usernames]}
     
+    // New feature state
+    let currentUserStatus = 'online'; // online, away, busy, invisible
+    let userStatuses = {}; // Map of username to status
+    let pinnedMessages = []; // Current context's pinned messages
+    let unreadCounts = {}; // Map of context id to unread count
+    
     // Data sync settings
     let syncInterval = null;
     const SYNC_INTERVAL_MS = 30000; // Sync every 30 seconds
@@ -240,6 +246,31 @@
     const pttKeybindDisplay = document.getElementById('ptt-keybind-display');
     const setPttKeybindBtn = document.getElementById('set-ptt-keybind-btn');
     const pttKeybindGroup = document.getElementById('ptt-keybind-group');
+    
+    // New feature elements
+    const currentUserStatusDot = document.getElementById('current-user-status-dot');
+    const statusOnlineBtn = document.getElementById('status-online-btn');
+    const statusAwayBtn = document.getElementById('status-away-btn');
+    const statusBusyBtn = document.getElementById('status-busy-btn');
+    const statusInvisibleBtn = document.getElementById('status-invisible-btn');
+    
+    const channelTopicDisplay = document.getElementById('channel-topic-display');
+    const channelTopicText = document.getElementById('channel-topic-text');
+    const editTopicBtn = document.getElementById('edit-topic-btn');
+    const editTopicModal = document.getElementById('edit-topic-modal');
+    const topicInput = document.getElementById('topic-input');
+    const saveTopicBtn = document.getElementById('save-topic-btn');
+    const cancelTopicBtn = document.getElementById('cancel-topic-btn');
+    
+    const pinnedMessagesPanel = document.getElementById('pinned-messages-panel');
+    const pinnedMessagesList = document.getElementById('pinned-messages-list');
+    const togglePinnedBtn = document.getElementById('toggle-pinned-btn');
+    
+    const searchMessagesInput = document.getElementById('search-messages-input');
+    const searchMessagesBtn = document.getElementById('search-messages-btn');
+    const searchResultsModal = document.getElementById('search-results-modal');
+    const searchResultsList = document.getElementById('search-results-list');
+    const closeSearchResultsBtn = document.getElementById('close-search-results-btn');
     
     // Profile settings elements
     const profileSettingsModal = document.getElementById('profile-settings-modal');
@@ -1571,6 +1602,47 @@
             case 'reaction_removed':
                 updateMessageReactions(data.message_id, data.reactions);
                 break;
+            
+            // User status cases
+            case 'user_status_changed':
+                userStatuses[data.username] = data.status;
+                updateUserStatusDisplay(data.username, data.status);
+                break;
+            
+            // Channel topic cases
+            case 'channel_topic_updated':
+                updateChannelTopic(data.topic);
+                break;
+            
+            // Pinned messages cases
+            case 'message_pinned':
+                if (isMessageForCurrentContext(data.message)) {
+                    pinnedMessages.push(data.message);
+                    updatePinnedMessagesPanel();
+                    markMessageAsPinned(data.message.id);
+                }
+                break;
+            
+            case 'message_unpinned':
+                pinnedMessages = pinnedMessages.filter(m => m.id !== data.message_id);
+                updatePinnedMessagesPanel();
+                unmarkMessageAsPinned(data.message_id);
+                break;
+            
+            case 'pinned_messages':
+                pinnedMessages = data.messages || [];
+                updatePinnedMessagesPanel();
+                break;
+            
+            // Message search cases
+            case 'search_results':
+                displaySearchResultsModal(data.results, data.query);
+                break;
+            
+            // Unread count cases
+            case 'unread_count':
+                updateUnreadCount(data.context_id, data.count);
+                break;
         }
     }
     
@@ -1633,14 +1705,38 @@
         dms.forEach(dm => {
             const dmItem = document.createElement('div');
             dmItem.className = 'dm-item';
+            dmItem.dataset.contextId = dm.id;
+            dmItem.dataset.username = dm.username;
+            
+            const avatarWrapper = document.createElement('div');
+            avatarWrapper.style.position = 'relative';
             
             const avatarEl = createAvatarElement(dm, 'dm-avatar');
+            avatarWrapper.appendChild(avatarEl);
+            
+            // Add status dot
+            const statusDot = document.createElement('span');
+            statusDot.className = 'status-dot';
+            const userStatus = userStatuses[dm.username] || 'offline';
+            statusDot.classList.add(`status-${userStatus}`);
+            avatarWrapper.appendChild(statusDot);
             
             const nameSpan = document.createElement('span');
             nameSpan.textContent = dm.username;
             
-            dmItem.appendChild(avatarEl);
+            dmItem.appendChild(avatarWrapper);
             dmItem.appendChild(nameSpan);
+            
+            // Add unread badge if needed
+            const unreadCount = unreadCounts[dm.id] || 0;
+            if (unreadCount > 0) {
+                const badge = document.createElement('span');
+                badge.className = 'unread-badge';
+                badge.textContent = unreadCount > 99 ? '99+' : unreadCount;
+                dmItem.appendChild(badge);
+                dmItem.classList.add('has-unread');
+            }
+            
             dmItem.onclick = () => selectDM(dm.id);
             dmsList.appendChild(dmItem);
         });
@@ -1851,13 +1947,25 @@
         members.forEach(member => {
             const memberItem = document.createElement('div');
             memberItem.className = 'member-item';
+            memberItem.dataset.username = member.username;
+            
+            const avatarWrapper = document.createElement('div');
+            avatarWrapper.style.position = 'relative';
             
             const avatarEl = createAvatarElement(member, 'member-avatar');
+            avatarWrapper.appendChild(avatarEl);
+            
+            // Add status dot
+            const statusDot = document.createElement('span');
+            statusDot.className = 'status-dot';
+            const userStatus = userStatuses[member.username] || 'offline';
+            statusDot.classList.add(`status-${userStatus}`);
+            avatarWrapper.appendChild(statusDot);
             
             const nameSpan = document.createElement('span');
             nameSpan.textContent = member.username;
             
-            memberItem.appendChild(avatarEl);
+            memberItem.appendChild(avatarWrapper);
             memberItem.appendChild(nameSpan);
             serverMembersDisplay.appendChild(memberItem);
         });
@@ -2066,6 +2174,17 @@
             server_id: serverId,
             channel_id: channelId
         }));
+        
+        // Request pinned messages and unread count
+        requestPinnedMessages();
+        requestUnreadCount();
+        markContextAsRead();
+        
+        // Show edit topic button if user has permissions
+        const canEdit = server && (server.owner === username || (server.permissions && server.permissions.can_access_settings));
+        if (editTopicBtn) {
+            editTopicBtn.classList.toggle('hidden', !canEdit);
+        }
     }
     
     // Select DM
@@ -2095,6 +2214,11 @@
         // Hide members sidebar for DMs
         rightSidebar.classList.add('hidden');
         
+        // Hide channel topic for DMs
+        if (channelTopicDisplay) {
+            channelTopicDisplay.classList.add('hidden');
+        }
+        
         chatTitle.textContent = `Direct Message - ${dm.username}`;
         
         // Enable input
@@ -2107,6 +2231,11 @@
             type: 'get_dm_history',
             dm_id: dmId
         }));
+        
+        // Request pinned messages and unread count
+        requestPinnedMessages();
+        requestUnreadCount();
+        markContextAsRead();
     }
     
     // Start DM
@@ -2190,14 +2319,22 @@
             editedIndicator = '<span class="message-edited">(edited)</span>';
         }
         
+        // Apply message formatting
+        const formattedContent = formatMessage(escapeHtml(msg.content));
+        
         contentWrapper.innerHTML = `
             <div class="message-header">
                 <span class="message-username ${isOwnMessage ? 'own' : 'other'}">${escapeHtml(msg.username)}</span>
                 <span class="message-time">${timestamp}</span>
                 ${editedIndicator}
             </div>
-            <div class="message-content">${escapeHtml(msg.content)}</div>
+            <div class="message-content">${formattedContent}</div>
         `;
+        
+        // Mark as pinned if needed
+        if (msg.pinned || pinnedMessages.some(p => p.id === msg.id)) {
+            messageDiv.classList.add('pinned');
+        }
         
         // Add reactions container
         if (msg.id) {
@@ -2258,6 +2395,7 @@
             if (isOwnMessage || canEditOthers || canDeleteOthers) {
                 const showEdit = isOwnMessage || canEditOthers;
                 const showDelete = isOwnMessage || canDeleteOthers;
+                const showPin = true; // Allow anyone to see pin button (backend will check permissions)
                 
                 actionsDiv.innerHTML = `
                     ${showEdit ? `<button class="message-action-btn edit-message-btn" title="Edit message">
@@ -2265,6 +2403,9 @@
                     </button>` : ''}
                     ${showDelete ? `<button class="message-action-btn delete-message-btn" title="Delete message">
                         <span>🗑️</span>
+                    </button>` : ''}
+                    ${showPin ? `<button class="message-action-btn pin-message-btn" title="Pin message">
+                        <span>📌</span>
                     </button>` : ''}
                 `;
                 
@@ -2838,6 +2979,7 @@
     messagesContainer.addEventListener('click', (e) => {
         const editBtn = e.target.closest('.edit-message-btn');
         const deleteBtn = e.target.closest('.delete-message-btn');
+        const pinBtn = e.target.closest('.pin-message-btn');
         
         if (editBtn) {
             const messageDiv = editBtn.closest('.message');
@@ -2848,6 +2990,16 @@
             const messageDiv = deleteBtn.closest('.message');
             if (messageDiv && messageDiv.dataset.messageId) {
                 deleteMessage(messageDiv);
+            }
+        } else if (pinBtn) {
+            const messageDiv = pinBtn.closest('.message');
+            if (messageDiv && messageDiv.dataset.messageId) {
+                const messageId = messageDiv.dataset.messageId;
+                if (messageDiv.classList.contains('pinned')) {
+                    unpinMessage(messageId);
+                } else {
+                    pinMessage(messageId);
+                }
             }
         }
     });
@@ -6689,6 +6841,429 @@
             deleteAttachmentId = null;
         });
     }
+    
+    
+    // ============================================
+    // NEW FEATURES IMPLEMENTATION
+    // ============================================
+    
+    // 1. User Status Functions
+    function setUserStatus(status) {
+        currentUserStatus = status;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                type: 'set_status',
+                status: status
+            }));
+        }
+        updateCurrentUserStatusDot(status);
+    }
+    
+    function updateCurrentUserStatusDot(status) {
+        currentUserStatusDot.className = 'status-dot';
+        currentUserStatusDot.classList.add(`status-${status}`);
+    }
+    
+    function updateUserStatusDisplay(username, status) {
+        // Update status dots in members sidebar, DMs, friends list
+        const statusDots = document.querySelectorAll(`[data-username="${username}"] .status-dot`);
+        statusDots.forEach(dot => {
+            dot.className = 'status-dot';
+            dot.classList.add(`status-${status}`);
+        });
+    }
+    
+    // Status button handlers
+    if (statusOnlineBtn) {
+        statusOnlineBtn.addEventListener('click', () => setUserStatus('online'));
+    }
+    if (statusAwayBtn) {
+        statusAwayBtn.addEventListener('click', () => setUserStatus('away'));
+    }
+    if (statusBusyBtn) {
+        statusBusyBtn.addEventListener('click', () => setUserStatus('busy'));
+    }
+    if (statusInvisibleBtn) {
+        statusInvisibleBtn.addEventListener('click', () => setUserStatus('invisible'));
+    }
+    
+    // 2. Channel Topic Functions
+    function updateChannelTopic(topic) {
+        if (topic && topic.trim()) {
+            channelTopicText.textContent = topic;
+            channelTopicDisplay.classList.remove('hidden');
+        } else {
+            channelTopicDisplay.classList.add('hidden');
+        }
+    }
+    
+    function showEditTopicModal() {
+        topicInput.value = channelTopicText.textContent || '';
+        editTopicModal.classList.remove('hidden');
+        topicInput.focus();
+    }
+    
+    function saveChannelTopic() {
+        const topic = topicInput.value.trim();
+        if (currentContext && currentContext.type === 'server') {
+            ws.send(JSON.stringify({
+                type: 'set_channel_topic',
+                server_id: currentContext.serverId,
+                channel_id: currentContext.channelId,
+                topic: topic
+            }));
+        }
+        editTopicModal.classList.add('hidden');
+    }
+    
+    if (editTopicBtn) {
+        editTopicBtn.addEventListener('click', showEditTopicModal);
+    }
+    if (saveTopicBtn) {
+        saveTopicBtn.addEventListener('click', saveChannelTopic);
+    }
+    if (cancelTopicBtn) {
+        cancelTopicBtn.addEventListener('click', () => {
+            editTopicModal.classList.add('hidden');
+        });
+    }
+    
+    // 3. Pinned Messages Functions
+    function updatePinnedMessagesPanel() {
+        if (pinnedMessages.length > 0) {
+            pinnedMessagesPanel.classList.remove('hidden');
+            pinnedMessagesList.innerHTML = '';
+            
+            pinnedMessages.forEach(msg => {
+                const item = document.createElement('div');
+                item.className = 'pinned-message-item';
+                item.dataset.messageId = msg.id;
+                
+                const header = document.createElement('div');
+                header.className = 'pinned-message-header';
+                
+                const user = document.createElement('span');
+                user.className = 'pinned-message-user';
+                user.textContent = msg.username;
+                
+                const time = document.createElement('span');
+                time.className = 'pinned-message-time';
+                time.textContent = new Date(msg.timestamp).toLocaleString();
+                
+                header.appendChild(user);
+                header.appendChild(time);
+                
+                const content = document.createElement('div');
+                content.className = 'pinned-message-content';
+                content.textContent = msg.content;
+                
+                const actions = document.createElement('div');
+                actions.className = 'pinned-message-actions';
+                
+                const unpinBtn = document.createElement('button');
+                unpinBtn.className = 'unpin-btn';
+                unpinBtn.textContent = 'Unpin';
+                unpinBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    unpinMessage(msg.id);
+                };
+                
+                actions.appendChild(unpinBtn);
+                
+                item.appendChild(header);
+                item.appendChild(content);
+                item.appendChild(actions);
+                
+                item.onclick = () => scrollToMessage(msg.id);
+                
+                pinnedMessagesList.appendChild(item);
+            });
+        } else {
+            pinnedMessagesPanel.classList.add('hidden');
+        }
+    }
+    
+    function pinMessage(messageId) {
+        if (currentContext && currentContext.type === 'server') {
+            ws.send(JSON.stringify({
+                type: 'pin_message',
+                server_id: currentContext.serverId,
+                channel_id: currentContext.channelId,
+                message_id: messageId
+            }));
+        } else if (currentContext && currentContext.type === 'dm') {
+            ws.send(JSON.stringify({
+                type: 'pin_message',
+                dm_id: currentContext.dmId,
+                message_id: messageId
+            }));
+        }
+    }
+    
+    function unpinMessage(messageId) {
+        if (currentContext && currentContext.type === 'server') {
+            ws.send(JSON.stringify({
+                type: 'unpin_message',
+                server_id: currentContext.serverId,
+                channel_id: currentContext.channelId,
+                message_id: messageId
+            }));
+        } else if (currentContext && currentContext.type === 'dm') {
+            ws.send(JSON.stringify({
+                type: 'unpin_message',
+                dm_id: currentContext.dmId,
+                message_id: messageId
+            }));
+        }
+    }
+    
+    function markMessageAsPinned(messageId) {
+        const messageEl = messagesContainer.querySelector(`[data-message-id="${messageId}"]`);
+        if (messageEl) {
+            messageEl.classList.add('pinned');
+        }
+    }
+    
+    function unmarkMessageAsPinned(messageId) {
+        const messageEl = messagesContainer.querySelector(`[data-message-id="${messageId}"]`);
+        if (messageEl) {
+            messageEl.classList.remove('pinned');
+        }
+    }
+    
+    function scrollToMessage(messageId) {
+        const messageEl = messagesContainer.querySelector(`[data-message-id="${messageId}"]`);
+        if (messageEl) {
+            messageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            messageEl.style.backgroundColor = 'rgba(250, 166, 26, 0.2)';
+            setTimeout(() => {
+                messageEl.style.backgroundColor = '';
+            }, 2000);
+        }
+    }
+    
+    function requestPinnedMessages() {
+        if (currentContext && currentContext.type === 'server') {
+            ws.send(JSON.stringify({
+                type: 'get_pinned_messages',
+                server_id: currentContext.serverId,
+                channel_id: currentContext.channelId
+            }));
+        } else if (currentContext && currentContext.type === 'dm') {
+            ws.send(JSON.stringify({
+                type: 'get_pinned_messages',
+                dm_id: currentContext.dmId
+            }));
+        }
+    }
+    
+    if (togglePinnedBtn) {
+        togglePinnedBtn.addEventListener('click', () => {
+            pinnedMessagesPanel.classList.toggle('collapsed');
+            togglePinnedBtn.textContent = pinnedMessagesPanel.classList.contains('collapsed') ? '▶' : '▼';
+        });
+    }
+    
+    // 4. Message Search Functions
+    function performMessageSearch() {
+        const query = searchMessagesInput.value.trim();
+        if (!query) return;
+        
+        if (currentContext && currentContext.type === 'server') {
+            ws.send(JSON.stringify({
+                type: 'search_messages',
+                server_id: currentContext.serverId,
+                channel_id: currentContext.channelId,
+                query: query
+            }));
+        } else if (currentContext && currentContext.type === 'dm') {
+            ws.send(JSON.stringify({
+                type: 'search_messages',
+                dm_id: currentContext.dmId,
+                query: query
+            }));
+        }
+    }
+    
+    function displaySearchResultsModal(results, query) {
+        searchResultsList.innerHTML = '';
+        
+        if (results.length === 0) {
+            const noResults = document.createElement('div');
+            noResults.className = 'search-no-results';
+            noResults.textContent = `No messages found for "${query}"`;
+            searchResultsList.appendChild(noResults);
+        } else {
+            results.forEach(msg => {
+                const item = document.createElement('div');
+                item.className = 'search-result-item';
+                item.dataset.messageId = msg.id;
+                
+                const header = document.createElement('div');
+                header.className = 'search-result-header';
+                
+                const user = document.createElement('span');
+                user.className = 'search-result-user';
+                user.textContent = msg.username;
+                
+                const time = document.createElement('span');
+                time.className = 'search-result-time';
+                time.textContent = new Date(msg.timestamp).toLocaleString();
+                
+                header.appendChild(user);
+                header.appendChild(time);
+                
+                const content = document.createElement('div');
+                content.className = 'search-result-content';
+                content.innerHTML = highlightSearchQuery(escapeHtml(msg.content), query);
+                
+                const context = document.createElement('div');
+                context.className = 'search-result-context';
+                if (msg.context === 'server') {
+                    context.textContent = `in #${msg.channel_name || 'channel'}`;
+                } else if (msg.context === 'dm') {
+                    context.textContent = `Direct message`;
+                }
+                
+                item.appendChild(header);
+                item.appendChild(content);
+                item.appendChild(context);
+                
+                item.onclick = () => {
+                    searchResultsModal.classList.add('hidden');
+                    scrollToMessage(msg.id);
+                };
+                
+                searchResultsList.appendChild(item);
+            });
+        }
+        
+        searchResultsModal.classList.remove('hidden');
+    }
+    
+    function highlightSearchQuery(text, query) {
+        const regex = new RegExp(`(${escapeRegex(query)})`, 'gi');
+        return text.replace(regex, '<mark>$1</mark>');
+    }
+    
+    function escapeRegex(str) {
+        return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+    
+    if (searchMessagesBtn) {
+        searchMessagesBtn.addEventListener('click', performMessageSearch);
+    }
+    if (searchMessagesInput) {
+        searchMessagesInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                performMessageSearch();
+            }
+        });
+    }
+    if (closeSearchResultsBtn) {
+        closeSearchResultsBtn.addEventListener('click', () => {
+            searchResultsModal.classList.add('hidden');
+        });
+    }
+    
+    // 5. Message Formatting Functions
+    function formatMessage(text) {
+        // Bold: **text** or __text__
+        text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        text = text.replace(/__(.+?)__/g, '<strong>$1</strong>');
+        
+        // Italic: *text* or _text_
+        text = text.replace(/\*([^*]+?)\*/g, '<em>$1</em>');
+        text = text.replace(/_([^_]+?)_/g, '<em>$1</em>');
+        
+        // Code: `code`
+        text = text.replace(/`([^`]+?)`/g, '<code>$1</code>');
+        
+        // Code block: ```code```
+        text = text.replace(/```([^`]+?)```/g, '<pre><code>$1</code></pre>');
+        
+        // Quote: > text
+        text = text.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
+        
+        // Spoiler: ||text||
+        text = text.replace(/\|\|(.+?)\|\|/g, '<span class="spoiler">$1</span>');
+        
+        // @Mentions: @username
+        text = text.replace(/@(\w+)/g, '<span class="mention">@$1</span>');
+        
+        return text;
+    }
+    
+    // 6. Unread Count Functions
+    function updateUnreadCount(contextId, count) {
+        unreadCounts[contextId] = count;
+        
+        // Update badge on sidebar items
+        const item = document.querySelector(`[data-context-id="${contextId}"]`);
+        if (item) {
+            let badge = item.querySelector('.unread-badge');
+            if (count > 0) {
+                if (!badge) {
+                    badge = document.createElement('span');
+                    badge.className = 'unread-badge';
+                    item.appendChild(badge);
+                }
+                badge.textContent = count > 99 ? '99+' : count;
+                item.classList.add('has-unread');
+            } else {
+                if (badge) badge.remove();
+                item.classList.remove('has-unread');
+            }
+        }
+    }
+    
+    function markContextAsRead() {
+        if (!currentContext) return;
+        
+        let contextId = '';
+        if (currentContext.type === 'server') {
+            contextId = `${currentContext.serverId}/${currentContext.channelId}`;
+        } else if (currentContext.type === 'dm') {
+            contextId = currentContext.dmId;
+        }
+        
+        if (contextId) {
+            ws.send(JSON.stringify({
+                type: 'mark_read',
+                context_id: contextId
+            }));
+            updateUnreadCount(contextId, 0);
+        }
+    }
+    
+    function requestUnreadCount() {
+        if (currentContext) {
+            let contextId = '';
+            if (currentContext.type === 'server') {
+                contextId = `${currentContext.serverId}/${currentContext.channelId}`;
+            } else if (currentContext.type === 'dm') {
+                contextId = currentContext.dmId;
+            }
+            
+            if (contextId) {
+                ws.send(JSON.stringify({
+                    type: 'get_unread_count',
+                    context_id: contextId
+                }));
+            }
+        }
+    }
+    
+    // Add spoiler click handlers
+    document.addEventListener('click', (e) => {
+        if (e.target.classList.contains('spoiler')) {
+            e.target.classList.toggle('revealed');
+        }
+    });
+    
+    // ============================================
+    // END NEW FEATURES IMPLEMENTATION
+    // ============================================
     
     
     console.log('chat.js: About to call connect()');
