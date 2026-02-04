@@ -617,6 +617,85 @@ class Database:
                         )
                     ''')
                     
+                    # Channel categories table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS channel_categories (
+                            category_id VARCHAR(255) PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            name VARCHAR(255) NOT NULL,
+                            position INTEGER DEFAULT 0,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Add category_id column to channels if it doesn't exist (migration)
+                    cursor.execute('''
+                        DO $$ 
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'channels' AND column_name = 'category_id'
+                            ) THEN
+                                ALTER TABLE channels ADD COLUMN category_id VARCHAR(255);
+                                ALTER TABLE channels ADD CONSTRAINT fk_channel_category 
+                                    FOREIGN KEY (category_id) REFERENCES channel_categories(category_id) ON DELETE SET NULL;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'channels' AND column_name = 'position'
+                            ) THEN
+                                ALTER TABLE channels ADD COLUMN position INTEGER DEFAULT 0;
+                            END IF;
+                        END $$;
+                    ''')
+                    
+                    # Moderation actions table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS moderation_actions (
+                            action_id SERIAL PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            action_type VARCHAR(50) NOT NULL,
+                            target_username VARCHAR(255) NOT NULL,
+                            moderator_username VARCHAR(255) NOT NULL,
+                            reason TEXT,
+                            expires_at TIMESTAMP,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            active BOOLEAN DEFAULT TRUE,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (target_username) REFERENCES users(username) ON DELETE CASCADE,
+                            FOREIGN KEY (moderator_username) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Create index for faster moderation action lookups
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_moderation_actions_server 
+                        ON moderation_actions(server_id, target_username, action_type, active)
+                    ''')
+                    
+                    # Audit logs table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS audit_logs (
+                            log_id SERIAL PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            action_type VARCHAR(50) NOT NULL,
+                            actor_username VARCHAR(255) NOT NULL,
+                            target_type VARCHAR(50),
+                            target_id VARCHAR(255),
+                            details JSONB,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (actor_username) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Create index for faster audit log retrieval
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_audit_logs_server 
+                        ON audit_logs(server_id, created_at DESC)
+                    ''')
+                    
                     conn.commit()
                 
                 # If we get here, connection was successful
@@ -1938,3 +2017,263 @@ class Database:
                 })
             
             return reactions_by_message
+    
+    # Channel Categories Methods
+    
+    def create_category(self, category_id: str, server_id: str, name: str, position: int = 0) -> bool:
+        """Create a new channel category."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO channel_categories (category_id, server_id, name, position)
+                    VALUES (%s, %s, %s, %s)
+                ''', (category_id, server_id, name, position))
+                return True
+        except Exception as e:
+            print(f"Error creating category: {e}")
+            return False
+    
+    def get_server_categories(self, server_id: str) -> List[Dict]:
+        """Get all categories for a server, ordered by position."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT category_id, server_id, name, position, created_at::text as created_at
+                FROM channel_categories
+                WHERE server_id = %s
+                ORDER BY position ASC
+            ''', (server_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_category(self, category_id: str) -> Optional[Dict]:
+        """Get a specific category."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT category_id, server_id, name, position, created_at::text as created_at
+                FROM channel_categories
+                WHERE category_id = %s
+            ''', (category_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def update_category(self, category_id: str, name: str = None, position: int = None) -> bool:
+        """Update a category."""
+        try:
+            updates = []
+            params = []
+            
+            if name is not None:
+                updates.append("name = %s")
+                params.append(name)
+            
+            if position is not None:
+                updates.append("position = %s")
+                params.append(position)
+            
+            if not updates:
+                return False
+            
+            params.append(category_id)
+            
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(f'''
+                    UPDATE channel_categories
+                    SET {', '.join(updates)}
+                    WHERE category_id = %s
+                ''', params)
+                return True
+        except Exception as e:
+            print(f"Error updating category: {e}")
+            return False
+    
+    def delete_category(self, category_id: str) -> bool:
+        """Delete a category (channels in the category will have category_id set to NULL)."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM channel_categories WHERE category_id = %s', (category_id,))
+                return True
+        except Exception as e:
+            print(f"Error deleting category: {e}")
+            return False
+    
+    def set_channel_category(self, channel_id: str, category_id: Optional[str]) -> bool:
+        """Set or clear a channel's category."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE channels
+                    SET category_id = %s
+                    WHERE channel_id = %s
+                ''', (category_id, channel_id))
+                return True
+        except Exception as e:
+            print(f"Error setting channel category: {e}")
+            return False
+    
+    def update_channel_position(self, channel_id: str, position: int) -> bool:
+        """Update a channel's position within its category."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE channels
+                    SET position = %s
+                    WHERE channel_id = %s
+                ''', (position, channel_id))
+                return True
+        except Exception as e:
+            print(f"Error updating channel position: {e}")
+            return False
+    
+    # Moderation Methods
+    
+    def create_moderation_action(self, server_id: str, action_type: str, target_username: str,
+                                moderator_username: str, reason: Optional[str] = None,
+                                expires_at: Optional[datetime] = None) -> Optional[int]:
+        """Create a moderation action (kick, ban, timeout, etc.)."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO moderation_actions 
+                    (server_id, action_type, target_username, moderator_username, reason, expires_at)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING action_id
+                ''', (server_id, action_type, target_username, moderator_username, reason, expires_at))
+                result = cursor.fetchone()
+                return result['action_id'] if result else None
+        except Exception as e:
+            print(f"Error creating moderation action: {e}")
+            return None
+    
+    def get_active_moderation_actions(self, server_id: str, target_username: str,
+                                     action_type: Optional[str] = None) -> List[Dict]:
+        """Get active moderation actions for a user in a server."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            query = '''
+                SELECT action_id, server_id, action_type, target_username, moderator_username,
+                       reason, expires_at::text as expires_at, created_at::text as created_at, active
+                FROM moderation_actions
+                WHERE server_id = %s AND target_username = %s AND active = TRUE
+            '''
+            params = [server_id, target_username]
+            
+            if action_type:
+                query += ' AND action_type = %s'
+                params.append(action_type)
+            
+            query += ' ORDER BY created_at DESC'
+            
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_server_moderation_actions(self, server_id: str, limit: int = 100) -> List[Dict]:
+        """Get all moderation actions for a server."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT action_id, server_id, action_type, target_username, moderator_username,
+                       reason, expires_at::text as expires_at, created_at::text as created_at, active
+                FROM moderation_actions
+                WHERE server_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+            ''', (server_id, limit))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def deactivate_moderation_action(self, action_id: int) -> bool:
+        """Deactivate a moderation action (e.g., unban)."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE moderation_actions
+                    SET active = FALSE
+                    WHERE action_id = %s
+                ''', (action_id,))
+                return True
+        except Exception as e:
+            print(f"Error deactivating moderation action: {e}")
+            return False
+    
+    def deactivate_moderation_actions_by_type(self, server_id: str, target_username: str,
+                                             action_type: str) -> bool:
+        """Deactivate all moderation actions of a specific type for a user."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE moderation_actions
+                    SET active = FALSE
+                    WHERE server_id = %s AND target_username = %s AND action_type = %s AND active = TRUE
+                ''', (server_id, target_username, action_type))
+                return True
+        except Exception as e:
+            print(f"Error deactivating moderation actions: {e}")
+            return False
+    
+    def is_user_banned(self, server_id: str, username: str) -> bool:
+        """Check if a user is currently banned from a server."""
+        actions = self.get_active_moderation_actions(server_id, username, 'ban')
+        return len(actions) > 0
+    
+    def is_user_timed_out(self, server_id: str, username: str) -> bool:
+        """Check if a user is currently timed out in a server."""
+        actions = self.get_active_moderation_actions(server_id, username, 'timeout')
+        # Check if any timeout hasn't expired yet
+        for action in actions:
+            if action.get('expires_at'):
+                expires_at = datetime.fromisoformat(action['expires_at'])
+                if expires_at > datetime.now():
+                    return True
+        return False
+    
+    # Audit Log Methods
+    
+    def create_audit_log(self, server_id: str, action_type: str, actor_username: str,
+                        target_type: Optional[str] = None, target_id: Optional[str] = None,
+                        details: Optional[Dict] = None) -> Optional[int]:
+        """Create an audit log entry."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO audit_logs
+                    (server_id, action_type, actor_username, target_type, target_id, details)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING log_id
+                ''', (server_id, action_type, actor_username, target_type, target_id,
+                     json.dumps(details) if details else None))
+                result = cursor.fetchone()
+                return result['log_id'] if result else None
+        except Exception as e:
+            print(f"Error creating audit log: {e}")
+            return None
+    
+    def get_audit_logs(self, server_id: str, limit: int = 100, action_type: Optional[str] = None) -> List[Dict]:
+        """Get audit logs for a server."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            query = '''
+                SELECT log_id, server_id, action_type, actor_username, target_type, target_id,
+                       details, created_at::text as created_at
+                FROM audit_logs
+                WHERE server_id = %s
+            '''
+            params = [server_id]
+            
+            if action_type:
+                query += ' AND action_type = %s'
+                params.append(action_type)
+            
+            query += ' ORDER BY created_at DESC LIMIT %s'
+            params.append(limit)
+            
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
