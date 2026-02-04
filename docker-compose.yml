@@ -27,8 +27,6 @@ services:
       context: ./server
       dockerfile: Dockerfile
     container_name: decentra-server
-    ports:
-      - "8765:8765"
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - DECENTRA_ENCRYPTION_KEY=${DECENTRA_ENCRYPTION_KEY}
@@ -38,6 +36,19 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: decentra-frontend
+    ports:
+      - "8765:8443"
+    networks:
+      - decentra-network
+    restart: unless-stopped
+    depends_on:
+      - server
 
 volumes:
   decentra-data:

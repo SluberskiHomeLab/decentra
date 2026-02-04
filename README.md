@@ -110,14 +110,19 @@ Copy the output and set it as the value of `DECENTRA_ENCRYPTION_KEY` in your `.e
 docker-compose up --build
 ```
 
-This will start both the PostgreSQL database and the chat server on port 8765 with persistent data storage in a Docker volume.
+This will start PostgreSQL, the Python backend, and an nginx frontend on port 8765 with persistent data storage in a Docker volume.
 
 4. Open your web browser and navigate to:
 ```
 https://localhost:8765
 ```
 
-**Note**: Since the server uses a self-signed SSL certificate for local security, your browser will show a security warning. This is expected behavior. Click "Advanced" or "Show Details" and then "Proceed to localhost" (the exact wording varies by browser) to continue.
+During the React migration, the legacy static UI remains available at:
+```
+https://localhost:8765/static/chat.html
+```
+
+**Note**: The frontend uses a self-signed SSL certificate for local security, so your browser will show a security warning. This is expected behavior. Click "Advanced" or "Show Details" and then "Proceed to localhost" (the exact wording varies by browser) to continue.
 
 5. Create an account or log in to start chatting!
 
