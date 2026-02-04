@@ -279,6 +279,12 @@ function ChatPage() {
   const [inviteUsageLogs, setInviteUsageLogs] = useState<ServerInviteUsageLog[] | null>(null)
   const [isLoadingInviteUsage, setIsLoadingInviteUsage] = useState(false)
 
+  // New UI state
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false)
+  const [isDmSidebarOpen, setIsDmSidebarOpen] = useState(false)
+  const [selectedServerId, setSelectedServerId] = useState<string | null>(null)
+  const [isAdminMode, setIsAdminMode] = useState(false)
+
   const pushToast = useToastStore((s) => s.push)
 
   const selectedKey = contextKey(selectedContext)
@@ -583,7 +589,7 @@ function ChatPage() {
     setDraft('')
   }
 
-  const selectedServerId = selectedContext.kind === 'server' ? selectedContext.serverId : null
+  const contextServerId = selectedContext.kind === 'server' ? selectedContext.serverId : null
 
   const createServer = () => {
     const name = serverName.trim()
@@ -594,11 +600,11 @@ function ChatPage() {
 
   const createChannel = () => {
     const name = channelName.trim()
-    if (!name || !selectedServerId) return
+    if (!name || !contextServerId) return
     if (channelType === 'voice') {
-      wsClient.createVoiceChannel({ type: 'create_voice_channel', server_id: selectedServerId, name })
+      wsClient.createVoiceChannel({ type: 'create_voice_channel', server_id: contextServerId, name })
     } else {
-      wsClient.createChannel({ type: 'create_channel', server_id: selectedServerId, name, channel_type: 'text' })
+      wsClient.createChannel({ type: 'create_channel', server_id: contextServerId, name, channel_type: 'text' })
     }
     setChannelName('')
   }
@@ -611,8 +617,8 @@ function ChatPage() {
   }
 
   const generateServerInvite = () => {
-    if (!selectedServerId) return
-    wsClient.generateServerInvite({ type: 'generate_server_invite', server_id: selectedServerId })
+    if (!contextServerId) return
+    wsClient.generateServerInvite({ type: 'generate_server_invite', server_id: contextServerId })
   }
 
   const joinServerWithInvite = () => {
@@ -623,9 +629,9 @@ function ChatPage() {
   }
 
   const loadInviteUsage = () => {
-    if (!selectedServerId) return
+    if (!contextServerId) return
     setIsLoadingInviteUsage(true)
-    wsClient.getServerInviteUsage({ type: 'get_server_invite_usage', server_id: selectedServerId })
+    wsClient.getServerInviteUsage({ type: 'get_server_invite_usage', server_id: contextServerId })
   }
 
   const copyLastInvite = async () => {
@@ -638,321 +644,270 @@ function ChatPage() {
     }
   }
 
+  // Get selected server object
+  const selectedServerObj = selectedServerId ? init?.servers?.find((s) => s.id === selectedServerId) : null
+
   return (
     <div className="h-screen bg-slate-950">
       <div className="flex h-full">
-        <aside className="w-[340px] shrink-0 border-r border-white/10 bg-slate-900/30">
-          <div className="flex h-full flex-col">
-            <div className="px-4 pb-3 pt-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-xs font-medium text-sky-200/70">Decentra</div>
-                  <div className="mt-1 text-lg font-semibold text-white">Dashboard</div>
-                </div>
-                <div className="rounded-xl border border-white/10 bg-slate-950/30 px-2 py-1 text-[11px] text-slate-300">
-                  {connectionStatus}
-                </div>
-              </div>
-              <div className="mt-2 text-xs text-slate-400">
-                Signed in as <span className="text-slate-200">{authUsername ?? '(none)'}</span>
-              </div>
-            </div>
+        {/* Left-side vertical icon bar */}
+        <aside className="w-[72px] shrink-0 flex flex-col border-r border-white/10 bg-slate-900">
+          {/* DMs button at top */}
+          <div className="p-3">
+            <button
+              type="button"
+              onClick={() => setIsDmSidebarOpen(!isDmSidebarOpen)}
+              className={`flex h-12 w-12 items-center justify-center rounded-2xl text-2xl transition ${
+                isDmSidebarOpen ? 'bg-sky-500 text-white' : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 hover:rounded-xl'
+              }`}
+              title="Direct Messages"
+            >
+              #
+            </button>
+          </div>
 
-            <div className="px-4">
-              <nav className="flex flex-col gap-2">
-                <Link className="text-sm text-slate-200 hover:text-white" to="/login">
-                  Account
-                </Link>
-                <a className="text-sm text-slate-300 hover:text-slate-100" href="/static/chat.html">
-                  Open legacy chat
-                </a>
-                <button
-                  type="button"
-                  onClick={() => selectContext({ kind: 'global' })}
-                  className="rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-left text-sm text-slate-200 hover:border-white/20"
-                >
-                  Global
-                </button>
-                <button
-                  type="button"
-                  onClick={() => wsClient.requestSync()}
-                  className="rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-left text-sm text-slate-200 hover:border-white/20"
-                >
-                  Refresh data
-                </button>
-              </nav>
-            </div>
+          {/* Separator */}
+          <div className="mx-3 h-[2px] bg-slate-700/50" />
 
-            <div className="mt-4 flex-1 overflow-auto px-4 pb-4">
-              <div className="space-y-4">
-                <section className="rounded-2xl border border-white/10 bg-slate-950/25 p-3">
-                  <div className="mb-2 text-xs font-medium text-slate-300">Create</div>
-                  <div className="flex gap-2">
-                    <input
-                      value={serverName}
-                      onChange={(e) => setServerName(e.target.value)}
-                      placeholder="New server name"
-                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                    />
-                    <button
-                      type="button"
-                      onClick={createServer}
-                      disabled={!serverName.trim() || wsClient.readyState !== WebSocket.OPEN}
-                      className="shrink-0 rounded-xl bg-sky-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
-                    >
-                      + Server
-                    </button>
+          {/* Server icons */}
+          <div className="flex-1 overflow-auto p-3 space-y-2">
+            {(init?.servers ?? []).map((server) => (
+              <button
+                key={server.id}
+                type="button"
+                onClick={() => {
+                  if (selectedServerId === server.id) {
+                    setSelectedServerId(null)
+                  } else {
+                    setSelectedServerId(server.id)
+                    setIsDmSidebarOpen(false)
+                    const firstChannel = server.channels?.[0]
+                    if (firstChannel) {
+                      selectContext({ kind: 'server', serverId: server.id, channelId: firstChannel.id })
+                      requestHistoryFor({ kind: 'server', serverId: server.id, channelId: firstChannel.id })
+                    }
+                  }
+                }}
+                className={`flex h-12 w-12 items-center justify-center rounded-2xl text-xl transition ${
+                  selectedServerId === server.id ? 'bg-sky-500 text-white' : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 hover:rounded-xl'
+                }`}
+                title={server.name}
+              >
+                {server.icon ?? '🏠'}
+              </button>
+            ))}
+          </div>
+
+          {/* Profile section at bottom */}
+          <div className="border-t border-white/10 bg-slate-900 p-3">
+            <button
+              type="button"
+              onClick={() => setIsUserMenuOpen(true)}
+              className="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-800/50 text-xl hover:bg-slate-700/50 hover:rounded-xl transition"
+              title={init?.username ?? 'User'}
+            >
+              {init?.avatar ?? '👤'}
+            </button>
+          </div>
+        </aside>
+
+        {/* DM Sidebar - opens when DM button is clicked */}
+        {isDmSidebarOpen && (
+          <aside className="w-[240px] shrink-0 border-r border-white/10 bg-slate-900/30">
+            <div className="flex h-full flex-col">
+              <div className="border-b border-white/10 px-4 py-3">
+                <div className="text-sm font-semibold text-white">Direct Messages</div>
+              </div>
+              
+              <div className="flex-1 overflow-auto p-2">
+                {(init?.dms ?? []).length === 0 ? (
+                  <div className="px-3 py-2 text-sm text-slate-400">No DMs yet</div>
+                ) : (
+                  <div className="space-y-1">
+                    {(init?.dms ?? []).map((dm) => {
+                      const isSelected = selectedContext.kind === 'dm' && selectedContext.dmId === dm.id
+                      return (
+                        <button
+                          key={dm.id}
+                          type="button"
+                          onClick={() => {
+                            const next: ChatContext = { kind: 'dm', dmId: dm.id, username: dm.username }
+                            selectContext(next)
+                            requestHistoryFor(next)
+                            setSelectedServerId(null)
+                          }}
+                          className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition ${
+                            isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="text-lg">{dm.avatar ?? '👤'}</span>
+                          <span className="text-sm font-medium truncate">{dm.username}</span>
+                        </button>
+                      )
+                    })}
                   </div>
+                )}
+              </div>
 
-                  <div className="mt-2 flex gap-2">
-                    <input
-                      value={channelName}
-                      onChange={(e) => setChannelName(e.target.value)}
-                      placeholder={selectedServerId ? `New channel in ${selectedServerId}` : 'Select a server first'}
-                      disabled={!selectedServerId}
-                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                    />
+              <div className="border-t border-white/10 p-3">
+                <div className="text-xs font-medium text-slate-400 mb-2">Start DM</div>
+                <div className="flex gap-2">
+                  <input
+                    value={dmUsername}
+                    onChange={(e) => setDmUsername(e.target.value)}
+                    placeholder="Username"
+                    className="flex-1 rounded-lg border border-white/10 bg-slate-950/40 px-2 py-1.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                  />
+                  <button
+                    type="button"
+                    onClick={startDm}
+                    disabled={!dmUsername.trim() || wsClient.readyState !== WebSocket.OPEN}
+                    className="shrink-0 rounded-lg bg-sky-500 px-3 py-1.5 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+            </div>
+          </aside>
+        )}
+
+        {/* Server Sidebar - opens when a server icon is clicked */}
+        {selectedServerId && selectedServerObj && (
+          <aside className="w-[240px] shrink-0 border-r border-white/10 bg-slate-900/30">
+            <div className="flex h-full flex-col">
+              {/* Server header */}
+              <div className="border-b border-white/10 px-4 py-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                    <span className="text-lg">{selectedServerObj.icon ?? '🏠'}</span>
+                    <span className="text-sm font-semibold text-white truncate">{selectedServerObj.name}</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="shrink-0 text-slate-400 hover:text-slate-200 text-lg"
+                    title="Server Settings"
+                  >
+                    ⚙️
+                  </button>
+                </div>
+              </div>
+
+              {/* Channels list */}
+              <div className="flex-1 overflow-auto p-2">
+                <div className="mb-3">
+                  <div className="px-2 text-xs font-medium text-slate-400 uppercase mb-1">Text Channels</div>
+                  <div className="space-y-1">
+                    {(selectedServerObj.channels ?? [])
+                      .filter((ch) => ch.type !== 'voice')
+                      .map((ch) => {
+                        const isSelected =
+                          selectedContext.kind === 'server' &&
+                          selectedContext.serverId === selectedServerId &&
+                          selectedContext.channelId === ch.id
+                        return (
+                          <button
+                            key={ch.id}
+                            type="button"
+                            onClick={() => {
+                              const next: ChatContext = { kind: 'server', serverId: selectedServerId, channelId: ch.id }
+                              selectContext(next)
+                              requestHistoryFor(next)
+                            }}
+                            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
+                              isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
+                            }`}
+                          >
+                            <span className="text-slate-400">#</span>
+                            <span className="text-sm font-medium">{ch.name}</span>
+                          </button>
+                        )
+                      })}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="px-2 text-xs font-medium text-slate-400 uppercase mb-1">Voice Channels</div>
+                  <div className="space-y-1">
+                    {(selectedServerObj.channels ?? [])
+                      .filter((ch) => ch.type === 'voice')
+                      .map((ch) => {
+                        const isSelected =
+                          selectedContext.kind === 'server' &&
+                          selectedContext.serverId === selectedServerId &&
+                          selectedContext.channelId === ch.id
+                        return (
+                          <button
+                            key={ch.id}
+                            type="button"
+                            onClick={() => {
+                              const next: ChatContext = { kind: 'server', serverId: selectedServerId, channelId: ch.id }
+                              selectContext(next)
+                              requestHistoryFor(next)
+                            }}
+                            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
+                              isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
+                            }`}
+                          >
+                            <span className="text-slate-400">🔊</span>
+                            <span className="text-sm font-medium">{ch.name}</span>
+                          </button>
+                        )
+                      })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Create channel section */}
+              <div className="border-t border-white/10 p-3">
+                <div className="text-xs font-medium text-slate-400 mb-2">Create Channel</div>
+                <div className="space-y-2">
+                  <input
+                    value={channelName}
+                    onChange={(e) => setChannelName(e.target.value)}
+                    placeholder="Channel name"
+                    className="w-full rounded-lg border border-white/10 bg-slate-950/40 px-2 py-1.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                  />
+                  <div className="flex gap-2">
                     <select
                       value={channelType}
-                      onChange={(e) => setChannelType(e.target.value as any)}
-                      disabled={!selectedServerId}
-                      className="rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      onChange={(e) => setChannelType(e.target.value as 'text' | 'voice')}
+                      className="flex-1 rounded-lg border border-white/10 bg-slate-950/40 px-2 py-1.5 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
                     >
-                      <option value="text">text</option>
-                      <option value="voice">voice</option>
+                      <option value="text">Text</option>
+                      <option value="voice">Voice</option>
                     </select>
                     <button
                       type="button"
                       onClick={createChannel}
-                      disabled={!selectedServerId || !channelName.trim() || wsClient.readyState !== WebSocket.OPEN}
-                      className="shrink-0 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm font-semibold text-slate-100 hover:border-white/20 disabled:opacity-60"
+                      disabled={!channelName.trim() || wsClient.readyState !== WebSocket.OPEN}
+                      className="shrink-0 rounded-lg bg-sky-500 px-3 py-1.5 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
                     >
-                      + Channel
+                      +
                     </button>
                   </div>
-
-                  <div className="mt-2 flex gap-2">
-                    <input
-                      value={dmUsername}
-                      onChange={(e) => setDmUsername(e.target.value)}
-                      placeholder="Start DM (friend username)"
-                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                    />
-                    <button
-                      type="button"
-                      onClick={startDm}
-                      disabled={!dmUsername.trim() || wsClient.readyState !== WebSocket.OPEN}
-                      className="shrink-0 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm font-semibold text-slate-100 hover:border-white/20 disabled:opacity-60"
-                    >
-                      + DM
-                    </button>
-                  </div>
-                </section>
-
-                <section className="rounded-2xl border border-white/10 bg-slate-950/25 p-3">
-                  <div className="mb-2 text-xs font-medium text-slate-300">Invites</div>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={generateServerInvite}
-                      disabled={!selectedServerId || wsClient.readyState !== WebSocket.OPEN}
-                      className="rounded-xl bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
-                    >
-                      Generate
-                    </button>
-                    <button
-                      type="button"
-                      onClick={loadInviteUsage}
-                      disabled={!selectedServerId || wsClient.readyState !== WebSocket.OPEN || isLoadingInviteUsage}
-                      className="rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm font-semibold text-slate-100 hover:border-white/20 disabled:opacity-60"
-                    >
-                      {isLoadingInviteUsage ? 'Loading…' : 'Usage'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={copyLastInvite}
-                      disabled={!lastInviteCode}
-                      className="rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm font-semibold text-slate-100 hover:border-white/20 disabled:opacity-60"
-                    >
-                      Copy
-                    </button>
-                  </div>
-                  {lastInviteCode ? (
-                    <div className="mt-2 rounded-xl border border-white/10 bg-slate-950/30 px-3 py-2 text-xs text-slate-200">
-                      <div className="text-[11px] text-slate-400">Last code</div>
-                      <div className="mt-1 break-all font-mono">{lastInviteCode}</div>
-                    </div>
-                  ) : null}
-
-                  <div className="mt-2 flex gap-2">
-                    <input
-                      value={joinInviteCode}
-                      onChange={(e) => setJoinInviteCode(e.target.value)}
-                      placeholder="Join server with invite code"
-                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                    />
-                    <button
-                      type="button"
-                      onClick={joinServerWithInvite}
-                      disabled={!joinInviteCode.trim() || wsClient.readyState !== WebSocket.OPEN}
-                      className="shrink-0 rounded-xl bg-sky-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
-                    >
-                      Join
-                    </button>
-                  </div>
-
-                  {selectedServerId && inviteUsageServerId === selectedServerId && inviteUsageLogs ? (
-                    <div className="mt-3">
-                      <div className="mb-2 text-[11px] font-medium text-slate-400">Invite usage</div>
-                      {inviteUsageLogs.length === 0 ? (
-                        <div className="text-xs text-slate-400">No invite usage yet.</div>
-                      ) : (
-                        <div className="space-y-2">
-                          {inviteUsageLogs.map((log) => {
-                            const firstUsed = log.first_used ? new Date(log.first_used).toLocaleString() : ''
-                            const lastUsed = log.last_used ? new Date(log.last_used).toLocaleString() : ''
-                            const users = (log.users ?? []).slice(0, 6).join(', ')
-                            return (
-                              <div key={log.invite_code} className="rounded-xl border border-white/10 bg-slate-950/30 p-2">
-                                <div className="flex items-start justify-between gap-2">
-                                  <div className="break-all font-mono text-xs text-slate-100">{log.invite_code}</div>
-                                  <div className="text-xs font-semibold text-slate-200">{log.use_count} uses</div>
-                                </div>
-                                <div className="mt-1 text-[11px] text-slate-400">
-                                  {lastUsed ? `Last: ${lastUsed}` : 'Last: —'}
-                                  {firstUsed ? ` · First: ${firstUsed}` : ''}
-                                </div>
-                                {users ? (
-                                  <div className="mt-1 text-[11px] text-slate-400">
-                                    Users: {users}
-                                    {(log.users?.length ?? 0) > 6 ? '…' : ''}
-                                  </div>
-                                ) : null}
-                              </div>
-                            )
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  ) : null}
-                </section>
-
-                {!init ? (
-                  <div className="rounded-2xl border border-white/10 bg-slate-950/25 p-3 text-sm text-slate-300">
-                    Waiting for init data…
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    <section className="rounded-2xl border border-white/10 bg-slate-950/25 p-3">
-                      <div className="mb-2 text-xs font-medium text-slate-300">Servers</div>
-                      <div className="space-y-2">
-                        {(init.servers ?? []).map((s) => (
-                          <div key={s.id} className="rounded-xl border border-white/10 bg-slate-950/30 p-2">
-                            <div className="mb-2 flex items-center justify-between gap-2">
-                              <div className="truncate text-sm font-semibold text-slate-100">
-                                <span className="mr-2">{s.icon ?? '🏠'}</span>
-                                {s.name}
-                              </div>
-                              <div className="text-[11px] text-slate-400">{s.id}</div>
-                            </div>
-                            <div className="flex flex-col gap-1">
-                              {(s.channels ?? []).map((ch) => {
-                                const isSelected =
-                                  selectedContext.kind === 'server' &&
-                                  selectedContext.serverId === s.id &&
-                                  selectedContext.channelId === ch.id
-                                return (
-                                  <button
-                                    key={ch.id}
-                                    type="button"
-                                    onClick={() => {
-                                      const next: ChatContext = { kind: 'server', serverId: s.id, channelId: ch.id }
-                                      selectContext(next)
-                                      requestHistoryFor(next)
-                                    }}
-                                    className={
-                                      'rounded-lg px-2 py-1 text-left text-sm ' +
-                                      (isSelected
-                                        ? 'bg-sky-500/15 text-sky-100'
-                                        : 'text-slate-200 hover:bg-white/5')
-                                    }
-                                  >
-                                    <span className="mr-2 opacity-70">#</span>
-                                    {ch.name}
-                                  </button>
-                                )
-                              })}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </section>
-
-                    <section className="rounded-2xl border border-white/10 bg-slate-950/25 p-3">
-                      <div className="mb-2 text-xs font-medium text-slate-300">DMs</div>
-                      <div className="flex flex-col gap-1">
-                        {(init.dms ?? []).map((dm) => {
-                          const isSelected = selectedContext.kind === 'dm' && selectedContext.dmId === dm.id
-                          return (
-                            <button
-                              key={dm.id}
-                              type="button"
-                              onClick={() => {
-                                const next: ChatContext = { kind: 'dm', dmId: dm.id, username: dm.username }
-                                selectContext(next)
-                                requestHistoryFor(next)
-                              }}
-                              className={
-                                'rounded-lg px-2 py-1 text-left text-sm ' +
-                                (isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5')
-                              }
-                            >
-                              <span className="mr-2">{dm.avatar ?? '👤'}</span>
-                              {dm.username}
-                            </button>
-                          )
-                        })}
-                      </div>
-                    </section>
-
-                    <section className="rounded-2xl border border-white/10 bg-slate-950/25 p-3">
-                      <div className="mb-2 text-xs font-medium text-slate-300">Friends</div>
-                      <div className="flex flex-col gap-1">
-                        {(init.friends ?? []).map((f) => (
-                          <button
-                            key={f.username}
-                            type="button"
-                            onClick={() => {
-                              wsClient.startDm({ type: 'start_dm', username: f.username })
-                            }}
-                            className="rounded-lg px-2 py-1 text-left text-sm text-slate-200 hover:bg-white/5"
-                          >
-                            <span className="mr-2">{f.avatar ?? '👤'}</span>
-                            {f.username}
-                          </button>
-                        ))}
-                      </div>
-                    </section>
-                  </div>
-                )}
+                </div>
               </div>
             </div>
-          </div>
-        </aside>
+          </aside>
+        )}
 
+        {/* Main chat area */}
         <main className="flex min-w-0 flex-1 flex-col">
           <header className="border-b border-white/10 bg-slate-950/60 px-6 py-4">
             <div className="flex items-center justify-between gap-4">
               <div>
-                <div className="text-xs font-medium text-slate-400">Context</div>
+                <div className="text-xs font-medium text-slate-400">
+                  {selectedContext.kind === 'global'
+                    ? 'Global Chat'
+                    : selectedContext.kind === 'dm'
+                      ? 'Direct Message'
+                      : 'Channel'}
+                </div>
                 <div className="mt-1 text-lg font-semibold text-white">{selectedTitle}</div>
               </div>
-              <div className="text-sm text-slate-300">
-                {init ? (
-                  <span>
-                    Authenticated as <span className="font-semibold text-slate-100">{init.username}</span>
-                  </span>
-                ) : null}
+              <div className="rounded-xl border border-white/10 bg-slate-950/30 px-2 py-1 text-[11px] text-slate-300">
+                {connectionStatus}
               </div>
             </div>
           </header>
@@ -1008,6 +963,225 @@ function ChatPage() {
             </form>
           </div>
         </main>
+
+        {/* User menu modal - centered overlay */}
+        {isUserMenuOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setIsUserMenuOpen(false)}>
+            <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-white/10 px-6 py-4">
+                <div className="flex items-center gap-3">
+                  {init?.is_admin && !isAdminMode && (
+                    <button
+                      type="button"
+                      onClick={() => setIsAdminMode(true)}
+                      className="rounded-lg bg-rose-500/20 px-3 py-1.5 text-sm font-semibold text-rose-300 hover:bg-rose-500/30"
+                    >
+                      👑 Admin Mode
+                    </button>
+                  )}
+                  {isAdminMode && (
+                    <button
+                      type="button"
+                      onClick={() => setIsAdminMode(false)}
+                      className="rounded-lg bg-sky-500/20 px-3 py-1.5 text-sm font-semibold text-sky-300 hover:bg-sky-500/30"
+                    >
+                      ← Back to User Menu
+                    </button>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsUserMenuOpen(false)
+                    setIsAdminMode(false)
+                  }}
+                  className="text-2xl text-slate-400 hover:text-slate-200"
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="p-6">
+                {!isAdminMode ? (
+                  <div className="space-y-6">
+                    <div className="text-center">
+                      <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-slate-800 text-4xl">
+                        {init?.avatar ?? '👤'}
+                      </div>
+                      <div className="mt-3 text-xl font-semibold text-white">{init?.username ?? 'User'}</div>
+                      {init?.bio && <div className="mt-1 text-sm text-slate-400">{init.bio}</div>}
+                      {init?.status_message && (
+                        <div className="mt-2 text-sm text-slate-300">{init.status_message}</div>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsUserMenuOpen(false)
+                          selectContext({ kind: 'global' })
+                        }}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-3 text-left text-sm text-slate-200 hover:bg-white/5"
+                      >
+                        🌐 Global Chat
+                      </button>
+                      <Link
+                        to="/login"
+                        className="block w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-3 text-left text-sm text-slate-200 hover:bg-white/5"
+                      >
+                        👤 Account Settings
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={() => wsClient.requestSync()}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-3 text-left text-sm text-slate-200 hover:bg-white/5"
+                      >
+                        🔄 Refresh Data
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          clearStoredAuth()
+                          useAppStore.getState().clearAuth()
+                          setIsUserMenuOpen(false)
+                        }}
+                        className="w-full rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-left text-sm text-rose-300 hover:bg-rose-500/20"
+                      >
+                        🚪 Logout
+                      </button>
+                    </div>
+
+                    <div className="border-t border-white/10 pt-4">
+                      <div className="text-xs font-medium text-slate-400 mb-3">Create Server</div>
+                      <div className="flex gap-2">
+                        <input
+                          value={serverName}
+                          onChange={(e) => setServerName(e.target.value)}
+                          placeholder="New server name"
+                          className="flex-1 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            createServer()
+                            setIsUserMenuOpen(false)
+                          }}
+                          disabled={!serverName.trim() || wsClient.readyState !== WebSocket.OPEN}
+                          className="shrink-0 rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                        >
+                          Create
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="border-t border-white/10 pt-4">
+                      <div className="text-xs font-medium text-slate-400 mb-3">Join Server</div>
+                      <div className="flex gap-2">
+                        <input
+                          value={joinInviteCode}
+                          onChange={(e) => setJoinInviteCode(e.target.value)}
+                          placeholder="Enter invite code"
+                          className="flex-1 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            joinServerWithInvite()
+                            setIsUserMenuOpen(false)
+                          }}
+                          disabled={!joinInviteCode.trim() || wsClient.readyState !== WebSocket.OPEN}
+                          className="shrink-0 rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                        >
+                          Join
+                        </button>
+                      </div>
+                    </div>
+
+                    {contextServerId && (
+                      <div className="border-t border-white/10 pt-4">
+                        <div className="text-xs font-medium text-slate-400 mb-3">Server Invite</div>
+                        <div className="flex flex-wrap gap-2 mb-3">
+                          <button
+                            type="button"
+                            onClick={generateServerInvite}
+                            disabled={wsClient.readyState !== WebSocket.OPEN}
+                            className="rounded-xl bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
+                          >
+                            Generate
+                          </button>
+                          <button
+                            type="button"
+                            onClick={loadInviteUsage}
+                            disabled={wsClient.readyState !== WebSocket.OPEN || isLoadingInviteUsage}
+                            className="rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm font-semibold text-slate-100 hover:border-white/20 disabled:opacity-60"
+                          >
+                            {isLoadingInviteUsage ? 'Loading…' : 'Usage'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={copyLastInvite}
+                            disabled={!lastInviteCode}
+                            className="rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm font-semibold text-slate-100 hover:border-white/20 disabled:opacity-60"
+                          >
+                            Copy
+                          </button>
+                        </div>
+                        {lastInviteCode && (
+                          <div className="rounded-xl border border-white/10 bg-slate-950/30 px-3 py-2 text-xs text-slate-200">
+                            <div className="text-[11px] text-slate-400">Last code</div>
+                            <div className="mt-1 break-all font-mono">{lastInviteCode}</div>
+                          </div>
+                        )}
+                        {contextServerId && inviteUsageServerId === contextServerId && inviteUsageLogs && (
+                          <div className="mt-3">
+                            <div className="mb-2 text-[11px] font-medium text-slate-400">Invite usage</div>
+                            {inviteUsageLogs.length === 0 ? (
+                              <div className="text-xs text-slate-400">No invite usage yet.</div>
+                            ) : (
+                              <div className="space-y-2 max-h-48 overflow-auto">
+                                {inviteUsageLogs.map((log) => {
+                                  const firstUsed = log.first_used ? new Date(log.first_used).toLocaleString() : ''
+                                  const lastUsed = log.last_used ? new Date(log.last_used).toLocaleString() : ''
+                                  const users = (log.users ?? []).slice(0, 6).join(', ')
+                                  return (
+                                    <div key={log.invite_code} className="rounded-xl border border-white/10 bg-slate-950/30 p-2">
+                                      <div className="flex items-start justify-between gap-2">
+                                        <div className="break-all font-mono text-xs text-slate-100">{log.invite_code}</div>
+                                        <div className="text-xs font-semibold text-slate-200">{log.use_count} uses</div>
+                                      </div>
+                                      <div className="mt-1 text-[11px] text-slate-400">
+                                        {lastUsed ? `Last: ${lastUsed}` : 'Last: —'}
+                                        {firstUsed ? ` · First: ${firstUsed}` : ''}
+                                      </div>
+                                      {users && (
+                                        <div className="mt-1 text-[11px] text-slate-400">
+                                          Users: {users}
+                                          {(log.users?.length ?? 0) > 6 ? '…' : ''}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="text-lg font-semibold text-white">Admin Configuration</div>
+                    <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
+                      Admin settings are under development. This section will contain server management tools.
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
