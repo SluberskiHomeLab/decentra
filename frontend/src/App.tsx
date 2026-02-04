@@ -678,6 +678,7 @@ function ChatPage() {
                 onClick={() => {
                   if (selectedServerId === server.id) {
                     setSelectedServerId(null)
+                    selectContext({ kind: 'global' })
                   } else {
                     setSelectedServerId(server.id)
                     setIsDmSidebarOpen(false)
