@@ -7168,19 +7168,27 @@
     
     // 5. Message Formatting Functions
     function formatMessage(text) {
-        // Bold: **text** or __text__
-        text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-        text = text.replace(/__(.+?)__/g, '<strong>$1</strong>');
+        // Process in order: code blocks first, then inline code, then bold, then italic, then other formats
         
-        // Italic: *text* or _text_
-        text = text.replace(/\*([^*]+?)\*/g, '<em>$1</em>');
-        text = text.replace(/_([^_]+?)_/g, '<em>$1</em>');
+        // Code block: ```code``` (must be processed first)
+        text = text.replace(/```([^`]+?)```/g, function(match, code) {
+            // Preserve code blocks by using a placeholder
+            return '\x00CODE_BLOCK\x00' + btoa(code) + '\x00';
+        });
         
-        // Code: `code`
-        text = text.replace(/`([^`]+?)`/g, '<code>$1</code>');
+        // Inline code: `code` (must be before bold/italic to prevent conflicts)
+        text = text.replace(/`([^`]+?)`/g, function(match, code) {
+            return '\x00CODE\x00' + btoa(code) + '\x00';
+        });
         
-        // Code block: ```code```
-        text = text.replace(/```([^`]+?)```/g, '<pre><code>$1</code></pre>');
+        // Bold: **text** or __text__ (before italic)
+        text = text.replace(/\*\*([^\*]+?)\*\*/g, '<strong>$1</strong>');
+        text = text.replace(/__([^_]+?)__/g, '<strong>$1</strong>');
+        
+        // Italic: *text* or _text_ (after bold)
+        // Only match single * or _ not preceded/followed by another
+        text = text.replace(/([^*]|^)\*([^*]+?)\*([^*]|$)/g, '$1<em>$2</em>$3');
+        text = text.replace(/([^_]|^)_([^_]+?)_([^_]|$)/g, '$1<em>$2</em>$3');
         
         // Quote: > text
         text = text.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
@@ -7188,8 +7196,31 @@
         // Spoiler: ||text||
         text = text.replace(/\|\|(.+?)\|\|/g, '<span class="spoiler">$1</span>');
         
-        // @Mentions: @username
-        text = text.replace(/@(\w+)/g, '<span class="mention">@$1</span>');
+        // @Mentions: @username (validate against current context users if available)
+        text = text.replace(/@(\w+)/g, function(match, username) {
+            // Check if username exists in current context
+            let isValidMention = false;
+            if (currentServerMembers && currentServerMembers.length > 0) {
+                isValidMention = currentServerMembers.some(m => m.username === username);
+            } else if (currentContext && currentContext.type === 'dm') {
+                // In DMs, only the other person or yourself are valid mentions
+                const dm = dms.find(d => d.id === currentContext.dmId);
+                isValidMention = dm && (dm.username === username || username === window.username);
+            } else {
+                // Fallback: apply mention styling anyway (backend will handle validation)
+                isValidMention = true;
+            }
+            
+            return isValidMention ? '<span class="mention">@' + username + '</span>' : match;
+        });
+        
+        // Restore code blocks and inline code
+        text = text.replace(/\x00CODE_BLOCK\x00([^\x00]+?)\x00/g, function(match, encodedCode) {
+            return '<pre><code>' + atob(encodedCode) + '</code></pre>';
+        });
+        text = text.replace(/\x00CODE\x00([^\x00]+?)\x00/g, function(match, encodedCode) {
+            return '<code>' + atob(encodedCode) + '</code>';
+        });
         
         return text;
     }
