@@ -1264,6 +1264,20 @@ class Database:
             ''', (server_id,))
             return [dict(row) for row in cursor.fetchall()]
     
+    def remove_server_member(self, server_id: str, username: str) -> bool:
+        """Remove a member from a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    DELETE FROM server_members 
+                    WHERE server_id = %s AND username = %s
+                ''', (server_id, username))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error removing server member: {e}")
+            return False
+    
     def get_user_servers(self, username: str) -> List[str]:
         """Get all servers a user is a member of."""
         with self.get_connection() as conn:

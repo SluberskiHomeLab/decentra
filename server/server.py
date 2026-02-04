@@ -532,7 +532,9 @@ def has_permission(server_id, username, permission):
     """Check if user has specific permission in a server through roles.
     Owner always has all permissions.
     Permission can be: 'create_invite', 'create_channel', 'create_voice_channel', 
-                       'delete_messages', 'edit_messages', 'send_files', 'access_settings'
+                       'delete_messages', 'edit_messages', 'send_files', 'access_settings',
+                       'kick_members', 'ban_members', 'timeout_members', 'manage_roles',
+                       'manage_channels', 'view_audit_log'
     """
     server = db.get_server(server_id)
     if not server:
@@ -558,6 +560,57 @@ def has_permission(server_id, username, permission):
     
     # Default: no permission
     return False
+
+
+def get_highest_role_position(server_id, username):
+    """Get the highest role position for a user in a server.
+    Higher position values = higher role in hierarchy.
+    Owner always has the highest position (infinity).
+    """
+    server = db.get_server(server_id)
+    if not server:
+        return -1
+    
+    # Owner has the highest position
+    if server['owner'] == username:
+        return float('inf')
+    
+    user_roles = db.get_user_roles(server_id, username)
+    if not user_roles:
+        return 0
+    
+    # Return the highest position among all user roles
+    return max(role.get('position', 0) for role in user_roles)
+
+
+def can_moderate_user(server_id, moderator_username, target_username):
+    """Check if a moderator can perform moderation actions on a target user.
+    Requires:
+    1. Moderator has higher role position than target
+    2. Target is not the server owner
+    3. Moderator and target are different users
+    """
+    server = db.get_server(server_id)
+    if not server:
+        return False
+    
+    # Can't moderate yourself
+    if moderator_username == target_username:
+        return False
+    
+    # Can't moderate the server owner
+    if server['owner'] == target_username:
+        return False
+    
+    # Owner can moderate anyone
+    if server['owner'] == moderator_username:
+        return True
+    
+    # Check role hierarchy
+    moderator_position = get_highest_role_position(server_id, moderator_username)
+    target_position = get_highest_role_position(server_id, target_username)
+    
+    return moderator_position > target_position
 
 
 def get_default_permissions():
@@ -1339,6 +1392,14 @@ async def handler(websocket):
                                     members = db.get_server_members(server_id)
                                     member_usernames = {m['username'] for m in members}
                                     if username in member_usernames:
+                                        # Check if user is timed out
+                                        if db.is_user_timed_out(server_id, username):
+                                            await websocket.send_str(json.dumps({
+                                                'type': 'error',
+                                                'message': 'You are currently timed out and cannot send messages'
+                                            }))
+                                            continue
+                                        
                                         # Save message to database and get ID
                                         message_id = db.save_message(username, msg_content, 'server', context_id)
                                         
@@ -2367,6 +2428,14 @@ async def handler(websocket):
                         if invite_data and invite_data['code_type'] == 'server':
                             server_id = invite_data['server_id']
                             server = db.get_server(server_id)
+                            
+                            # Check if user is banned from the server
+                            if db.is_user_banned(server_id, username):
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'You are banned from this server'
+                                }))
+                                continue
                             
                             # Check if user is already a member
                             members = db.get_server_members(server_id)
@@ -3620,6 +3689,438 @@ async def handler(websocket):
                                 'type': 'voice_call_rejected',
                                 'from': username
                             }))
+                    
+                    # Channel Category Handlers
+                    elif data.get('type') == 'create_category':
+                        server_id = data.get('server_id', '')
+                        category_name = data.get('name', '').strip()
+                        
+                        if db.get_server(server_id) and category_name:
+                            if has_permission(server_id, username, 'manage_channels'):
+                                category_id = f"category_{secrets.token_hex(8)}"
+                                
+                                # Get current categories to set position
+                                categories = db.get_server_categories(server_id)
+                                position = len(categories)
+                                
+                                db.create_category(category_id, server_id, category_name, position)
+                                
+                                # Log audit entry
+                                db.create_audit_log(
+                                    server_id, 'category_create', username,
+                                    'category', category_id,
+                                    {'name': category_name}
+                                )
+                                
+                                # Notify all server members
+                                await broadcast_to_server(server_id, json.dumps({
+                                    'type': 'category_created',
+                                    'server_id': server_id,
+                                    'category': {
+                                        'id': category_id,
+                                        'name': category_name,
+                                        'position': position
+                                    }
+                                }))
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} created category: {category_name}")
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'You do not have permission to manage channels'
+                                }))
+                    
+                    elif data.get('type') == 'update_category':
+                        category_id = data.get('category_id', '')
+                        new_name = data.get('name')
+                        new_position = data.get('position')
+                        
+                        category = db.get_category(category_id)
+                        if category:
+                            server_id = category['server_id']
+                            if has_permission(server_id, username, 'manage_channels'):
+                                db.update_category(category_id, new_name, new_position)
+                                
+                                # Log audit entry
+                                details = {}
+                                if new_name:
+                                    details['new_name'] = new_name
+                                if new_position is not None:
+                                    details['new_position'] = new_position
+                                
+                                db.create_audit_log(
+                                    server_id, 'category_update', username,
+                                    'category', category_id, details
+                                )
+                                
+                                # Notify all server members
+                                await broadcast_to_server(server_id, json.dumps({
+                                    'type': 'category_updated',
+                                    'server_id': server_id,
+                                    'category_id': category_id,
+                                    'name': new_name,
+                                    'position': new_position
+                                }))
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'You do not have permission to manage channels'
+                                }))
+                    
+                    elif data.get('type') == 'delete_category':
+                        category_id = data.get('category_id', '')
+                        
+                        category = db.get_category(category_id)
+                        if category:
+                            server_id = category['server_id']
+                            if has_permission(server_id, username, 'manage_channels'):
+                                category_name = category['name']
+                                db.delete_category(category_id)
+                                
+                                # Log audit entry
+                                db.create_audit_log(
+                                    server_id, 'category_delete', username,
+                                    'category', category_id,
+                                    {'name': category_name}
+                                )
+                                
+                                # Notify all server members
+                                await broadcast_to_server(server_id, json.dumps({
+                                    'type': 'category_deleted',
+                                    'server_id': server_id,
+                                    'category_id': category_id
+                                }))
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} deleted category: {category_name}")
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'You do not have permission to manage channels'
+                                }))
+                    
+                    elif data.get('type') == 'set_channel_category':
+                        channel_id = data.get('channel_id', '')
+                        category_id = data.get('category_id')  # Can be None to remove from category
+                        
+                        # Get channel to find server_id
+                        channels = []
+                        for sid in [s['server_id'] for s in db.get_all_servers()]:
+                            channels.extend(db.get_server_channels(sid))
+                        
+                        channel = next((c for c in channels if c['channel_id'] == channel_id), None)
+                        if channel:
+                            server_id = channel['server_id']
+                            if has_permission(server_id, username, 'manage_channels'):
+                                db.set_channel_category(channel_id, category_id)
+                                
+                                # Log audit entry
+                                db.create_audit_log(
+                                    server_id, 'channel_category_update', username,
+                                    'channel', channel_id,
+                                    {'category_id': category_id}
+                                )
+                                
+                                # Notify all server members
+                                await broadcast_to_server(server_id, json.dumps({
+                                    'type': 'channel_category_updated',
+                                    'server_id': server_id,
+                                    'channel_id': channel_id,
+                                    'category_id': category_id
+                                }))
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'You do not have permission to manage channels'
+                                }))
+                    
+                    elif data.get('type') == 'get_server_categories':
+                        server_id = data.get('server_id', '')
+                        
+                        server = db.get_server(server_id)
+                        if server:
+                            categories = db.get_server_categories(server_id)
+                            await websocket.send_str(json.dumps({
+                                'type': 'server_categories',
+                                'server_id': server_id,
+                                'categories': categories
+                            }))
+                    
+                    # Moderation Handlers
+                    elif data.get('type') == 'kick_member':
+                        server_id = data.get('server_id', '')
+                        target_username = data.get('username', '').strip()
+                        reason = data.get('reason', '').strip()
+                        
+                        if db.get_server(server_id) and target_username:
+                            if has_permission(server_id, username, 'kick_members'):
+                                # Check role hierarchy
+                                if can_moderate_user(server_id, username, target_username):
+                                    # Create moderation action
+                                    action_id = db.create_moderation_action(
+                                        server_id, 'kick', target_username, username, reason
+                                    )
+                                    
+                                    if action_id:
+                                        # Remove from server
+                                        db.remove_server_member(server_id, target_username)
+                                        
+                                        # Log audit entry
+                                        db.create_audit_log(
+                                            server_id, 'member_kick', username,
+                                            'user', target_username,
+                                            {'reason': reason}
+                                        )
+                                        
+                                        # Notify kicked user
+                                        await send_to_user(target_username, json.dumps({
+                                            'type': 'kicked_from_server',
+                                            'server_id': server_id,
+                                            'reason': reason,
+                                            'moderator': username
+                                        }))
+                                        
+                                        # Notify server members
+                                        await broadcast_to_server(server_id, json.dumps({
+                                            'type': 'member_kicked',
+                                            'server_id': server_id,
+                                            'username': target_username,
+                                            'moderator': username,
+                                            'reason': reason
+                                        }))
+                                        
+                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} kicked {target_username} from server {server_id}")
+                                else:
+                                    await websocket.send_str(json.dumps({
+                                        'type': 'error',
+                                        'message': 'Cannot moderate users with equal or higher roles'
+                                    }))
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'You do not have permission to kick members'
+                                }))
+                    
+                    elif data.get('type') == 'ban_member':
+                        server_id = data.get('server_id', '')
+                        target_username = data.get('username', '').strip()
+                        reason = data.get('reason', '').strip()
+                        
+                        if db.get_server(server_id) and target_username:
+                            if has_permission(server_id, username, 'ban_members'):
+                                # Check role hierarchy
+                                if can_moderate_user(server_id, username, target_username):
+                                    # Create moderation action
+                                    action_id = db.create_moderation_action(
+                                        server_id, 'ban', target_username, username, reason
+                                    )
+                                    
+                                    if action_id:
+                                        # Remove from server
+                                        db.remove_server_member(server_id, target_username)
+                                        
+                                        # Log audit entry
+                                        db.create_audit_log(
+                                            server_id, 'member_ban', username,
+                                            'user', target_username,
+                                            {'reason': reason}
+                                        )
+                                        
+                                        # Notify banned user
+                                        await send_to_user(target_username, json.dumps({
+                                            'type': 'banned_from_server',
+                                            'server_id': server_id,
+                                            'reason': reason,
+                                            'moderator': username
+                                        }))
+                                        
+                                        # Notify server members
+                                        await broadcast_to_server(server_id, json.dumps({
+                                            'type': 'member_banned',
+                                            'server_id': server_id,
+                                            'username': target_username,
+                                            'moderator': username,
+                                            'reason': reason
+                                        }))
+                                        
+                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} banned {target_username} from server {server_id}")
+                                else:
+                                    await websocket.send_str(json.dumps({
+                                        'type': 'error',
+                                        'message': 'Cannot moderate users with equal or higher roles'
+                                    }))
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'You do not have permission to ban members'
+                                }))
+                    
+                    elif data.get('type') == 'unban_member':
+                        server_id = data.get('server_id', '')
+                        target_username = data.get('username', '').strip()
+                        
+                        if db.get_server(server_id) and target_username:
+                            if has_permission(server_id, username, 'ban_members'):
+                                # Deactivate all active ban actions
+                                db.deactivate_moderation_actions_by_type(server_id, target_username, 'ban')
+                                
+                                # Log audit entry
+                                db.create_audit_log(
+                                    server_id, 'member_unban', username,
+                                    'user', target_username, {}
+                                )
+                                
+                                # Notify user
+                                await send_to_user(target_username, json.dumps({
+                                    'type': 'unbanned_from_server',
+                                    'server_id': server_id,
+                                    'moderator': username
+                                }))
+                                
+                                await websocket.send_str(json.dumps({
+                                    'type': 'member_unbanned',
+                                    'server_id': server_id,
+                                    'username': target_username
+                                }))
+                                
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} unbanned {target_username} from server {server_id}")
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'You do not have permission to unban members'
+                                }))
+                    
+                    elif data.get('type') == 'timeout_member':
+                        server_id = data.get('server_id', '')
+                        target_username = data.get('username', '').strip()
+                        duration_minutes = data.get('duration_minutes', 10)
+                        reason = data.get('reason', '').strip()
+                        
+                        if db.get_server(server_id) and target_username:
+                            if has_permission(server_id, username, 'timeout_members'):
+                                # Check role hierarchy
+                                if can_moderate_user(server_id, username, target_username):
+                                    expires_at = datetime.now() + timedelta(minutes=duration_minutes)
+                                    
+                                    # Create moderation action
+                                    action_id = db.create_moderation_action(
+                                        server_id, 'timeout', target_username, username, 
+                                        reason, expires_at
+                                    )
+                                    
+                                    if action_id:
+                                        # Log audit entry
+                                        db.create_audit_log(
+                                            server_id, 'member_timeout', username,
+                                            'user', target_username,
+                                            {
+                                                'reason': reason,
+                                                'duration_minutes': duration_minutes,
+                                                'expires_at': expires_at.isoformat()
+                                            }
+                                        )
+                                        
+                                        # Notify timed out user
+                                        await send_to_user(target_username, json.dumps({
+                                            'type': 'timed_out',
+                                            'server_id': server_id,
+                                            'reason': reason,
+                                            'moderator': username,
+                                            'expires_at': expires_at.isoformat(),
+                                            'duration_minutes': duration_minutes
+                                        }))
+                                        
+                                        # Notify server members
+                                        await broadcast_to_server(server_id, json.dumps({
+                                            'type': 'member_timed_out',
+                                            'server_id': server_id,
+                                            'username': target_username,
+                                            'moderator': username,
+                                            'reason': reason,
+                                            'duration_minutes': duration_minutes
+                                        }))
+                                        
+                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} timed out {target_username} for {duration_minutes} minutes")
+                                else:
+                                    await websocket.send_str(json.dumps({
+                                        'type': 'error',
+                                        'message': 'Cannot moderate users with equal or higher roles'
+                                    }))
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'You do not have permission to timeout members'
+                                }))
+                    
+                    elif data.get('type') == 'remove_timeout':
+                        server_id = data.get('server_id', '')
+                        target_username = data.get('username', '').strip()
+                        
+                        if db.get_server(server_id) and target_username:
+                            if has_permission(server_id, username, 'timeout_members'):
+                                # Deactivate all active timeout actions
+                                db.deactivate_moderation_actions_by_type(server_id, target_username, 'timeout')
+                                
+                                # Log audit entry
+                                db.create_audit_log(
+                                    server_id, 'timeout_remove', username,
+                                    'user', target_username, {}
+                                )
+                                
+                                # Notify user
+                                await send_to_user(target_username, json.dumps({
+                                    'type': 'timeout_removed',
+                                    'server_id': server_id,
+                                    'moderator': username
+                                }))
+                                
+                                await websocket.send_str(json.dumps({
+                                    'type': 'timeout_removed',
+                                    'server_id': server_id,
+                                    'username': target_username
+                                }))
+                                
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} removed timeout from {target_username}")
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'You do not have permission to remove timeouts'
+                                }))
+                    
+                    # Audit Log Handlers
+                    elif data.get('type') == 'get_audit_logs':
+                        server_id = data.get('server_id', '')
+                        limit = data.get('limit', 100)
+                        action_type = data.get('action_type')
+                        
+                        if db.get_server(server_id):
+                            if has_permission(server_id, username, 'view_audit_log'):
+                                logs = db.get_audit_logs(server_id, limit, action_type)
+                                await websocket.send_str(json.dumps({
+                                    'type': 'audit_logs',
+                                    'server_id': server_id,
+                                    'logs': logs
+                                }))
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'You do not have permission to view audit logs'
+                                }))
+                    
+                    elif data.get('type') == 'get_moderation_actions':
+                        server_id = data.get('server_id', '')
+                        limit = data.get('limit', 100)
+                        
+                        if db.get_server(server_id):
+                            if has_permission(server_id, username, 'view_audit_log'):
+                                actions = db.get_server_moderation_actions(server_id, limit)
+                                await websocket.send_str(json.dumps({
+                                    'type': 'moderation_actions',
+                                    'server_id': server_id,
+                                    'actions': actions
+                                }))
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'You do not have permission to view moderation actions'
+                                }))
                         
                 except json.JSONDecodeError:
                     print("Invalid JSON received")
