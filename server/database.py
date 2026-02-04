@@ -617,6 +617,67 @@ class Database:
                         )
                     ''')
                     
+                    # User status table for online/away/busy/invisible tracking
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS user_status (
+                            username VARCHAR(255) PRIMARY KEY,
+                            status VARCHAR(50) DEFAULT 'offline',
+                            last_seen TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Pinned messages table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS pinned_messages (
+                            message_id INTEGER PRIMARY KEY,
+                            context_type VARCHAR(50) NOT NULL,
+                            context_id VARCHAR(255) NOT NULL,
+                            pinned_by VARCHAR(255) NOT NULL,
+                            pinned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                            FOREIGN KEY (pinned_by) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Message read status table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS message_read_status (
+                            message_id INTEGER NOT NULL,
+                            username VARCHAR(255) NOT NULL,
+                            read_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            PRIMARY KEY (message_id, username),
+                            FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Create index for faster read status queries
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_read_status_user 
+                        ON message_read_status(username, read_at)
+                    ''')
+                    
+                    # Add topic column to channels if it doesn't exist (migration)
+                    cursor.execute('''
+                        DO $$ 
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'channels' AND column_name = 'topic'
+                            ) THEN
+                                ALTER TABLE channels ADD COLUMN topic TEXT DEFAULT '';
+                            END IF;
+                        END $$;
+                    ''')
+                    
+                    # Create full-text search index on messages for search functionality
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_messages_content_search 
+                        ON messages USING GIN(to_tsvector('english', content))
+                    ''')
+                    
                     conn.commit()
                 
                 # If we get here, connection was successful
@@ -1938,3 +1999,229 @@ class Database:
                 })
             
             return reactions_by_message
+    
+    # User status operations
+    def update_user_status(self, username: str, status: str) -> bool:
+        """Update user online status (online, away, busy, invisible, offline)."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO user_status (username, status, updated_at, last_seen)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (username) 
+                    DO UPDATE SET status = EXCLUDED.status, 
+                                  updated_at = EXCLUDED.updated_at,
+                                  last_seen = EXCLUDED.last_seen
+                ''', (username, status, datetime.now(), datetime.now()))
+                return True
+        except Exception:
+            return False
+    
+    def get_user_status(self, username: str) -> Optional[Dict]:
+        """Get user status information."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT username, status, last_seen::text as last_seen, 
+                       updated_at::text as updated_at
+                FROM user_status
+                WHERE username = %s
+            ''', (username,))
+            result = cursor.fetchone()
+            return dict(result) if result else None
+    
+    def get_online_users(self) -> List[Dict]:
+        """Get all users who are not offline or invisible."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT username, status, last_seen::text as last_seen,
+                       updated_at::text as updated_at
+                FROM user_status
+                WHERE status NOT IN ('offline', 'invisible')
+                ORDER BY updated_at DESC
+            ''')
+            return [dict(row) for row in cursor.fetchall()]
+    
+    # Channel topic operations
+    def update_channel_topic(self, channel_id: str, topic: str) -> bool:
+        """Update channel topic/description."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE channels
+                    SET topic = %s
+                    WHERE channel_id = %s
+                ''', (topic, channel_id))
+                return cursor.rowcount > 0
+        except Exception:
+            return False
+    
+    def get_channel(self, channel_id: str) -> Optional[Dict]:
+        """Get channel information including topic."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT channel_id, server_id, name, type, topic
+                FROM channels
+                WHERE channel_id = %s
+            ''', (channel_id,))
+            result = cursor.fetchone()
+            return dict(result) if result else None
+    
+    # Pinned messages operations
+    def pin_message(self, message_id: int, context_type: str, context_id: str, username: str) -> bool:
+        """Pin a message in a channel or DM."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO pinned_messages (message_id, context_type, context_id, pinned_by)
+                    VALUES (%s, %s, %s, %s)
+                ''', (message_id, context_type, context_id, username))
+                return True
+        except psycopg2.IntegrityError:
+            # Message already pinned
+            return False
+    
+    def unpin_message(self, message_id: int) -> bool:
+        """Unpin a message."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM pinned_messages WHERE message_id = %s', (message_id,))
+            return cursor.rowcount > 0
+    
+    def get_pinned_messages(self, context_type: str, context_id: str) -> List[Dict]:
+        """Get all pinned messages for a context (channel or DM)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT p.message_id, p.pinned_by, p.pinned_at::text as pinned_at,
+                       m.username, m.content, m.timestamp::text as timestamp
+                FROM pinned_messages p
+                JOIN messages m ON p.message_id = m.id
+                WHERE p.context_type = %s AND p.context_id = %s
+                ORDER BY p.pinned_at DESC
+            ''', (context_type, context_id))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def is_message_pinned(self, message_id: int) -> bool:
+        """Check if a message is pinned."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT 1 FROM pinned_messages WHERE message_id = %s', (message_id,))
+            return cursor.fetchone() is not None
+    
+    # Message search operations
+    def search_messages(self, query: str, context_type: str = None, context_id: str = None, 
+                       username: str = None, limit: int = 50) -> List[Dict]:
+        """
+        Search messages using full-text search.
+        
+        Args:
+            query: Search query string
+            context_type: Optional filter by context type (channel, dm)
+            context_id: Optional filter by specific channel/DM
+            username: Optional filter by message author
+            limit: Maximum number of results
+            
+        Returns:
+            List of matching messages with relevance ranking
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Build dynamic query with optional filters
+            sql = '''
+                SELECT id, username, content, timestamp::text as timestamp,
+                       context_type, context_id,
+                       ts_rank(to_tsvector('english', content), plainto_tsquery('english', %s)) as rank
+                FROM messages
+                WHERE to_tsvector('english', content) @@ plainto_tsquery('english', %s)
+                  AND deleted = FALSE
+            '''
+            params = [query, query]
+            
+            if context_type:
+                sql += ' AND context_type = %s'
+                params.append(context_type)
+            
+            if context_id:
+                sql += ' AND context_id = %s'
+                params.append(context_id)
+            
+            if username:
+                sql += ' AND username = %s'
+                params.append(username)
+            
+            sql += ' ORDER BY rank DESC, timestamp DESC LIMIT %s'
+            params.append(limit)
+            
+            cursor.execute(sql, params)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    # Read/unread tracking operations
+    def mark_message_read(self, message_id: int, username: str) -> bool:
+        """Mark a message as read by a user."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO message_read_status (message_id, username)
+                    VALUES (%s, %s)
+                    ON CONFLICT (message_id, username) DO NOTHING
+                ''', (message_id, username))
+                return True
+        except Exception:
+            return False
+    
+    def mark_messages_read_bulk(self, message_ids: List[int], username: str) -> int:
+        """Mark multiple messages as read. Returns count of newly marked messages."""
+        if not message_ids:
+            return 0
+        
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # Use ON CONFLICT to avoid duplicates
+                for msg_id in message_ids:
+                    cursor.execute('''
+                        INSERT INTO message_read_status (message_id, username)
+                        VALUES (%s, %s)
+                        ON CONFLICT (message_id, username) DO NOTHING
+                    ''', (msg_id, username))
+                return len(message_ids)
+        except Exception:
+            return 0
+    
+    def get_unread_count(self, username: str, context_type: str, context_id: str) -> int:
+        """Get count of unread messages in a context for a user."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT COUNT(*)
+                FROM messages m
+                LEFT JOIN message_read_status r 
+                    ON m.id = r.message_id AND r.username = %s
+                WHERE m.context_type = %s 
+                  AND m.context_id = %s
+                  AND m.username != %s
+                  AND m.deleted = FALSE
+                  AND r.message_id IS NULL
+            ''', (username, context_type, context_id, username))
+            result = cursor.fetchone()
+            return result['count'] if result else 0
+    
+    def get_read_receipts(self, message_id: int) -> List[Dict]:
+        """Get all users who have read a message."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT username, read_at::text as read_at
+                FROM message_read_status
+                WHERE message_id = %s
+                ORDER BY read_at ASC
+            ''', (message_id,))
+            return [dict(row) for row in cursor.fetchall()]
