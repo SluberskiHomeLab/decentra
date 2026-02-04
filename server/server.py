@@ -2347,11 +2347,21 @@ async def handler(websocket):
                         # Check if user has permission to view invite usage
                         if has_permission(server_id, username, 'access_settings'):
                             usage_logs = db.get_server_invite_usage(server_id)
+
+                            # Convert datetime values for JSON serialization.
+                            serialized_logs = []
+                            for log in usage_logs:
+                                item = dict(log)
+                                for key in ('first_used', 'last_used'):
+                                    value = item.get(key)
+                                    if isinstance(value, datetime):
+                                        item[key] = value.isoformat()
+                                serialized_logs.append(item)
                             
                             await websocket.send_str(json.dumps({
                                 'type': 'server_invite_usage',
                                 'server_id': server_id,
-                                'usage_logs': usage_logs
+                                'usage_logs': serialized_logs
                             }))
                         else:
                             await websocket.send_str(json.dumps({

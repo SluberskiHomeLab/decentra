@@ -41,3 +41,11 @@ server/static/chat-old.js
 # SSL certificates (auto-generated)
 server/certs/
 certs/
+
+# Frontend (Vite/React)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Local LLM agent prompts/reports (keep out of repo)
+agents/

@@ -1,0 +1,279 @@
+export type WsAuthSuccess = {
+  type: 'auth_success'
+  message?: string
+  token: string
+}
+
+export type Avatar = {
+  avatar?: string
+  avatar_type?: 'emoji' | 'image' | string
+  avatar_data?: string | null
+}
+
+export type Profile = {
+  bio?: string
+  status_message?: string
+}
+
+export type ServerChannel = {
+  id: string
+  name: string
+  type?: 'text' | 'voice' | string
+}
+
+export type ServerPermissions = {
+  can_create_channel?: boolean
+  can_edit_channel?: boolean
+  can_delete_channel?: boolean
+  can_edit_messages?: boolean
+  can_delete_messages?: boolean
+}
+
+export type Server = {
+  id: string
+  name: string
+  owner: string
+  icon?: string
+  icon_type?: 'emoji' | 'image' | string
+  icon_data?: string | null
+  channels: ServerChannel[]
+  permissions?: ServerPermissions
+}
+
+export type Dm = {
+  id: string
+  username: string
+} & Avatar
+
+export type Friend = {
+  username: string
+} & Avatar &
+  Profile
+
+export type WsAuthError = {
+  type: 'auth_error'
+  message?: string
+}
+
+export type WsTwoFaRequired = {
+  type: '2fa_required'
+  message?: string
+}
+
+export type WsInit = {
+  type: 'init'
+  username: string
+  is_admin?: boolean
+  notification_mode?: string
+  servers?: Server[]
+  dms?: Dm[]
+  friends?: Friend[]
+  friend_requests_sent?: Friend[]
+  friend_requests_received?: Friend[]
+} & Avatar &
+  Profile
+
+export type WsDataSynced = {
+  type: 'data_synced'
+  servers?: Server[]
+  dms?: Dm[]
+  friends?: Friend[]
+  friend_requests_sent?: Friend[]
+  friend_requests_received?: Friend[]
+}
+
+export type WsSystem = {
+  type: 'system'
+  content?: string
+  timestamp?: string
+}
+
+export type WsAnnouncementUpdate = {
+  type: 'announcement_update'
+  enabled: boolean
+  message: string
+  duration_minutes: number
+  set_at: string | null
+  max_message_length?: number
+}
+
+export type WsChatMessage = {
+  type: 'message'
+  id?: number
+  username: string
+  content: string
+  timestamp: string
+  context?: 'global' | 'server' | 'dm' | string
+  context_id?: string | null
+  messageKey?: string
+  reactions?: unknown[]
+} & Avatar
+
+export type WsHistory = {
+  type: 'history'
+  messages: WsChatMessage[]
+}
+
+export type WsChannelHistory = {
+  type: 'channel_history'
+  server_id: string
+  channel_id: string
+  messages: WsChatMessage[]
+}
+
+export type WsDmHistory = {
+  type: 'dm_history'
+  dm_id: string
+  messages: WsChatMessage[]
+}
+
+export type WsError = {
+  type: 'error'
+  message: string
+}
+
+export type WsServerCreated = {
+  type: 'server_created'
+  server: Server
+}
+
+export type WsServerJoined = {
+  type: 'server_joined'
+  server: Pick<Server, 'id' | 'name' | 'owner' | 'channels' | 'icon' | 'icon_type' | 'icon_data'>
+}
+
+export type WsInviteCode = {
+  type: 'invite_code'
+  code: string
+  message?: string
+}
+
+export type WsServerInviteCode = {
+  type: 'server_invite_code'
+  server_id: string
+  code: string
+  message?: string
+}
+
+export type ServerInviteUsageLog = {
+  invite_code: string
+  use_count: number
+  first_used?: string | null
+  last_used?: string | null
+  users?: string[]
+}
+
+export type WsServerInviteUsage = {
+  type: 'server_invite_usage'
+  server_id: string
+  usage_logs: ServerInviteUsageLog[]
+}
+
+export type WsChannelCreated = {
+  type: 'channel_created'
+  server_id: string
+  channel: ServerChannel
+}
+
+export type WsDmStarted = {
+  type: 'dm_started'
+  dm: Dm & Profile
+}
+
+export type WsMessage =
+  | WsAuthSuccess
+  | WsAuthError
+  | WsTwoFaRequired
+  | WsInit
+  | WsDataSynced
+  | WsSystem
+  | WsAnnouncementUpdate
+  | WsChatMessage
+  | WsHistory
+  | WsChannelHistory
+  | WsDmHistory
+  | WsError
+  | WsServerCreated
+  | WsServerJoined
+  | WsChannelCreated
+  | WsDmStarted
+  | WsInviteCode
+  | WsServerInviteCode
+  | WsServerInviteUsage
+  | { type: string; [k: string]: any }
+
+export type WsOutboundLogin = {
+  type: 'login'
+  username: string
+  password: string
+  totp_code?: string
+}
+
+export type WsOutboundTokenAuth = {
+  type: 'token'
+  token: string
+}
+
+export type WsOutboundSyncData = {
+  type: 'sync_data'
+}
+
+export type WsOutboundGetChannelHistory = {
+  type: 'get_channel_history'
+  server_id: string
+  channel_id: string
+}
+
+export type WsOutboundGetDmHistory = {
+  type: 'get_dm_history'
+  dm_id: string
+}
+
+export type WsOutboundSendMessage = {
+  type: 'message'
+  content: string
+  context?: 'global' | 'server' | 'dm'
+  context_id?: string | null
+}
+
+export type WsOutboundCreateServer = {
+  type: 'create_server'
+  name: string
+}
+
+export type WsOutboundCreateChannel = {
+  type: 'create_channel'
+  server_id: string
+  name: string
+  channel_type?: 'text' | 'voice'
+}
+
+export type WsOutboundCreateVoiceChannel = {
+  type: 'create_voice_channel'
+  server_id: string
+  name: string
+}
+
+export type WsOutboundStartDm = {
+  type: 'start_dm'
+  username: string
+}
+
+export type WsOutboundGenerateInvite = {
+  type: 'generate_invite'
+}
+
+export type WsOutboundGenerateServerInvite = {
+  type: 'generate_server_invite'
+  server_id: string
+}
+
+export type WsOutboundJoinServerWithInvite = {
+  type: 'join_server_with_invite'
+  invite_code: string
+}
+
+export type WsOutboundGetServerInviteUsage = {
+  type: 'get_server_invite_usage'
+  server_id: string
+}
