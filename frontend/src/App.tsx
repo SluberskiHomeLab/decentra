@@ -5,7 +5,7 @@ import { clearStoredAuth, getStoredAuth, setStoredAuth } from './auth/storage'
 import { contextKey, useAppStore } from './store/appStore'
 import { useToastStore } from './store/toastStore'
 import type { ChatContext } from './store/appStore'
-import type { Server, ServerInviteUsageLog, WsChatMessage, WsMessage } from './types/protocol'
+import type { Server, ServerInviteUsageLog, ServerMember, WsChatMessage, WsMessage } from './types/protocol'
 import './App.css'
 
 function isWsChatMessage(msg: WsMessage): msg is WsChatMessage {
@@ -543,7 +543,31 @@ function ChatPage() {
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false)
   const [isDmSidebarOpen, setIsDmSidebarOpen] = useState(false)
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null)
+  const [isServerSettingsOpen, setIsServerSettingsOpen] = useState(false)
+  const [isMembersSidebarOpen, setIsMembersSidebarOpen] = useState(true)
+  const [serverMembers, setServerMembers] = useState<Record<string, ServerMember[]>>({})
+  const [isAccountSettingsOpen, setIsAccountSettingsOpen] = useState(false)
   const [isAdminMode, setIsAdminMode] = useState(false)
+  const [adminSettings, setAdminSettings] = useState<Record<string, any>>({})
+  const [isSavingSettings, setIsSavingSettings] = useState(false)
+  const [isTestingSMTP, setIsTestingSMTP] = useState(false)
+  const [announcement, setAnnouncement] = useState<{
+    enabled: boolean
+    message: string
+    duration_minutes: number
+    set_at: string | null
+  } | null>(null)
+
+  // Account settings state
+  const [profileBio, setProfileBio] = useState('')
+  const [profileStatus, setProfileStatus] = useState('')
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null)
+  const [twoFASetup, setTwoFASetup] = useState<{ secret: string; qr_code: string; backup_codes: string[] } | null>(null)
+  const [twoFACode, setTwoFACode] = useState('')
+  const [disable2FAPassword, setDisable2FAPassword] = useState('')
+  const [disable2FACode, setDisable2FACode] = useState('')
+  const [notificationMode, setNotificationMode] = useState<'all' | 'mentions' | 'none'>('all')
+  const [passwordResetEmail, setPasswordResetEmail] = useState('')
 
   const pushToast = useToastStore((s) => s.push)
 
@@ -649,6 +673,13 @@ function ChatPage() {
         // Legacy client calls sync after auth; do the same.
         try {
           wsClient.requestSync()
+        } catch {
+          // ignore
+        }
+
+        // Request admin settings (includes announcement info for all users)
+        try {
+          wsClient.send({ type: 'get_admin_settings' })
         } catch {
           // ignore
         }
@@ -762,6 +793,13 @@ function ChatPage() {
         pushToast({ kind: 'info', message: `Invite usage loaded (${(msg.usage_logs ?? []).length})` })
       }
 
+      if (msg.type === 'server_members') {
+        setServerMembers((prev) => ({
+          ...prev,
+          [msg.server_id]: msg.members ?? [],
+        }))
+      }
+
       if (isWsServerJoined(msg)) {
         const prev = useAppStore.getState().init
         if (prev) {
@@ -794,6 +832,89 @@ function ChatPage() {
       if (isWsChatMessage(msg)) {
         appendMessage(msg)
       }
+
+      if (msg.type === 'admin_settings') {
+        setAdminSettings(msg.settings || {})
+      }
+
+      if (msg.type === 'settings_saved') {
+        setIsSavingSettings(false)
+        pushToast({ kind: 'success', message: 'Admin settings saved successfully' })
+      }
+
+      if (msg.type === 'smtp_test_result') {
+        setIsTestingSMTP(false)
+        if (msg.success) {
+          pushToast({ kind: 'success', message: msg.message || 'SMTP test successful' })
+        } else {
+          pushToast({ kind: 'error', message: msg.message || 'SMTP test failed' })
+        }
+      }
+
+      if (msg.type === 'announcement_update') {
+        const enabled = msg.enabled === true
+        const message = typeof msg.message === 'string' ? msg.message : ''
+        const duration_minutes = typeof msg.duration_minutes === 'number' ? msg.duration_minutes : 60
+        const set_at = typeof msg.set_at === 'string' ? msg.set_at : null
+        
+        if (enabled && message && set_at) {
+          // Check if announcement is still valid (within duration)
+          const setTime = new Date(set_at).getTime()
+          const now = Date.now()
+          const durationMs = duration_minutes * 60 * 1000
+          
+          if (now - setTime < durationMs) {
+            setAnnouncement({ enabled, message, duration_minutes, set_at })
+          } else {
+            setAnnouncement(null)
+          }
+        } else {
+          setAnnouncement(null)
+        }
+      }
+
+      if (msg.type === '2fa_setup') {
+        setTwoFASetup({
+          secret: msg.secret,
+          qr_code: msg.qr_code,
+          backup_codes: msg.backup_codes,
+        })
+        pushToast({ kind: 'success', message: '2FA setup started. Scan the QR code with your authenticator app.' })
+      }
+
+      if (msg.type === '2fa_enabled') {
+        setTwoFASetup(null)
+        setTwoFACode('')
+        pushToast({ kind: 'success', message: msg.message || '2FA enabled successfully' })
+        wsClient.requestSync()
+      }
+
+      if (msg.type === '2fa_disabled') {
+        setDisable2FAPassword('')
+        setDisable2FACode('')
+        pushToast({ kind: 'success', message: msg.message || '2FA disabled successfully' })
+        wsClient.requestSync()
+      }
+
+      if (msg.type === 'profile_updated') {
+        pushToast({ kind: 'success', message: 'Profile updated successfully' })
+        wsClient.requestSync()
+      }
+
+      if (msg.type === 'avatar_updated') {
+        pushToast({ kind: 'success', message: 'Avatar updated successfully' })
+        wsClient.requestSync()
+      }
+
+      if (msg.type === 'notification_mode_updated') {
+        pushToast({ kind: 'success', message: 'Notification settings updated' })
+        wsClient.requestSync()
+      }
+
+      if (msg.type === 'password_reset_requested') {
+        setPasswordResetEmail('')
+        pushToast({ kind: 'success', message: msg.message || 'Password reset email sent' })
+      }
     })
 
     const unsubClose = wsClient.onClose(() => {
@@ -824,6 +945,15 @@ function ChatPage() {
     requestHistoryFor(selectedContext)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedKey])
+
+  // Populate account settings when init data is available
+  useEffect(() => {
+    if (init) {
+      setProfileBio(init.bio || '')
+      setProfileStatus(init.status_message || '')
+      setNotificationMode(init.notification_mode as 'all' | 'mentions' | 'none' || 'all')
+    }
+  }, [init])
 
   const selectedTitle =
     selectedContext.kind === 'global'
@@ -888,10 +1018,10 @@ function ChatPage() {
     setJoinInviteCode('')
   }
 
-  const loadInviteUsage = () => {
-    if (!contextServerId) return
+  const loadInviteUsage = (serverId: string) => {
     setIsLoadingInviteUsage(true)
-    wsClient.getServerInviteUsage({ type: 'get_server_invite_usage', server_id: contextServerId })
+    setInviteUsageServerId(serverId)
+    wsClient.getServerInviteUsage({ type: 'get_server_invite_usage', server_id: serverId })
   }
 
   const copyLastInvite = async () => {
@@ -904,12 +1034,151 @@ function ChatPage() {
     }
   }
 
+  const loadAdminSettings = () => {
+    if (wsClient.readyState !== WebSocket.OPEN) return
+    wsClient.send({ type: 'get_admin_settings' })
+  }
+
+  const saveAdminSettings = () => {
+    if (wsClient.readyState !== WebSocket.OPEN) return
+    setIsSavingSettings(true)
+    wsClient.send({ type: 'save_admin_settings', settings: adminSettings })
+  }
+
+  const testSMTP = () => {
+    if (wsClient.readyState !== WebSocket.OPEN) return
+    setIsTestingSMTP(true)
+    wsClient.send({ type: 'test_smtp', settings: adminSettings })
+  }
+
+  // Account settings handlers
+  const handleUpdateProfile = () => {
+    wsClient.updateProfile({
+      type: 'update_profile',
+      bio: profileBio,
+      status_message: profileStatus,
+    })
+  }
+
+  const handleAvatarFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    // Validate file type
+    const validTypes = ['image/png', 'image/jpeg', 'image/gif']
+    if (!validTypes.includes(file.type)) {
+      pushToast({ kind: 'error', message: 'Please upload a PNG, JPG, or GIF file' })
+      return
+    }
+
+    // Validate file size (2MB max)
+    if (file.size > 2 * 1024 * 1024) {
+      pushToast({ kind: 'error', message: 'Image too large. Maximum size is 2MB.' })
+      return
+    }
+
+    // Create preview
+    const reader = new FileReader()
+    reader.onloadend = () => {
+      setAvatarPreview(reader.result as string)
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const handleUploadAvatar = () => {
+    if (!avatarPreview) return
+    wsClient.setAvatar({
+      type: 'set_avatar',
+      avatar_type: 'image',
+      avatar_data: avatarPreview,
+    })
+    setAvatarPreview(null)
+  }
+
+  const handleSetEmojiAvatar = (emoji: string) => {
+    wsClient.setAvatar({
+      type: 'set_avatar',
+      avatar_type: 'emoji',
+      avatar: emoji,
+    })
+  }
+
+  const handleSetup2FA = () => {
+    wsClient.setup2FA()
+  }
+
+  const handleVerify2FASetup = () => {
+    if (!twoFACode.trim()) return
+    wsClient.verify2FASetup({
+      type: 'verify_2fa_setup',
+      code: twoFACode,
+    })
+  }
+
+  const handleDisable2FA = () => {
+    if (!disable2FAPassword || !disable2FACode) return
+    wsClient.disable2FA({
+      type: 'disable_2fa',
+      password: disable2FAPassword,
+      code: disable2FACode,
+    })
+  }
+
+  const handleSetNotificationMode = () => {
+    wsClient.setNotificationMode({
+      type: 'set_notification_mode',
+      notification_mode: notificationMode,
+    })
+  }
+
+  const handleRequestPasswordReset = () => {
+    if (!init?.username || !passwordResetEmail.trim()) {
+      pushToast({ kind: 'error', message: 'Please enter your email address' })
+      return
+    }
+    wsClient.requestPasswordReset({
+      type: 'request_password_reset',
+      username: init.username,
+      email: passwordResetEmail,
+    })
+  }
+
+  // Load admin settings when entering admin mode
+  useEffect(() => {
+    if (isAdminMode && init?.is_admin) {
+      loadAdminSettings()
+    }
+  }, [isAdminMode, init?.is_admin])
+
   // Get selected server object
   const selectedServerObj = selectedServerId ? init?.servers?.find((s) => s.id === selectedServerId) : null
 
+  const dismissAnnouncement = () => {
+    setAnnouncement(null)
+  }
+
   return (
-    <div className="h-screen bg-slate-950">
-      <div className="flex h-full">
+    <div className="h-screen bg-slate-950 flex flex-col">
+      {/* Announcement Banner */}
+      {announcement && announcement.enabled && announcement.message && (
+        <div className="relative border-b border-amber-500/30 bg-gradient-to-r from-amber-500/20 to-orange-500/20 px-4 py-2.5">
+          <div className="flex items-center justify-between gap-4 mx-auto max-w-7xl">
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              <span className="text-xl shrink-0">📢</span>
+              <span className="text-sm text-amber-50 font-medium truncate">{announcement.message}</span>
+            </div>
+            <button
+              type="button"
+              onClick={dismissAnnouncement}
+              className="shrink-0 text-amber-200 hover:text-amber-50 text-lg font-bold leading-none"
+              title="Dismiss"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+      <div className="flex flex-1 min-h-0">
         {/* Left-side vertical icon bar */}
         <aside className="w-[72px] shrink-0 flex flex-col border-r border-white/10 bg-slate-900">
           {/* DMs button at top */}
@@ -947,6 +1216,8 @@ function ChatPage() {
                       selectContext({ kind: 'server', serverId: server.id, channelId: firstChannel.id })
                       requestHistoryFor({ kind: 'server', serverId: server.id, channelId: firstChannel.id })
                     }
+                    // Request server members
+                    wsClient.getServerMembers({ type: 'get_server_members', server_id: server.id })
                   }
                 }}
                 className={`flex h-12 w-12 items-center justify-center rounded-2xl text-xl transition ${
@@ -964,10 +1235,14 @@ function ChatPage() {
             <button
               type="button"
               onClick={() => setIsUserMenuOpen(true)}
-              className="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-800/50 text-xl hover:bg-slate-700/50 hover:rounded-xl transition"
+              className="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-800/50 text-xl hover:bg-slate-700/50 hover:rounded-xl transition overflow-hidden"
               title={init?.username ?? 'User'}
             >
-              {init?.avatar ?? '👤'}
+              {init?.avatar_type === 'image' && init?.avatar_data ? (
+                <img src={init.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
+              ) : (
+                <>{init?.avatar ?? '👤'}</>
+              )}
             </button>
           </div>
         </aside>
@@ -1001,7 +1276,13 @@ function ChatPage() {
                             isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
                           }`}
                         >
-                          <span className="text-lg">{dm.avatar ?? '👤'}</span>
+                          <span className="text-lg flex h-8 w-8 items-center justify-center overflow-hidden rounded-full">
+                            {dm.avatar_type === 'image' && dm.avatar_data ? (
+                              <img src={dm.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
+                            ) : (
+                              <>{dm.avatar ?? '👤'}</>
+                            )}
+                          </span>
                           <span className="text-sm font-medium truncate">{dm.username}</span>
                         </button>
                       )
@@ -1046,6 +1327,7 @@ function ChatPage() {
                   </div>
                   <button
                     type="button"
+                    onClick={() => setIsServerSettingsOpen(true)}
                     className="shrink-0 text-slate-400 hover:text-slate-200 text-lg"
                     title="Server Settings"
                   >
@@ -1118,37 +1400,6 @@ function ChatPage() {
                   </div>
                 </div>
               </div>
-
-              {/* Create channel section */}
-              <div className="border-t border-white/10 p-3">
-                <div className="text-xs font-medium text-slate-400 mb-2">Create Channel</div>
-                <div className="space-y-2">
-                  <input
-                    value={channelName}
-                    onChange={(e) => setChannelName(e.target.value)}
-                    placeholder="Channel name"
-                    className="w-full rounded-lg border border-white/10 bg-slate-950/40 px-2 py-1.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                  />
-                  <div className="flex gap-2">
-                    <select
-                      value={channelType}
-                      onChange={(e) => setChannelType(e.target.value as 'text' | 'voice')}
-                      className="flex-1 rounded-lg border border-white/10 bg-slate-950/40 px-2 py-1.5 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                    >
-                      <option value="text">Text</option>
-                      <option value="voice">Voice</option>
-                    </select>
-                    <button
-                      type="button"
-                      onClick={createChannel}
-                      disabled={!channelName.trim() || wsClient.readyState !== WebSocket.OPEN}
-                      className="shrink-0 rounded-lg bg-sky-500 px-3 py-1.5 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
-                    >
-                      +
-                    </button>
-                  </div>
-                </div>
-              </div>
             </div>
           </aside>
         )}
@@ -1167,8 +1418,29 @@ function ChatPage() {
                 </div>
                 <div className="mt-1 text-lg font-semibold text-white">{selectedTitle}</div>
               </div>
-              <div className="rounded-xl border border-white/10 bg-slate-950/30 px-2 py-1 text-[11px] text-slate-300">
-                {connectionStatus}
+              <div className="flex items-center gap-3">
+                {selectedServerId && (
+                  <button
+                    type="button"
+                    onClick={() => setIsMembersSidebarOpen(!isMembersSidebarOpen)}
+                    className="rounded-xl border border-white/10 bg-slate-950/30 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-900/50 transition"
+                    title={isMembersSidebarOpen ? 'Hide Members' : 'Show Members'}
+                  >
+                    {isMembersSidebarOpen ? '👥 Hide' : '👥 Show'}
+                  </button>
+                )}
+                <div className="rounded-xl border border-white/10 bg-slate-950/30 px-2 py-1 text-[11px] text-slate-300">
+                  {connectionStatus}
+                </div>
+                <img
+                  src={adminSettings.server_logo || '/decentra-blurple.png'}
+                  alt="Server Logo"
+                  className="h-10 w-10 object-contain"
+                  onError={(e) => {
+                    const target = e.target as HTMLImageElement
+                    target.src = '/decentra-blurple.png'
+                  }}
+                />
               </div>
             </div>
           </header>
@@ -1182,8 +1454,12 @@ function ChatPage() {
                   <div className="flex flex-col gap-3">
                     {messages.map((m: WsChatMessage, idx: number) => (
                       <div key={(m.id ?? idx).toString()} className="flex gap-3">
-                        <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-slate-950/30 text-sm">
-                          {m.avatar ?? '👤'}
+                        <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-slate-950/30 text-sm overflow-hidden">
+                          {m.avatar_type === 'image' && m.avatar_data ? (
+                            <img src={m.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
+                          ) : (
+                            <>{m.avatar ?? '👤'}</>
+                          )}
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-baseline gap-x-2">
@@ -1224,6 +1500,85 @@ function ChatPage() {
             </form>
           </div>
         </main>
+
+        {/* Members Sidebar - shows when in a server */}
+        {selectedServerId && isMembersSidebarOpen && (
+          <aside className="w-[240px] shrink-0 border-l border-white/10 bg-slate-900/30">
+            <div className="flex h-full flex-col">
+              <div className="border-b border-white/10 px-4 py-3">
+                <div className="text-sm font-semibold text-white">Members</div>
+                <div className="text-xs text-slate-400 mt-0.5">
+                  {serverMembers[selectedServerId]?.length ?? 0} online
+                </div>
+              </div>
+              
+              <div className="flex-1 overflow-auto p-2">
+                {(!serverMembers[selectedServerId] || serverMembers[selectedServerId].length === 0) ? (
+                  <div className="px-3 py-2 text-sm text-slate-400">No members</div>
+                ) : (
+                  <div className="space-y-1">
+                    {/* Owner first */}
+                    {serverMembers[selectedServerId]
+                      .filter((member) => member.is_owner)
+                      .map((member) => (
+                        <div
+                          key={member.username}
+                          className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/5 transition"
+                        >
+                          <span className="text-lg flex h-8 w-8 items-center justify-center overflow-hidden rounded-full">
+                            {member.avatar_type === 'image' && member.avatar_data ? (
+                              <img src={member.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
+                            ) : (
+                              <>{member.avatar ?? '👤'}</>
+                            )}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-sm font-medium text-slate-100 truncate">{member.username}</span>
+                              <span className="text-xs" title="Server Owner">👑</span>
+                            </div>
+                            {member.status_message && (
+                              <div className="text-xs text-slate-400 truncate">{member.status_message}</div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    
+                    {/* Members section separator */}
+                    {serverMembers[selectedServerId].some((m) => m.is_owner) && 
+                     serverMembers[selectedServerId].some((m) => !m.is_owner) && (
+                      <div className="px-2 text-xs font-medium text-slate-500 uppercase mt-3 mb-1">Members</div>
+                    )}
+                    
+                    {/* Regular members */}
+                    {serverMembers[selectedServerId]
+                      .filter((member) => !member.is_owner)
+                      .map((member) => (
+                        <div
+                          key={member.username}
+                          className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/5 transition"
+                        >
+                          <span className="text-lg flex h-8 w-8 items-center justify-center overflow-hidden rounded-full">
+                            {member.avatar_type === 'image' && member.avatar_data ? (
+                              <img src={member.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
+                            ) : (
+                              <>{member.avatar ?? '👤'}</>
+                            )}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium text-slate-200 truncate">{member.username}</div>
+                            {member.status_message && (
+                              <div className="text-xs text-slate-400 truncate">{member.status_message}</div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </aside>
+        )}
 
         {/* User menu modal - centered overlay */}
         {isUserMenuOpen && (
@@ -1266,8 +1621,12 @@ function ChatPage() {
                 {!isAdminMode ? (
                   <div className="space-y-6">
                     <div className="text-center">
-                      <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-slate-800 text-4xl">
-                        {init?.avatar ?? '👤'}
+                      <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-slate-800 text-4xl overflow-hidden">
+                        {init?.avatar_type === 'image' && init?.avatar_data ? (
+                          <img src={init.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
+                        ) : (
+                          <>{init?.avatar ?? '👤'}</>
+                        )}
                       </div>
                       <div className="mt-3 text-xl font-semibold text-white">{init?.username ?? 'User'}</div>
                       {init?.bio && <div className="mt-1 text-sm text-slate-400">{init.bio}</div>}
@@ -1287,12 +1646,16 @@ function ChatPage() {
                       >
                         🌐 Global Chat
                       </button>
-                      <Link
-                        to="/login"
-                        className="block w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-3 text-left text-sm text-slate-200 hover:bg-white/5"
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsUserMenuOpen(false)
+                          setIsAccountSettingsOpen(true)
+                        }}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-3 text-left text-sm text-slate-200 hover:bg-white/5"
                       >
                         👤 Account Settings
-                      </Link>
+                      </button>
                       <button
                         type="button"
                         onClick={() => wsClient.requestSync()}
@@ -1373,8 +1736,8 @@ function ChatPage() {
                           </button>
                           <button
                             type="button"
-                            onClick={loadInviteUsage}
-                            disabled={wsClient.readyState !== WebSocket.OPEN || isLoadingInviteUsage}
+                            onClick={() => contextServerId && loadInviteUsage(contextServerId)}
+                            disabled={wsClient.readyState !== WebSocket.OPEN || isLoadingInviteUsage || !contextServerId}
                             className="rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm font-semibold text-slate-100 hover:border-white/20 disabled:opacity-60"
                           >
                             {isLoadingInviteUsage ? 'Loading…' : 'Usage'}
@@ -1432,13 +1795,689 @@ function ChatPage() {
                     )}
                   </div>
                 ) : (
-                  <div className="space-y-4">
-                    <div className="text-lg font-semibold text-white">Admin Configuration</div>
-                    <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
-                      Admin settings are under development. This section will contain server management tools.
+                  <div className="space-y-4 overflow-y-auto max-h-[calc(100vh-200px)]">
+                    <div className="flex items-center justify-between">
+                      <div className="text-lg font-semibold text-white">Admin Configuration</div>
+                      <button
+                        type="button"
+                        onClick={saveAdminSettings}
+                        disabled={isSavingSettings || wsClient.readyState !== WebSocket.OPEN}
+                        className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
+                      >
+                        {isSavingSettings ? 'Saving...' : 'Save Settings'}
+                      </button>
                     </div>
+
+                    {/* General Settings */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">General</h3>
+                      <div className="space-y-4">
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Server Name</div>
+                          <input
+                            type="text"
+                            value={adminSettings.server_name || ''}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, server_name: e.target.value })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="Decentra"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Server Logo URL</div>
+                          <div className="text-xs text-slate-400 mb-2">URL to an image or use data:image/png;base64,... for uploaded images</div>
+                          <input
+                            type="text"
+                            value={adminSettings.server_logo || ''}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, server_logo: e.target.value })}
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="/decentra-blurple.png"
+                          />
+                          {adminSettings.server_logo && (
+                            <div className="mt-2">
+                              <div className="text-xs text-slate-400 mb-1">Preview:</div>
+                              <img
+                                src={adminSettings.server_logo}
+                                alt="Logo preview"
+                                className="h-16 w-16 rounded-lg border border-white/10 bg-slate-950/30 object-contain p-2"
+                                onError={(e) => {
+                                  const target = e.target as HTMLImageElement
+                                  target.src = '/decentra-blurple.png'
+                                }}
+                              />
+                            </div>
+                          )}
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Maximum Message Length</div>
+                          <input
+                            type="number"
+                            min="100"
+                            max="10000"
+                            value={adminSettings.max_message_length || 2000}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, max_message_length: parseInt(e.target.value) || 2000 })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                        </label>
+
+                        <label className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={adminSettings.allow_new_registrations !== false}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, allow_new_registrations: e.target.checked })}
+                            className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
+                          />
+                          <div className="text-sm text-slate-200">Allow New Registrations</div>
+                        </label>
+
+                        <label className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={adminSettings.require_invite_code === true}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, require_invite_code: e.target.checked })}
+                            className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
+                          />
+                          <div className="text-sm text-slate-200">Require Invite Code for Registration</div>
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Maximum File Upload Size (MB)</div>
+                          <input
+                            type="number"
+                            min="1"
+                            max="100"
+                            value={adminSettings.max_attachment_size_mb || 10}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, max_attachment_size_mb: parseInt(e.target.value) || 10 })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Max Servers Per User <span className="text-xs text-slate-400">(0 = unlimited)</span></div>
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            value={adminSettings.max_servers_per_user || 0}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, max_servers_per_user: parseInt(e.target.value) || 0 })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Max Channels Per Server <span className="text-xs text-slate-400">(0 = unlimited)</span></div>
+                          <input
+                            type="number"
+                            min="0"
+                            max="500"
+                            value={adminSettings.max_channels_per_server || 0}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, max_channels_per_server: parseInt(e.target.value) || 0 })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                        </label>
+                      </div>
+                    </section>
+
+                    {/* Email/SMTP Settings */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Email & SMTP Settings</h3>
+                      <div className="space-y-4">
+                        <label className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={adminSettings.require_email_verification === true}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, require_email_verification: e.target.checked })}
+                            className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
+                          />
+                          <div className="text-sm text-slate-200">Require Email Verification</div>
+                        </label>
+
+                        <label className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={adminSettings.smtp_enabled === true}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, smtp_enabled: e.target.checked })}
+                            className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
+                          />
+                          <div className="text-sm text-slate-200">Enable Email Notifications</div>
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">SMTP Host</div>
+                          <input
+                            type="text"
+                            value={adminSettings.smtp_host || ''}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, smtp_host: e.target.value })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="smtp.example.com"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">SMTP Port</div>
+                          <input
+                            type="number"
+                            min="1"
+                            max="65535"
+                            value={adminSettings.smtp_port || 587}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, smtp_port: parseInt(e.target.value) || 587 })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">SMTP Username</div>
+                          <input
+                            type="text"
+                            value={adminSettings.smtp_username || ''}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, smtp_username: e.target.value })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="user@example.com"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">SMTP Password</div>
+                          <input
+                            type="password"
+                            value={adminSettings.smtp_password || ''}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, smtp_password: e.target.value })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="••••••••"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">From Email Address</div>
+                          <input
+                            type="email"
+                            value={adminSettings.smtp_from_email || ''}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, smtp_from_email: e.target.value })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="noreply@example.com"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">From Name</div>
+                          <input
+                            type="text"
+                            value={adminSettings.smtp_from_name || ''}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, smtp_from_name: e.target.value })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="Decentra"
+                          />
+                        </label>
+
+                        <label className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={adminSettings.smtp_use_tls !== false}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, smtp_use_tls: e.target.checked })}
+                            className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
+                          />
+                          <div className="text-sm text-slate-200">Use TLS/STARTTLS</div>
+                        </label>
+
+                        <div>
+                          <button
+                            type="button"
+                            onClick={testSMTP}
+                            disabled={isTestingSMTP || wsClient.readyState !== WebSocket.OPEN}
+                            className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                          >
+                            {isTestingSMTP ? 'Testing...' : 'Test SMTP Connection'}
+                          </button>
+                        </div>
+                      </div>
+                    </section>
+
+                    {/* Announcements */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Announcements</h3>
+                      <div className="space-y-4">
+                        <label className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={adminSettings.announcement_enabled === true}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, announcement_enabled: e.target.checked })}
+                            className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
+                          />
+                          <div className="text-sm text-slate-200">Enable Announcement Banner</div>
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Announcement Message</div>
+                          <input
+                            type="text"
+                            maxLength={500}
+                            value={adminSettings.announcement_message || ''}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, announcement_message: e.target.value })}
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="Enter announcement message"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Display Duration (minutes)</div>
+                          <input
+                            type="number"
+                            min="1"
+                            max="10080"
+                            value={adminSettings.announcement_duration_minutes || 60}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, announcement_duration_minutes: parseInt(e.target.value) || 60 })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                        </label>
+                      </div>
+                    </section>
                   </div>
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Account Settings Modal */}
+        {isAccountSettingsOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 overflow-auto p-4" onClick={() => setIsAccountSettingsOpen(false)}>
+            <div className="w-full max-w-3xl max-h-[90vh] overflow-auto rounded-2xl border border-white/10 bg-slate-900 shadow-2xl my-8" onClick={(e) => e.stopPropagation()}>
+              <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-slate-900 px-6 py-4">
+                <h2 className="text-xl font-semibold text-white">Account Settings</h2>
+                <button
+                  type="button"
+                  onClick={() => setIsAccountSettingsOpen(false)}
+                  className="text-2xl text-slate-400 hover:text-slate-200"
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="p-6 space-y-6">
+                {/* Profile Section */}
+                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Profile</h3>
+                  <div className="space-y-4">
+                    <label className="block">
+                      <div className="mb-1 text-sm text-slate-200">Bio</div>
+                      <textarea
+                        value={profileBio}
+                        onChange={(e) => setProfileBio(e.target.value)}
+                        maxLength={500}
+                        rows={3}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        placeholder="Tell others about yourself..."
+                      />
+                      <div className="mt-1 text-xs text-slate-400">{profileBio.length}/500 characters</div>
+                    </label>
+
+                    <label className="block">
+                      <div className="mb-1 text-sm text-slate-200">Status Message</div>
+                      <input
+                        type="text"
+                        value={profileStatus}
+                        onChange={(e) => setProfileStatus(e.target.value)}
+                        maxLength={100}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        placeholder="What's your status?"
+                      />
+                      <div className="mt-1 text-xs text-slate-400">{profileStatus.length}/100 characters</div>
+                    </label>
+
+                    <button
+                      type="button"
+                      onClick={handleUpdateProfile}
+                      className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                    >
+                      Update Profile
+                    </button>
+                  </div>
+                </section>
+
+                {/* Avatar Section */}
+                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Avatar</h3>
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-4">
+                      <div className="flex h-20 w-20 items-center justify-center rounded-full border border-white/10 bg-slate-950/30 text-4xl overflow-hidden">
+                        {init?.avatar_type === 'image' && init?.avatar_data ? (
+                          <img src={init.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
+                        ) : (
+                          <>{init?.avatar ?? '👤'}</>
+                        )}
+                      </div>
+                      <div className="flex-1">
+                        <div className="text-sm text-slate-200 mb-2">Current Avatar</div>
+                        <div className="text-xs text-slate-400">
+                          Type: {init?.avatar_type || 'emoji'}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="mb-2 text-sm text-slate-200">Upload Image (PNG, JPG, or GIF, max 2MB)</div>
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/gif"
+                        onChange={handleAvatarFileChange}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 file:mr-4 file:rounded-lg file:border-0 file:bg-sky-500/20 file:px-3 file:py-1 file:text-sm file:text-sky-200 hover:file:bg-sky-500/30"
+                      />
+                      {avatarPreview && (
+                        <div className="mt-3 flex items-center gap-4">
+                          <img src={avatarPreview} alt="Preview" className="h-20 w-20 rounded-full object-cover border border-white/10" />
+                          <button
+                            type="button"
+                            onClick={handleUploadAvatar}
+                            className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                          >
+                            Upload Avatar
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <div className="mb-2 text-sm text-slate-200">Or choose an emoji</div>
+                      <div className="flex flex-wrap gap-2">
+                        {['👤', '😀', '😎', '🤖', '👾', '🐱', '🐶', '🦊', '🐼', '🦁', '🐯', '🐻'].map((emoji) => (
+                          <button
+                            key={emoji}
+                            type="button"
+                            onClick={() => handleSetEmojiAvatar(emoji)}
+                            className="flex h-12 w-12 items-center justify-center rounded-xl border border-white/10 bg-slate-950/40 text-2xl hover:bg-white/5"
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                {/* 2FA Section */}
+                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Two-Factor Authentication</h3>
+                  {!twoFASetup ? (
+                    <div className="space-y-4">
+                      <div className="text-sm text-slate-200">
+                        Add an extra layer of security to your account.
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={handleSetup2FA}
+                          className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400"
+                        >
+                          Enable 2FA
+                        </button>
+                      </div>
+                      
+                      {/* Disable 2FA Section */}
+                      <div className="border-t border-white/10 pt-4 mt-4">
+                        <div className="text-sm text-slate-200 mb-3">
+                          If you already have 2FA enabled and want to disable it:
+                        </div>
+                        <div className="space-y-3">
+                          <label className="block">
+                            <div className="mb-1 text-sm text-slate-200">Password</div>
+                            <input
+                              type="password"
+                              value={disable2FAPassword}
+                              onChange={(e) => setDisable2FAPassword(e.target.value)}
+                              placeholder="Your password"
+                              className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                          </label>
+                          <label className="block">
+                            <div className="mb-1 text-sm text-slate-200">2FA Code or Backup Code</div>
+                            <input
+                              type="text"
+                              value={disable2FACode}
+                              onChange={(e) => setDisable2FACode(e.target.value)}
+                              placeholder="000000"
+                              className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            onClick={handleDisable2FA}
+                            disabled={!disable2FAPassword || !disable2FACode}
+                            className="rounded-xl bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-400 disabled:opacity-60"
+                          >
+                            Disable 2FA
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="text-sm text-slate-200">Scan this QR code with your authenticator app:</div>
+                      <div className="flex justify-center">
+                        <img src={twoFASetup.qr_code} alt="2FA QR Code" className="rounded-xl border border-white/10 bg-white p-2" />
+                      </div>
+                      <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
+                        <div className="text-xs font-medium text-amber-200 mb-2">Backup Codes (save these safely!):</div>
+                        <div className="font-mono text-xs text-amber-100 space-y-1">
+                          {twoFASetup.backup_codes.map((code, idx) => (
+                            <div key={idx}>{code}</div>
+                          ))}
+                        </div>
+                      </div>
+                      <label className="block">
+                        <div className="mb-1 text-sm text-slate-200">Enter code from authenticator app to verify:</div>
+                        <input
+                          type="text"
+                          value={twoFACode}
+                          onChange={(e) => setTwoFACode(e.target.value)}
+                          placeholder="000000"
+                          maxLength={6}
+                          className="w-full max-w-xs rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                      </label>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={handleVerify2FASetup}
+                          disabled={!twoFACode.trim()}
+                          className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
+                        >
+                          Verify & Enable
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setTwoFASetup(null)}
+                          className="rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </section>
+
+                {/* Notifications Section */}
+                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Notifications</h3>
+                  <div className="space-y-4">
+                    <label className="block">
+                      <div className="mb-2 text-sm text-slate-200">Notification Mode</div>
+                      <select
+                        value={notificationMode}
+                        onChange={(e) => setNotificationMode(e.target.value as 'all' | 'mentions' | 'none')}
+                        className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      >
+                        <option value="all">All messages</option>
+                        <option value="mentions">Only mentions</option>
+                        <option value="none">None</option>
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleSetNotificationMode}
+                      className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                    >
+                      Save Notification Settings
+                    </button>
+                  </div>
+                </section>
+
+                {/* Password Reset Section */}
+                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Password Reset</h3>
+                  <div className="space-y-4">
+                    <div className="text-sm text-slate-200">
+                      Request a password reset link to be sent to your email.
+                    </div>
+                    <label className="block">
+                      <div className="mb-1 text-sm text-slate-200">Email Address</div>
+                      <input
+                        type="email"
+                        value={passwordResetEmail}
+                        onChange={(e) => setPasswordResetEmail(e.target.value)}
+                        placeholder="your@email.com"
+                        className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleRequestPasswordReset}
+                      disabled={!passwordResetEmail.trim()}
+                      className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-orange-400 disabled:opacity-60"
+                    >
+                      Request Password Reset
+                    </button>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Server Settings Modal */}
+        {isServerSettingsOpen && selectedServerObj && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setIsServerSettingsOpen(false)}>
+            <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-white/10 px-6 py-4">
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">{selectedServerObj.icon ?? '🏠'}</span>
+                  <h2 className="text-xl font-semibold text-white">{selectedServerObj.name} Settings</h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsServerSettingsOpen(false)}
+                  className="text-2xl text-slate-400 hover:text-slate-200"
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="p-6">
+                <div className="space-y-6">
+                  {/* Create Channel Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Create Channel</h3>
+                    <div className="space-y-3">
+                      <label className="block">
+                        <div className="mb-1 text-sm text-slate-200">Channel Name</div>
+                        <input
+                          type="text"
+                          value={channelName}
+                          onChange={(e) => setChannelName(e.target.value)}
+                          placeholder="Enter channel name"
+                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                      </label>
+
+                      <label className="block">
+                        <div className="mb-1 text-sm text-slate-200">Channel Type</div>
+                        <select
+                          value={channelType}
+                          onChange={(e) => setChannelType(e.target.value as 'text' | 'voice')}
+                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        >
+                          <option value="text">Text Channel</option>
+                          <option value="voice">Voice Channel</option>
+                        </select>
+                      </label>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          createChannel()
+                          setChannelName('')
+                        }}
+                        disabled={!channelName.trim() || wsClient.readyState !== WebSocket.OPEN}
+                        className="w-full rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                      >
+                        Create Channel
+                      </button>
+                    </div>
+                  </section>
+
+                  {/* Server Invite Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Server Invite</h3>
+                    <div className="space-y-3">
+                      {lastInviteCode && (
+                        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3">
+                          <div className="text-xs font-medium text-emerald-200 mb-1">Invite Code</div>
+                          <div className="font-mono text-sm text-emerald-100">{lastInviteCode}</div>
+                        </div>
+                      )}
+                      
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            wsClient.generateServerInvite({ type: 'generate_server_invite', server_id: selectedServerId })
+                          }
+                        }}
+                        disabled={wsClient.readyState !== WebSocket.OPEN}
+                        className="w-full rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                      >
+                        Generate New Invite Code
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            loadInviteUsage(selectedServerId)
+                          }
+                        }}
+                        disabled={isLoadingInviteUsage || wsClient.readyState !== WebSocket.OPEN}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5 disabled:opacity-60"
+                      >
+                        {isLoadingInviteUsage ? 'Loading...' : 'View Invite Usage'}
+                      </button>
+
+                      {inviteUsageLogs && inviteUsageServerId === selectedServerId && (
+                        <div className="mt-3 rounded-xl border border-white/10 bg-slate-950/40 p-3 max-h-48 overflow-auto">
+                          <div className="text-xs font-medium text-slate-400 mb-2">Invite Usage History</div>
+                          {inviteUsageLogs.length === 0 ? (
+                            <div className="text-xs text-slate-500">No invites used yet</div>
+                          ) : (
+                            <div className="space-y-2">
+                              {inviteUsageLogs.map((log, idx) => (
+                                <div key={idx} className="text-xs border-b border-white/5 pb-2 last:border-0">
+                                  <div className="text-slate-200 font-medium">{log.invite_code}</div>
+                                  <div className="text-slate-400">Used {log.use_count} time(s)</div>
+                                  {log.last_used && (
+                                    <div className="text-slate-500">{new Date(log.last_used).toLocaleString()}</div>
+                                  )}
+                                  {log.users && log.users.length > 0 && (
+                                    <div className="text-slate-400">Users: {log.users.join(', ')}</div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                </div>
               </div>
             </div>
           </div>
