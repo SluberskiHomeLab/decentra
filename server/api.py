@@ -546,12 +546,94 @@ async def api_get_message_attachments(request):
         }, status=500)
 
 
+async def api_reset_password(request):
+    """
+    POST /api/reset-password
+    Reset user password with a valid reset token.
+    
+    Request body:
+    {
+        "token": "reset_token",
+        "new_password": "newpassword123"
+    }
+    
+    Response:
+    {
+        "success": true/false,
+        "message": "..."
+    }
+    """
+    try:
+        data = await request.json()
+        token = data.get('token', '').strip()
+        new_password = data.get('new_password', '').strip()
+        
+        if not token:
+            return web.json_response({
+                'success': False,
+                'message': 'Reset token is required'
+            }, status=400)
+        
+        if not new_password:
+            return web.json_response({
+                'success': False,
+                'message': 'New password is required'
+            }, status=400)
+        
+        if len(new_password) < 8:
+            return web.json_response({
+                'success': False,
+                'message': 'Password must be at least 8 characters long'
+            }, status=400)
+        
+        # Get token info from database
+        token_info = db.get_password_reset_token(token)
+        
+        if not token_info:
+            return web.json_response({
+                'success': False,
+                'message': 'Invalid or expired reset token'
+            }, status=400)
+        
+        if token_info.get('used'):
+            return web.json_response({
+                'success': False,
+                'message': 'This reset token has already been used'
+            }, status=400)
+        
+        # Hash the new password
+        password_hash = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        
+        # Update user password
+        username = token_info['username']
+        if db.update_user_password(username, password_hash):
+            # Mark token as used
+            db.mark_reset_token_used(token)
+            
+            return web.json_response({
+                'success': True,
+                'message': 'Password reset successfully'
+            })
+        else:
+            return web.json_response({
+                'success': False,
+                'message': 'Failed to update password'
+            }, status=500)
+            
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'message': f'Error: {str(e)}'
+        }, status=500)
+
+
 def setup_api_routes(app, database, jwt_verify_func):
     """Setup REST API routes on the aiohttp application."""
     global db, verify_jwt_token
     db = database
     verify_jwt_token = jwt_verify_func
     app.router.add_post('/api/auth', api_auth)
+    app.router.add_post('/api/reset-password', api_reset_password)
     app.router.add_get('/api/servers', api_servers)
     app.router.add_get('/api/messages', api_messages)
     app.router.add_get('/api/friends', api_friends)
