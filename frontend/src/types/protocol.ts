@@ -180,6 +180,56 @@ export type WsDmStarted = {
   dm: Dm & Profile
 }
 
+export type ServerMember = {
+  username: string
+  is_owner: boolean
+  permissions?: ServerPermissions
+} & Avatar & Profile
+
+export type WsServerMembers = {
+  type: 'server_members'
+  server_id: string
+  members: ServerMember[]
+}
+
+export type Ws2FASetup = {
+  type: '2fa_setup'
+  secret: string
+  qr_code: string
+  backup_codes: string[]
+  warning?: string
+}
+
+export type Ws2FAEnabled = {
+  type: '2fa_enabled'
+  message?: string
+}
+
+export type Ws2FADisabled = {
+  type: '2fa_disabled'
+  message?: string
+}
+
+export type WsProfileUpdated = {
+  type: 'profile_updated'
+  bio?: string
+  status_message?: string
+}
+
+export type WsAvatarUpdated = {
+  type: 'avatar_updated'
+} & Avatar
+
+export type WsNotificationModeUpdated = {
+  type: 'notification_mode_updated'
+  notification_mode: string
+}
+
+export type WsPasswordResetRequested = {
+  type: 'password_reset_requested'
+  message?: string
+}
+
 export type WsMessage =
   | WsAuthSuccess
   | WsAuthError
@@ -198,9 +248,17 @@ export type WsMessage =
   | WsServerJoined
   | WsChannelCreated
   | WsDmStarted
+  | WsServerMembers
   | WsInviteCode
   | WsServerInviteCode
   | WsServerInviteUsage
+  | Ws2FASetup
+  | Ws2FAEnabled
+  | Ws2FADisabled
+  | WsProfileUpdated
+  | WsAvatarUpdated
+  | WsNotificationModeUpdated
+  | WsPasswordResetRequested
   | { type: string; [k: string]: any }
 
 export type WsOutboundLogin = {
@@ -297,3 +355,48 @@ export type WsOutboundGetServerInviteUsage = {
   type: 'get_server_invite_usage'
   server_id: string
 }
+
+export type WsOutboundGetServerMembers = {
+  type: 'get_server_members'
+  server_id: string
+}
+
+export type WsOutboundUpdateProfile = {
+  type: 'update_profile'
+  bio?: string
+  status_message?: string
+}
+
+export type WsOutboundSetAvatar = {
+  type: 'set_avatar'
+  avatar_type: 'emoji' | 'image'
+  avatar?: string
+  avatar_data?: string
+}
+
+export type WsOutboundSetup2FA = {
+  type: 'setup_2fa'
+}
+
+export type WsOutboundVerify2FASetup = {
+  type: 'verify_2fa_setup'
+  code: string
+}
+
+export type WsOutboundDisable2FA = {
+  type: 'disable_2fa'
+  password: string
+  code: string
+}
+
+export type WsOutboundSetNotificationMode = {
+  type: 'set_notification_mode'
+  notification_mode: 'all' | 'mentions' | 'none'
+}
+
+export type WsOutboundRequestPasswordReset = {
+  type: 'request_password_reset'
+  username: string
+  email: string
+}
+

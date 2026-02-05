@@ -3,18 +3,26 @@ import type {
   WsOutboundCreateChannel,
   WsOutboundCreateServer,
   WsOutboundCreateVoiceChannel,
+  WsOutboundDisable2FA,
   WsOutboundGenerateInvite,
   WsOutboundGenerateServerInvite,
   WsOutboundGetChannelHistory,
   WsOutboundGetDmHistory,
   WsOutboundGetServerInviteUsage,
+  WsOutboundGetServerMembers,
   WsOutboundJoinServerWithInvite,
   WsOutboundLogin,
+  WsOutboundRequestPasswordReset,
   WsOutboundSendMessage,
+  WsOutboundSetAvatar,
+  WsOutboundSetNotificationMode,
+  WsOutboundSetup2FA,
   WsOutboundSignup,
   WsOutboundStartDm,
   WsOutboundSyncData,
   WsOutboundTokenAuth,
+  WsOutboundUpdateProfile,
+  WsOutboundVerify2FASetup,
   WsOutboundVerifyEmail,
 } from '../types/protocol'
 
@@ -142,6 +150,38 @@ export class WsClient {
   }
 
   getServerInviteUsage(payload: WsOutboundGetServerInviteUsage) {
+    this.send(payload)
+  }
+
+  getServerMembers(payload: WsOutboundGetServerMembers) {
+    this.send(payload)
+  }
+
+  updateProfile(payload: WsOutboundUpdateProfile) {
+    this.send(payload)
+  }
+
+  setAvatar(payload: WsOutboundSetAvatar) {
+    this.send(payload)
+  }
+
+  setup2FA(payload: WsOutboundSetup2FA = { type: 'setup_2fa' }) {
+    this.send(payload)
+  }
+
+  verify2FASetup(payload: WsOutboundVerify2FASetup) {
+    this.send(payload)
+  }
+
+  disable2FA(payload: WsOutboundDisable2FA) {
+    this.send(payload)
+  }
+
+  setNotificationMode(payload: WsOutboundSetNotificationMode) {
+    this.send(payload)
+  }
+
+  requestPasswordReset(payload: WsOutboundRequestPasswordReset) {
     this.send(payload)
   }
 
