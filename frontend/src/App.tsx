@@ -61,6 +61,7 @@ function ToastHost() {
 
 function LoginPage() {
   const navigate = useNavigate()
+  const authToken = useAppStore((s) => s.authToken)
   const setAuth = useAppStore((s) => s.setAuth)
   const setInit = useAppStore((s) => s.setInit)
   const setLastAuthError = useAppStore((s) => s.setLastAuthError)
@@ -75,13 +76,12 @@ function LoginPage() {
   const [resetUsername, setResetUsername] = useState('')
   const [resetSuccess, setResetSuccess] = useState(false)
 
+  // If already authenticated, redirect to chat
   useEffect(() => {
-    // If a token exists, you can proceed to chat; the chat page will verify it.
-    const stored = getStoredAuth()
-    if (stored.token && stored.username) {
-      setAuth({ token: stored.token, username: stored.username })
+    if (authToken) {
+      navigate('/chat')
     }
-  }, [setAuth])
+  }, [authToken, navigate])
 
   useEffect(() => {
     const unsubscribe = wsClient.onMessage((msg: WsMessage) => {
@@ -2612,6 +2612,16 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 }
 
 function App() {
+  const setAuth = useAppStore((s) => s.setAuth)
+
+  // Restore auth from localStorage on app mount
+  useEffect(() => {
+    const stored = getStoredAuth()
+    if (stored.token && stored.username) {
+      setAuth({ token: stored.token, username: stored.username })
+    }
+  }, [setAuth])
+
   return (
     <>
       <ToastHost />
