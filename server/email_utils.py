@@ -165,6 +165,51 @@ class EmailSender:
         except Exception as e:
             return False, f"Error: {str(e)}"
     
+    def send_test_email(self, to_email: str) -> tuple[bool, str]:
+        """
+        Send a test email to verify SMTP configuration.
+        
+        Args:
+            to_email: Email address to send test email to
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        if not self.enabled:
+            return False, "SMTP is not enabled"
+        
+        if not self.host or not self.from_email:
+            return False, "SMTP host and from email are required"
+        
+        if not to_email:
+            return False, "Test email address is required"
+        
+        try:
+            subject = "Decentra SMTP Test"
+            body = """
+            <html>
+                <body style="font-family: Arial, sans-serif; color: #333;">
+                    <h2 style="color: #0ea5e9;">SMTP Test Successful!</h2>
+                    <p>This is a test email from your Decentra instance.</p>
+                    <p>If you received this email, your SMTP configuration is working correctly.</p>
+                    <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 20px 0;">
+                    <p style="font-size: 12px; color: #6b7280;">
+                        Sent from Decentra<br>
+                        Do not reply to this email.
+                    </p>
+                </body>
+            </html>
+            """
+            
+            success = self.send_email(to_email, subject, "", body)
+            if success:
+                return True, f"Test email sent successfully to {to_email}"
+            else:
+                return False, f"Failed to send test email to {to_email}"
+                
+        except Exception as e:
+            return False, f"Error sending test email: {str(e)}"
+    
     def send_welcome_email(self, to_email: str, username: str, server_name: str = "Decentra") -> bool:
         """
         Send a welcome email to a new user.

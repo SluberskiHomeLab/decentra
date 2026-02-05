@@ -71,6 +71,9 @@ function LoginPage() {
   const [totpCode, setTotpCode] = useState('')
   const [needs2fa, setNeeds2fa] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [showForgotPassword, setShowForgotPassword] = useState(false)
+  const [resetUsername, setResetUsername] = useState('')
+  const [resetSuccess, setResetSuccess] = useState(false)
 
   useEffect(() => {
     // If a token exists, you can proceed to chat; the chat page will verify it.
@@ -126,6 +129,9 @@ function LoginPage() {
           friend_requests_received: msg.friend_requests_received,
         })
       }
+      if (msg.type === 'password_reset_requested') {
+        setResetSuccess(true)
+      }
     })
 
     return () => unsubscribe()
@@ -160,6 +166,29 @@ function LoginPage() {
 
     ws.onopen = () => {
       sendLogin()
+    }
+  }
+
+  function handlePasswordReset(e: React.FormEvent) {
+    e.preventDefault()
+    if (!resetUsername.trim()) {
+      return
+    }
+    const ws = wsClient.connect()
+    const sendReset = () => {
+      wsClient.requestPasswordReset({
+        type: 'request_password_reset',
+        identifier: resetUsername.trim(),
+      })
+    }
+
+    if (ws.readyState === WebSocket.OPEN) {
+      sendReset()
+      return
+    }
+
+    ws.onopen = () => {
+      sendReset()
     }
   }
 
@@ -220,9 +249,13 @@ function LoginPage() {
               <Link className="text-sky-300 hover:text-sky-200" to="/signup">
                 Create Account
               </Link>
-              <Link className="text-sky-300 hover:text-sky-200" to="/chat">
-                Go to Chat
-              </Link>
+              <button
+                type="button"
+                className="text-sky-300 hover:text-sky-200"
+                onClick={() => setShowForgotPassword(true)}
+              >
+                Forgot Password?
+              </button>
               <a className="text-slate-300 hover:text-slate-200" href="/static/login.html">
                 Legacy Login
               </a>
@@ -252,6 +285,83 @@ function LoginPage() {
           </div>
         </div>
       </div>
+
+      {/* Forgot Password Modal */}
+      {showForgotPassword && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          onClick={() => {
+            setShowForgotPassword(false)
+            setResetSuccess(false)
+            setResetUsername('')
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="mb-4 text-xl font-semibold text-slate-100">Reset Password</h2>
+            
+            {resetSuccess ? (
+              <div className="space-y-4">
+                <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-50">
+                  Password reset link has been sent to your email address.
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowForgotPassword(false)
+                    setResetSuccess(false)
+                    setResetUsername('')
+                  }}
+                  className="w-full rounded-xl bg-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-100 hover:bg-slate-600"
+                >
+                  Close
+                </button>
+              </div>
+            ) : (
+              <form onSubmit={handlePasswordReset} className="space-y-4">
+                <p className="text-sm text-slate-300">
+                  Enter your username to receive a password reset link at your registered email address.
+                </p>
+                
+                <label className="block text-sm">
+                  <div className="mb-1 text-slate-200">Username</div>
+                  <input
+                    type="text"
+                    value={resetUsername}
+                    onChange={(e) => setResetUsername(e.target.value)}
+                    className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    placeholder="Your username"
+                    required
+                  />
+                </label>
+
+                <div className="flex gap-3">
+                  <button
+                    type="submit"
+                    disabled={!resetUsername.trim()}
+                    className="flex-1 rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Send Reset Link
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowForgotPassword(false)
+                      setResetSuccess(false)
+                      setResetUsername('')
+                    }}
+                    className="rounded-xl bg-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-100 hover:bg-slate-600"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -551,6 +661,7 @@ function ChatPage() {
   const [adminSettings, setAdminSettings] = useState<Record<string, any>>({})
   const [isSavingSettings, setIsSavingSettings] = useState(false)
   const [isTestingSMTP, setIsTestingSMTP] = useState(false)
+  const [testEmailAddress, setTestEmailAddress] = useState('')
   const [announcement, setAnnouncement] = useState<{
     enabled: boolean
     message: string
@@ -567,7 +678,6 @@ function ChatPage() {
   const [disable2FAPassword, setDisable2FAPassword] = useState('')
   const [disable2FACode, setDisable2FACode] = useState('')
   const [notificationMode, setNotificationMode] = useState<'all' | 'mentions' | 'none'>('all')
-  const [passwordResetEmail, setPasswordResetEmail] = useState('')
 
   const pushToast = useToastStore((s) => s.push)
 
@@ -912,7 +1022,6 @@ function ChatPage() {
       }
 
       if (msg.type === 'password_reset_requested') {
-        setPasswordResetEmail('')
         pushToast({ kind: 'success', message: msg.message || 'Password reset email sent' })
       }
     })
@@ -1047,8 +1156,12 @@ function ChatPage() {
 
   const testSMTP = () => {
     if (wsClient.readyState !== WebSocket.OPEN) return
+    if (!testEmailAddress.trim()) {
+      pushToast({ kind: 'error', message: 'Please enter a test email address' })
+      return
+    }
     setIsTestingSMTP(true)
-    wsClient.send({ type: 'test_smtp', settings: adminSettings })
+    wsClient.send({ type: 'test_smtp', settings: adminSettings, test_email: testEmailAddress.trim() })
   }
 
   // Account settings handlers
@@ -1132,15 +1245,15 @@ function ChatPage() {
   }
 
   const handleRequestPasswordReset = () => {
-    if (!init?.username || !passwordResetEmail.trim()) {
-      pushToast({ kind: 'error', message: 'Please enter your email address' })
+    if (!init?.username) {
+      pushToast({ kind: 'error', message: 'User not found' })
       return
     }
     wsClient.requestPasswordReset({
       type: 'request_password_reset',
-      username: init.username,
-      email: passwordResetEmail,
+      identifier: init.username,
     })
+    pushToast({ kind: 'success', message: 'Password reset link sent to your registered email' })
   }
 
   // Load admin settings when entering admin mode
@@ -2020,6 +2133,18 @@ function ChatPage() {
                           <div className="text-sm text-slate-200">Use TLS/STARTTLS</div>
                         </label>
 
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Test Email Address</div>
+                          <input
+                            type="email"
+                            value={testEmailAddress}
+                            onChange={(e) => setTestEmailAddress(e.target.value)}
+                            placeholder="test@example.com"
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                          <div className="mt-1 text-xs text-slate-400">Enter an email address to send a test email to</div>
+                        </label>
+
                         <div>
                           <button
                             type="button"
@@ -2327,23 +2452,12 @@ function ChatPage() {
                   <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Password Reset</h3>
                   <div className="space-y-4">
                     <div className="text-sm text-slate-200">
-                      Request a password reset link to be sent to your email.
+                      Request a password reset link to be sent to your registered email address.
                     </div>
-                    <label className="block">
-                      <div className="mb-1 text-sm text-slate-200">Email Address</div>
-                      <input
-                        type="email"
-                        value={passwordResetEmail}
-                        onChange={(e) => setPasswordResetEmail(e.target.value)}
-                        placeholder="your@email.com"
-                        className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                      />
-                    </label>
                     <button
                       type="button"
                       onClick={handleRequestPasswordReset}
-                      disabled={!passwordResetEmail.trim()}
-                      className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-orange-400 disabled:opacity-60"
+                      className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-orange-400"
                     >
                       Request Password Reset
                     </button>
@@ -2487,6 +2601,16 @@ function ChatPage() {
   )
 }
 
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const authToken = useAppStore((s) => s.authToken)
+  
+  if (!authToken) {
+    return <Navigate to="/login" replace />
+  }
+  
+  return <>{children}</>
+}
+
 function App() {
   return (
     <>
@@ -2495,7 +2619,14 @@ function App() {
         <Route path="/" element={<Navigate to="/login" replace />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignUpPage />} />
-        <Route path="/chat" element={<ChatPage />} />
+        <Route
+          path="/chat"
+          element={
+            <ProtectedRoute>
+              <ChatPage />
+            </ProtectedRoute>
+          }
+        />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     </>

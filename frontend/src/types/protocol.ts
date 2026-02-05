@@ -396,7 +396,6 @@ export type WsOutboundSetNotificationMode = {
 
 export type WsOutboundRequestPasswordReset = {
   type: 'request_password_reset'
-  username: string
-  email: string
+  identifier: string
 }
 
