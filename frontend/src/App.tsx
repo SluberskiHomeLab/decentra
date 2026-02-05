@@ -982,6 +982,10 @@ function ChatPage() {
         setLastAuthError(message)
         pushToast({ kind: 'error', message })
         setIsLoadingInviteUsage(false)
+        
+        // Clear authentication and redirect to login
+        clearStoredAuth()
+        useAppStore.getState().clearAuth()
       }
 
       if (msg.type === 'error') {
