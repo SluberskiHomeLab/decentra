@@ -6,6 +6,7 @@ Provides SMTP email sending functionality
 
 from __future__ import annotations
 
+import os
 import smtplib
 import ssl
 from email.mime.text import MIMEText

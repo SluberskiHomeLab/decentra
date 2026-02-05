@@ -1102,12 +1102,25 @@ async def handler(websocket):
                     if db.create_password_reset_token(user['username'], reset_token, expires_at):
                         # Send password reset email
                         email_sender = EmailSender(db.get_admin_settings())
-                        if email_sender.send_password_reset_email(
-                            user['email'], 
-                            user['username'], 
-                            reset_token
-                        ):
-                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Password reset email sent to {user['username']}")
+                        try:
+                            if email_sender.send_password_reset_email(
+                                user['email'], 
+                                user['username'], 
+                                reset_token
+                            ):
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] Password reset email sent to {user['username']} at {user['email']}")
+                            else:
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to send password reset email to {user['username']} at {user['email']}")
+                        except Exception as e:
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Error sending password reset email to {user['username']}: {e}")
+                            traceback.print_exc()
+                    else:
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to create password reset token for {user['username']}")
+                else:
+                    if not user:
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Password reset requested for unknown identifier: {identifier}")
+                    elif not user.get('email'):
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] User {user.get('username')} has no email address registered")
                 
                 # Always return success to prevent enumeration attacks
                 await websocket.send_str(json.dumps({
@@ -1306,9 +1319,14 @@ async def handler(websocket):
             if msg.type == web.WSMsgType.TEXT:
                 try:
                     data = json.loads(msg.data)
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Received message type: {data.get('type')}", flush=True)
+                    msg_type = data.get('type')
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Received message type: {msg_type}", flush=True)
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Full data: {data}", flush=True)
                     
-                    if data.get('type') == 'message':
+                    if msg_type == 'request_password_reset':
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: MATCHED request_password_reset at top of handler!")
+                    
+                    if msg_type == 'message':
                         msg_content = data.get('content', '')
                         context = data.get('context', 'global')  # 'global', 'server', or 'dm'
                         context_id = data.get('context_id', None)
@@ -2999,6 +3017,73 @@ async def handler(websocket):
                             'type': 'profile_updated',
                             **profile_update
                         }))
+                    
+                    elif data.get('type') == 'request_password_reset':
+                        # Handle password reset request from logged-in user
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Processing password reset for authenticated user: {username}")
+                        try:
+                            identifier = data.get('identifier', '').strip() or username
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: identifier={identifier}")
+                            
+                            # Check rate limiting to prevent abuse
+                            if not check_password_reset_rate_limit(identifier):
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Too many password reset requests. Please try again later.'
+                                }))
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] Rate limit exceeded for password reset: {identifier}")
+                                continue
+                            
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Rate limit passed")
+                            
+                            # Get user data
+                            user = db.get_user(username)
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: user={user}")
+                            
+                            if user and user.get('email'):
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: User has email, generating token")
+                                # Generate reset token
+                                reset_token = secrets.token_urlsafe(32)
+                                expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+                                
+                                # Save token to database
+                                if db.create_password_reset_token(user['username'], reset_token, expires_at):
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Token created, sending email")
+                                    # Send password reset email
+                                    email_sender = EmailSender(db.get_admin_settings())
+                                    try:
+                                        if email_sender.send_password_reset_email(
+                                            user['email'], 
+                                            user['username'], 
+                                            reset_token
+                                        ):
+                                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Password reset email sent to {user['username']} at {user['email']}")
+                                        else:
+                                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to send password reset email to {user['username']} at {user['email']}")
+                                    except Exception as e:
+                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Error sending password reset email to {user['username']}: {e}")
+                                        traceback.print_exc()
+                                else:
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to create password reset token for {user['username']}")
+                            else:
+                                if user:
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] User {username} has no email address registered")
+                                else:
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] User {username} not found")
+                            
+                            # Always return success to prevent information leakage
+                            await websocket.send_str(json.dumps({
+                                'type': 'password_reset_requested',
+                                'message': 'If an email is registered for your account, a password reset link has been sent.'
+                            }))
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Response sent to client")
+                        except Exception as e:
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] EXCEPTION in password reset handler: {e}")
+                            traceback.print_exc()
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'An error occurred processing your request.'
+                            }))
                     
                     elif data.get('type') == 'set_server_icon':
                         # Update server icon (emoji or image upload)
