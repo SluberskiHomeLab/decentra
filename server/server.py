@@ -2267,9 +2267,15 @@ async def handler(websocket):
                             }))
                         else:
                             smtp_settings = data.get('settings', {})
+                            test_email = data.get('test_email', '').strip()
                             email_sender = EmailSender(smtp_settings)
                             
-                            success, message = email_sender.test_connection()
+                            # If test email provided, send actual test email
+                            if test_email:
+                                success, message = email_sender.send_test_email(test_email)
+                            else:
+                                # Just test connection
+                                success, message = email_sender.test_connection()
                             
                             await websocket.send_str(json.dumps({
                                 'type': 'smtp_test_result',
