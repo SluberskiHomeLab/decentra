@@ -1884,7 +1884,7 @@ function ChatPage() {
           <div className="mx-3 h-[2px] bg-slate-700/50" />
 
           {/* Server icons */}
-          <div className="flex-1 overflow-auto p-3 space-y-2">
+          <div className="flex-1 overflow-auto p-3 space-y-2 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
             {(init?.servers ?? []).map((server) => (
               <button
                 key={server.id}
