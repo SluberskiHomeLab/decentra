@@ -5,7 +5,7 @@ import { clearStoredAuth, getStoredAuth, setStoredAuth } from './auth/storage'
 import { contextKey, useAppStore } from './store/appStore'
 import { useToastStore } from './store/toastStore'
 import type { ChatContext } from './store/appStore'
-import type { Attachment, Server, ServerInviteUsageLog, ServerMember, WsChatMessage, WsMessage } from './types/protocol'
+import type { Attachment, Reaction, Server, ServerInviteUsageLog, ServerMember, WsChatMessage, WsMessage } from './types/protocol'
 import './App.css'
 
 // URL processing utilities
@@ -964,6 +964,12 @@ function ChatPage() {
     set_at: string | null
   } | null>(null)
 
+  // Message editing/deleting/reactions state
+  const [editingMessageId, setEditingMessageId] = useState<number | null>(null)
+  const [editDraft, setEditDraft] = useState('')
+  const [deletingMessageId, setDeletingMessageId] = useState<number | null>(null)
+  const [reactionPickerMessageId, setReactionPickerMessageId] = useState<number | null>(null)
+
   // Account settings state
   const [profileBio, setProfileBio] = useState('')
   const [profileStatus, setProfileStatus] = useState('')
@@ -1356,6 +1362,71 @@ function ChatPage() {
           [msg.server_id]: msg.emojis,
         }))
       }
+
+      if (msg.type === 'message_edited') {
+        const { message_id, content, edited_at } = msg
+        // Update the message in all contexts
+        const store = useAppStore.getState()
+        Object.keys(store.messagesByContext).forEach((key) => {
+          const messages = store.messagesByContext[key]
+          const msgIndex = messages.findIndex((m) => m.id === message_id)
+          if (msgIndex !== -1) {
+            const updatedMessages = [...messages]
+            updatedMessages[msgIndex] = {
+              ...updatedMessages[msgIndex],
+              content,
+              edited_at,
+            }
+            useAppStore.setState({
+              messagesByContext: {
+                ...store.messagesByContext,
+                [key]: updatedMessages,
+              },
+            })
+          }
+        })
+      }
+
+      if (msg.type === 'message_deleted') {
+        const { message_id } = msg
+        // Remove the message from all contexts
+        const store = useAppStore.getState()
+        Object.keys(store.messagesByContext).forEach((key) => {
+          const messages = store.messagesByContext[key]
+          const filteredMessages = messages.filter((m) => m.id !== message_id)
+          if (filteredMessages.length !== messages.length) {
+            useAppStore.setState({
+              messagesByContext: {
+                ...store.messagesByContext,
+                [key]: filteredMessages,
+              },
+            })
+          }
+        })
+      }
+
+      if (msg.type === 'reaction_added' || msg.type === 'reaction_removed') {
+        const { message_id, reactions } = msg
+        // Update reactions for the message in all contexts
+        const store = useAppStore.getState()
+        Object.keys(store.messagesByContext).forEach((key) => {
+          const messages = store.messagesByContext[key]
+          const msgIndex = messages.findIndex((m) => m.id === message_id)
+          if (msgIndex !== -1) {
+            const updatedMessages = [...messages]
+            updatedMessages[msgIndex] = {
+              ...updatedMessages[msgIndex],
+              reactions,
+            }
+            useAppStore.setState({
+              messagesByContext: {
+                ...store.messagesByContext,
+                [key]: updatedMessages,
+              },
+            })
+          }
+        })
+      }
     })
 
     const unsubClose = wsClient.onClose(() => {
@@ -1724,6 +1795,98 @@ function ChatPage() {
   const insertEmoji = (emoji: string) => {
     setDraft((prev) => prev + emoji)
     setIsEmojiPickerOpen(false)
+  }
+
+  // Message edit/delete/reaction functions
+  const canEditMessage = (msg: WsChatMessage): boolean => {
+    if (!init) return false
+    // Users can edit their own messages
+    if (msg.username === init.username) return true
+    // Server admins can edit any message in their servers
+    if (selectedServerId) {
+      const server = init.servers?.find(s => s.id === selectedServerId)
+      if (server?.owner === init.username) return true
+      if (server?.permissions?.can_edit_messages) return true
+    }
+    return false
+  }
+
+  const canDeleteMessage = (msg: WsChatMessage): boolean => {
+    if (!init) return false
+    // Users can delete their own messages
+    if (msg.username === init.username) return true
+    // Server admins can delete any message in their servers
+    if (selectedServerId) {
+      const server = init.servers?.find(s => s.id === selectedServerId)
+      if (server?.owner === init.username) return true
+      if (server?.permissions?.can_delete_messages) return true
+    }
+    return false
+  }
+
+  const startEditMessage = (msg: WsChatMessage) => {
+    if (!msg.id || !canEditMessage(msg)) return
+    setEditingMessageId(msg.id)
+    setEditDraft(msg.content)
+  }
+
+  const cancelEditMessage = () => {
+    setEditingMessageId(null)
+    setEditDraft('')
+  }
+
+  const saveEditMessage = () => {
+    if (!editingMessageId || !editDraft.trim()) return
+    wsClient.send({
+      type: 'edit_message',
+      message_id: editingMessageId,
+      content: editDraft.trim(),
+    })
+    setEditingMessageId(null)
+    setEditDraft('')
+  }
+
+  const confirmDeleteMessage = (msg: WsChatMessage) => {
+    if (!msg.id || !canDeleteMessage(msg)) return
+    setDeletingMessageId(msg.id)
+  }
+
+  const cancelDeleteMessage = () => {
+    setDeletingMessageId(null)
+  }
+
+  const deleteMessage = () => {
+    if (!deletingMessageId) return
+    wsClient.send({
+      type: 'delete_message',
+      message_id: deletingMessageId,
+    })
+    setDeletingMessageId(null)
+  }
+
+  const toggleReactionPicker = (msgId: number | undefined) => {
+    if (!msgId) return
+    setReactionPickerMessageId(reactionPickerMessageId === msgId ? null : msgId)
+  }
+
+  const addReaction = (msgId: number | undefined, emoji: string, emojiType: 'standard' | 'custom' = 'standard') => {
+    if (!msgId) return
+    wsClient.send({
+      type: 'add_reaction',
+      message_id: msgId,
+      emoji: emoji,
+      emoji_type: emojiType,
+    })
+    setReactionPickerMessageId(null)
+  }
+
+  const removeReaction = (msgId: number | undefined, emoji: string) => {
+    if (!msgId) return
+    wsClient.send({
+      type: 'remove_reaction',
+      message_id: msgId,
+      emoji: emoji,
+    })
   }
 
   const testSMTP = () => {
@@ -2142,7 +2305,7 @@ function ChatPage() {
                 ) : (
                   <div className="flex flex-col gap-3">
                     {messages.map((m: WsChatMessage, idx: number) => (
-                      <div key={(m.id ?? idx).toString()} className="flex gap-3">
+                      <div key={(m.id ?? idx).toString()} className="group flex gap-3">
                         <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-slate-950/30 text-sm overflow-hidden">
                           {m.avatar_type === 'image' && m.avatar_data ? (
                             <img src={m.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
@@ -2153,14 +2316,90 @@ function ChatPage() {
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-baseline gap-x-2">
                             <div className="font-semibold text-slate-100">{m.username}</div>
-                            <div className="text-xs text-slate-500">{new Date(m.timestamp).toLocaleString()}</div>
+                            <div className="text-xs text-slate-500">
+                              {new Date(m.timestamp).toLocaleString()}
+                              {m.edited_at && <span className="ml-1.5 text-slate-600">(edited)</span>}
+                            </div>
+                            {/* Action buttons - show on hover */}
+                            <div className="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                              {m.id && (
+                                <>
+                                  {/* Reaction button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleReactionPicker(m.id)}
+                                    className="text-slate-400 hover:text-slate-200 text-sm px-1.5 py-0.5 rounded"
+                                    title="Add reaction"
+                                  >
+                                    😊
+                                  </button>
+                                  {/* Edit button */}
+                                  {canEditMessage(m) && (
+                                    <button
+                                      type="button"
+                                      onClick={() => startEditMessage(m)}
+                                      className="text-slate-400 hover:text-sky-400 text-xs px-1.5 py-0.5 rounded"
+                                      title="Edit message"
+                                    >
+                                      ✏️
+                                    </button>
+                                  )}
+                                  {/* Delete button */}
+                                  {canDeleteMessage(m) && (
+                                    <button
+                                      type="button"
+                                      onClick={() => confirmDeleteMessage(m)}
+                                      className="text-slate-400 hover:text-rose-400 text-xs px-1.5 py-0.5 rounded"
+                                      title="Delete message"
+                                    >
+                                      🗑️
+                                    </button>
+                                  )}
+                                </>
+                              )}
+                            </div>
                           </div>
-                          {m.content && (
+                          
+                          {/* Edit mode */}
+                          {editingMessageId === m.id ? (
+                            <div className="mt-2">
+                              <textarea
+                                value={editDraft}
+                                onChange={(e) => setEditDraft(e.target.value)}
+                                className="w-full rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40 resize-none"
+                                rows={3}
+                                autoFocus
+                              />
+                              <div className="mt-2 flex gap-2">
+                                <button
+                                  type="button"
+                                  onClick={saveEditMessage}
+                                  disabled={!editDraft.trim()}
+                                  className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={cancelEditMessage}
+                                  className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-600"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
                             <>
-                              <div className="mt-1 whitespace-pre-wrap text-sm text-slate-200">{linkifyText(m.content)}</div>
-                              <MessageEmbeds content={m.content} />
+                              {/* Normal message display */}
+                              {m.content && (
+                                <>
+                                  <div className="mt-1 whitespace-pre-wrap text-sm text-slate-200">{linkifyText(m.content)}</div>
+                                  <MessageEmbeds content={m.content} />
+                                </>
+                              )}
                             </>
                           )}
+                          
                           {m.attachments && m.attachments.length > 0 && (
                             <div className="mt-2 flex flex-col gap-1.5">
                               {m.attachments.map((att: Attachment) => (
@@ -2175,6 +2414,59 @@ function ChatPage() {
                                   <span className="text-xs text-slate-500">({(att.file_size / 1024).toFixed(1)}KB)</span>
                                 </a>
                               ))}
+                            </div>
+                          )}
+                          
+                          {/* Reactions display */}
+                          {m.reactions && m.reactions.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-1.5">
+                              {m.reactions.map((reaction: Reaction, rIdx: number) => {
+                                const userReacted = init?.username && reaction.users.includes(init.username)
+                                return (
+                                  <button
+                                    key={rIdx}
+                                    type="button"
+                                    onClick={() => userReacted ? removeReaction(m.id, reaction.emoji) : addReaction(m.id, reaction.emoji, reaction.emoji_type)}
+                                    className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs border transition ${
+                                      userReacted
+                                        ? 'bg-sky-500/20 border-sky-500/40 text-sky-300'
+                                        : 'bg-slate-900/40 border-white/10 text-slate-300 hover:bg-slate-800/40'
+                                    }`}
+                                    title={reaction.users.join(', ')}
+                                  >
+                                    <span>{reaction.emoji}</span>
+                                    <span className="font-semibold">{reaction.count}</span>
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          )}
+                          
+                          {/* Reaction picker popup */}
+                          {reactionPickerMessageId === m.id && (
+                            <div className="mt-2 relative">
+                              <div className="absolute left-0 top-0 z-10 rounded-lg border border-white/10 bg-slate-900 p-3 shadow-xl max-w-xs">
+                                <div className="mb-2 text-xs font-semibold text-slate-400">Add Reaction</div>
+                                <div className="grid grid-cols-8 gap-1 max-h-32 overflow-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                                  {['😀', '😃', '😄', '😁', '😅', '😂', '🤣', '😊', '😇', '🙂', '🙃', '😉', '😌', '😍', '🥰', '😘', '😗', '😙', '😚', '😋', '😛', '😝', '😜', '🤪', '🤨', '🧐', '🤓', '😎', '🤩', '🥳', '😏', '😒', '😞', '😔', '😟', '😕', '🙁', '☹️', '😣', '😖', '😫', '😩', '🥺', '😢', '😭', '😤', '😠', '😡', '🤬', '🤯', '😳', '🥵', '🥶', '😱', '😨', '😰', '😥', '😓', '🤗', '🤔', '🤭', '🤫', '🤥', '😶', '😐', '😑', '😬', '🙄', '😯', '😦', '😧', '😮', '😲', '🥱', '😴', '🤤', '😪', '😵', '🤐', '🥴', '🤢', '🤮', '🤧', '😷', '🤒', '🤕', '👍', '👎', '👌', '✌️', '🤞', '🤟', '🤘', '🤙', '👏', '🙌', '👐', '🤲', '🤝', '🙏', '❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '🤎', '💔', '❣️', '💕', '💞', '💓', '💗', '💖', '💘', '💝', '💟', '☮️', '✝️', '☪️', '🕉️', '☸️', '✡️', '🔯', '🕎', '☯️', '☦️', '🛐', '⛎', '♈', '♉', '♊', '♋', '♌', '♍', '♎', '♏', '♐', '♑', '♒', '♓', '🆔', '⚛️', '🉑', '☢️', '☣️', '📴', '📳', '🈶', '🈚', '🈸', '🈺', '🈷️', '✴️', '🆚', '💮', '🉐', '㊙️', '㊗️', '🈴', '🈵', '🈹', '🈲', '🅰️', '🅱️', '🆎', '🆑', '🅾️', '🆘', '❌', '⭕', '🛑', '⛔', '📛', '🚫', '💯', '💢', '♨️', '🚷', '🚯', '🚳', '🚱', '🔞', '📵', '🚭', '❗', '❕', '❓', '❔', '‼️', '⁉️', '🔅', '🔆', '〽️', '⚠️', '🚸', '🔱', '⚜️', '🔰', '♻️', '✅', '🈯', '💹', '❇️', '✳️', '❎', '🌐', '💠', '🔷', '🔶', '🔸', '🔹', '🔺', '🔻', '💚', '🔘', '🔲', '🔳', '⚪', '⚫', '🔴', '🟠', '🟡', '🟢', '🔵', '🟣', '🟤'].map(emoji => (
+                                    <button
+                                      key={emoji}
+                                      type="button"
+                                      onClick={() => addReaction(m.id, emoji)}
+                                      className="text-lg hover:bg-slate-800 rounded p-1 transition"
+                                    >
+                                      {emoji}
+                                    </button>
+                                  ))}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setReactionPickerMessageId(null)}
+                                  className="mt-2 text-xs text-slate-400 hover:text-slate-200"
+                                >
+                                  Close
+                                </button>
+                              </div>
                             </div>
                           )}
                         </div>
@@ -3395,6 +3687,32 @@ function ChatPage() {
                     </div>
                   </section>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Delete Message Confirmation Modal */}
+        {deletingMessageId && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={cancelDeleteMessage}>
+            <div className="rounded-2xl border border-white/10 bg-slate-900 p-6 shadow-xl max-w-md" onClick={(e) => e.stopPropagation()}>
+              <div className="text-lg font-semibold text-white mb-3">Delete Message</div>
+              <div className="text-sm text-slate-300 mb-4">Are you sure you want to delete this message? This action cannot be undone.</div>
+              <div className="flex gap-3 justify-end">
+                <button
+                  type="button"
+                  onClick={cancelDeleteMessage}
+                  className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-600"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={deleteMessage}
+                  className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-500"
+                >
+                  Delete
+                </button>
               </div>
             </div>
           </div>

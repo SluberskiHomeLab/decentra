@@ -104,16 +104,24 @@ export type Attachment = {
   file_size: number
 }
 
+export type Reaction = {
+  emoji: string
+  emoji_type: 'standard' | 'custom'
+  users: string[]
+  count: number
+}
+
 export type WsChatMessage = {
   type: 'message'
   id?: number
   username: string
   content: string
   timestamp: string
+  edited_at?: string | null
   context?: 'global' | 'server' | 'dm' | string
   context_id?: string | null
   messageKey?: string
-  reactions?: unknown[]
+  reactions?: Reaction[]
   attachments?: Attachment[]
 } & Avatar
 
@@ -238,6 +246,34 @@ export type WsPasswordResetRequested = {
   message?: string
 }
 
+export type WsMessageEdited = {
+  type: 'message_edited'
+  message_id: number
+  content: string
+  edited_at: string
+  context_type: string
+  context_id: string | null
+}
+
+export type WsMessageDeleted = {
+  type: 'message_deleted'
+  message_id: number
+  context_type: string
+  context_id: string | null
+}
+
+export type WsReactionAdded = {
+  type: 'reaction_added'
+  message_id: number
+  reactions: Reaction[]
+}
+
+export type WsReactionRemoved = {
+  type: 'reaction_removed'
+  message_id: number
+  reactions: Reaction[]
+}
+
 export type WsMessage =
   | WsAuthSuccess
   | WsAuthError
@@ -271,6 +307,10 @@ export type WsMessage =
   | WsCustomEmojiAdded
   | WsCustomEmojiDeleted
   | WsServerEmojis
+  | WsMessageEdited
+  | WsMessageDeleted
+  | WsReactionAdded
+  | WsReactionRemoved
   | { type: string; [k: string]: any }
 
 export type WsOutboundLogin = {
@@ -409,6 +449,30 @@ export type WsOutboundSetNotificationMode = {
 export type WsOutboundRequestPasswordReset = {
   type: 'request_password_reset'
   identifier: string
+}
+
+export type WsOutboundEditMessage = {
+  type: 'edit_message'
+  message_id: number
+  content: string
+}
+
+export type WsOutboundDeleteMessage = {
+  type: 'delete_message'
+  message_id: number
+}
+
+export type WsOutboundAddReaction = {
+  type: 'add_reaction'
+  message_id: number
+  emoji: string
+  emoji_type: 'standard' | 'custom'
+}
+
+export type WsOutboundRemoveReaction = {
+  type: 'remove_reaction'
+  message_id: number
+  emoji: string
 }
 
 export type CustomEmoji = {
