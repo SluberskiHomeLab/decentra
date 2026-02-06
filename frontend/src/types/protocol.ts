@@ -267,6 +267,10 @@ export type WsMessage =
   | WsAvatarUpdated
   | WsNotificationModeUpdated
   | WsPasswordResetRequested
+  | WsServerIconUpdate
+  | WsCustomEmojiAdded
+  | WsCustomEmojiDeleted
+  | WsServerEmojis
   | { type: string; [k: string]: any }
 
 export type WsOutboundLogin = {
@@ -407,3 +411,37 @@ export type WsOutboundRequestPasswordReset = {
   identifier: string
 }
 
+export type CustomEmoji = {
+  emoji_id: string
+  server_id: string
+  name: string
+  image_data: string
+  uploader: string
+  created_at: string
+}
+
+export type WsServerIconUpdate = {
+  type: 'server_icon_update'
+  server_id: string
+  icon?: string
+  icon_type: 'emoji' | 'image'
+  icon_data?: string | null
+}
+
+export type WsCustomEmojiAdded = {
+  type: 'custom_emoji_added'
+  server_id: string
+  emoji: CustomEmoji
+}
+
+export type WsCustomEmojiDeleted = {
+  type: 'custom_emoji_deleted'
+  server_id: string
+  emoji_id: string
+}
+
+export type WsServerEmojis = {
+  type: 'server_emojis'
+  server_id: string
+  emojis: CustomEmoji[]
+}

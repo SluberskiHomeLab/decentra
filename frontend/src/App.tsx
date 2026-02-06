@@ -951,6 +951,12 @@ function ChatPage() {
   const [isSavingSettings, setIsSavingSettings] = useState(false)
   const [isTestingSMTP, setIsTestingSMTP] = useState(false)
   const [testEmailAddress, setTestEmailAddress] = useState('')
+  
+  // Server emoji and icon state
+  const [serverEmojis, setServerEmojis] = useState<Record<string, any[]>>({})
+  const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false)
+  const [emojiFile, setEmojiFile] = useState<File | null>(null)
+  const [emojiName, setEmojiName] = useState('')
   const [announcement, setAnnouncement] = useState<{
     enabled: boolean
     message: string
@@ -1317,6 +1323,39 @@ function ChatPage() {
       if (msg.type === 'password_reset_requested') {
         pushToast({ kind: 'success', message: msg.message || 'Password reset email sent' })
       }
+
+      if (msg.type === 'server_icon_update') {
+        const prev = useAppStore.getState().init
+        if (!prev || !prev.servers) return
+        const updatedServers = prev.servers.map((s) =>
+          s.id === msg.server_id
+            ? { ...s, icon: msg.icon, icon_type: msg.icon_type, icon_data: msg.icon_data }
+            : s
+        )
+        setInit({ ...prev, servers: updatedServers })
+      }
+
+      if (msg.type === 'custom_emoji_added') {
+        setServerEmojis((prev) => ({
+          ...prev,
+          [msg.server_id]: [...(prev[msg.server_id] || []), msg.emoji],
+        }))
+        pushToast({ kind: 'success', message: `Emoji :${msg.emoji.name}: added` })
+      }
+
+      if (msg.type === 'custom_emoji_deleted') {
+        setServerEmojis((prev) => ({
+          ...prev,
+          [msg.server_id]: (prev[msg.server_id] || []).filter((e) => e.emoji_id !== msg.emoji_id),
+        }))
+      }
+
+      if (msg.type === 'server_emojis') {
+        setServerEmojis((prev) => ({
+          ...prev,
+          [msg.server_id]: msg.emojis,
+        }))
+      }
     })
 
     const unsubClose = wsClient.onClose(() => {
@@ -1356,6 +1395,14 @@ function ChatPage() {
       setNotificationMode(init.notification_mode as 'all' | 'mentions' | 'none' || 'all')
     }
   }, [init])
+
+  // Load server emojis when selected server changes
+  useEffect(() => {
+    if (selectedContext.kind === 'server' && wsClient.readyState === WebSocket.OPEN) {
+      loadServerEmojis(selectedContext.serverId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedContext])
 
   const selectedTitle =
     selectedContext.kind === 'global'
@@ -1608,6 +1655,77 @@ function ChatPage() {
     wsClient.send({ type: 'save_admin_settings', settings: adminSettings })
   }
 
+  const uploadServerIcon = async (serverId: string, file: File) => {
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const iconData = e.target?.result as string
+      wsClient.send({
+        type: 'set_server_icon',
+        server_id: serverId,
+        icon_type: 'image',
+        icon_data: iconData,
+      })
+      pushToast({ kind: 'success', message: 'Server icon updating...' })
+    }
+    reader.onerror = () => {
+      pushToast({ kind: 'error', message: 'Failed to read image file' })
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const setServerIconEmoji = (serverId: string, emoji: string) => {
+    wsClient.send({
+      type: 'set_server_icon',
+      server_id: serverId,
+      icon_type: 'emoji',
+      icon: emoji,
+    })
+    pushToast({ kind: 'success', message: 'Server icon updated' })
+  }
+
+  const uploadServerEmoji = async (serverId: string, name: string, file: File) => {
+    if (!file || !name) return
+
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const imageData = e.target?.result as string
+      wsClient.send({
+        type: 'upload_custom_emoji',
+        server_id: serverId,
+        name: name.trim(),
+        image_data: imageData,
+      })
+      setEmojiFile(null)
+      setEmojiName('')
+      pushToast({ kind: 'success', message: 'Uploading emoji...' })
+    }
+    reader.onerror = () => {
+      pushToast({ kind: 'error', message: 'Failed to read emoji file' })
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const deleteServerEmoji = (emojiId: string) => {
+    wsClient.send({
+      type: 'delete_custom_emoji',
+      emoji_id: emojiId,
+    })
+  }
+
+  const loadServerEmojis = (serverId: string) => {
+    wsClient.send({
+      type: 'get_server_emojis',
+      server_id: serverId,
+    })
+  }
+
+  const insertEmoji = (emoji: string) => {
+    setDraft((prev) => prev + emoji)
+    setIsEmojiPickerOpen(false)
+  }
+
   const testSMTP = () => {
     if (wsClient.readyState !== WebSocket.OPEN) return
     if (!testEmailAddress.trim()) {
@@ -1787,12 +1905,16 @@ function ChatPage() {
                     wsClient.getServerMembers({ type: 'get_server_members', server_id: server.id })
                   }
                 }}
-                className={`flex h-12 w-12 items-center justify-center rounded-2xl text-xl transition ${
+                className={`flex h-12 w-12 items-center justify-center rounded-2xl text-xl transition overflow-hidden ${
                   selectedServerId === server.id ? 'bg-sky-500 text-white' : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 hover:rounded-xl'
                 }`}
                 title={server.name}
               >
-                {server.icon ?? '🏠'}
+                {server.icon_type === 'image' && server.icon_data ? (
+                  <img src={server.icon_data} alt={server.name} className="h-full w-full object-cover" />
+                ) : (
+                  <>{server.icon ?? '🏠'}</>
+                )}
               </button>
             ))}
           </div>
@@ -1822,7 +1944,7 @@ function ChatPage() {
                 <div className="text-sm font-semibold text-white">Direct Messages</div>
               </div>
               
-              <div className="flex-1 overflow-auto p-2">
+              <div className="flex-1 overflow-auto p-2 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                 {(init?.dms ?? []).length === 0 ? (
                   <div className="px-3 py-2 text-sm text-slate-400">No DMs yet</div>
                 ) : (
@@ -2105,6 +2227,59 @@ function ChatPage() {
                   disabled={isUploading}
                   className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40 disabled:opacity-50"
                 />
+                
+                {/* Emoji picker button */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
+                    disabled={isUploading}
+                    className="shrink-0 rounded-2xl border border-white/10 bg-slate-900/40 px-4 py-3 text-sm font-semibold text-slate-300 hover:bg-slate-800/40 disabled:cursor-not-allowed disabled:opacity-50"
+                    title="Insert emoji"
+                  >
+                    😊
+                  </button>
+                  
+                  {isEmojiPickerOpen && (
+                    <div className="absolute bottom-full right-0 mb-2 w-64 rounded-xl border border-white/10 bg-slate-900 p-3 shadow-xl">
+                      <div className="text-xs font-semibold text-slate-300 mb-2">Basic Emojis</div>
+                      <div className="grid grid-cols-8 gap-1 max-h-48 overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                        {['😀', '😃', '😄', '😁', '😅', '😂', '🤣', '😊', '😇', '🙂', '😉', '😌', '😍', '🥰', '😘', '😗', 
+                          '😙', '😚', '😋', '😛', '😝', '😜', '🤪', '🤨', '🧐', '🤓', '😎', '🥸', '🤩', '🥳', '😏', '😒',
+                          '👍', '👎', '👌', '✌️', '🤞', '🤟', '🤘', '🤙', '👈', '👉', '👆', '👇', '☝️', '👏', '🙌', '👐',
+                          '❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '🤎', '💔', '❣️', '💕', '💞', '💓', '💗', '💖',
+                          '🎉', '🎊', '🎈', '🎁', '🏆', '🥇', '🥈', '🥉', '⭐', '🌟', '✨', '💫', '🔥', '💥', '⚡', '💯'].map((emoji) => (
+                          <button
+                            key={emoji}
+                            type="button"
+                            onClick={() => insertEmoji(emoji)}
+                            className="text-xl hover:bg-white/10 rounded p-1 transition"
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
+                      {selectedContext.kind === 'server' && serverEmojis[selectedContext.serverId]?.length > 0 && (
+                        <>
+                          <div className="text-xs font-semibold text-slate-300 mt-3 mb-2">Server Emojis</div>
+                          <div className="grid grid-cols-6 gap-2 max-h-32 overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                            {serverEmojis[selectedContext.serverId].map((emoji: any) => (
+                              <button
+                                key={emoji.emoji_id}
+                                type="button"
+                                onClick={() => insertEmoji(`:${emoji.name}:`)}
+                                className="hover:bg-white/10 rounded p-1 transition"
+                                title={emoji.name}
+                              >
+                                <img src={emoji.image_data} alt={emoji.name} className="w-6 h-6 object-contain" />
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
                 
                 {/* File upload button */}
                 <input
@@ -3109,6 +3284,112 @@ function ChatPage() {
                               ))}
                             </div>
                           )}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+
+                  {/* Server Icon Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Server Icon</h3>
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-4">
+                        <div className="flex h-16 w-16 items-center justify-center rounded-xl border border-white/10 bg-slate-950/40 text-3xl overflow-hidden">
+                          {selectedServerObj.icon_type === 'image' && selectedServerObj.icon_data ? (
+                            <img src={selectedServerObj.icon_data} alt="Server icon" className="h-full w-full object-cover" />
+                          ) : (
+                            <>{selectedServerObj.icon ?? '🏠'}</>
+                          )}
+                        </div>
+                        <div className="flex-1">
+                          <label className="block">
+                            <div className="mb-1 text-sm text-slate-200">Upload Image (.png, .jpg, .gif)</div>
+                            <input
+                              type="file"
+                              accept=".png,.jpg,.jpeg,.gif"
+                              onChange={(e) => {
+                                const file = e.target.files?.[0]
+                                if (file && selectedServerId) {
+                                  uploadServerIcon(selectedServerId, file)
+                                  e.target.value = ''
+                                }
+                              }}
+                              className="w-full text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-sky-500 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-slate-950 hover:file:bg-sky-400"
+                            />
+                          </label>
+                        </div>
+                      </div>
+                      <div className="text-sm text-slate-400">
+                        Or pick an emoji:
+                      </div>
+                      <div className="grid grid-cols-10 gap-2">
+                        {['🏠', '🎮', '💬', '🎨', '🎵', '📚', '⚔️', '🌟', '🔥', '💎'].map((emoji) => (
+                          <button
+                            key={emoji}
+                            type="button"
+                            onClick={() => selectedServerId && setServerIconEmoji(selectedServerId, emoji)}
+                            className="text-2xl hover:bg-white/10 rounded-lg p-2 transition"
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </section>
+
+                  {/* Server Emojis Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Server Emojis</h3>
+                    <div className="space-y-3">
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={emojiName}
+                          onChange={(e) => setEmojiName(e.target.value)}
+                          placeholder="Emoji name (e.g., coolcat)"
+                          className="flex-1 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                        <input
+                          type="file"
+                          accept=".png,.jpg,.jpeg,.gif,.webp"
+                          onChange={(e) => setEmojiFile(e.target.files?.[0] || null)}
+                          className="hidden"
+                          id="emoji-upload"
+                        />
+                        <label
+                          htmlFor="emoji-upload"
+                          className="cursor-pointer rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                        >
+                          {emojiFile ? emojiFile.name : 'Choose File'}
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (emojiName && emojiFile && selectedServerId) {
+                              uploadServerEmoji(selectedServerId, emojiName, emojiFile)
+                            }
+                          }}
+                          disabled={!emojiName || !emojiFile}
+                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                        >
+                          Upload
+                        </button>
+                      </div>
+                      {selectedServerId && serverEmojis[selectedServerId]?.length > 0 && (
+                        <div className="grid grid-cols-8 gap-2 max-h-48 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                          {serverEmojis[selectedServerId].map((emoji: any) => (
+                            <div key={emoji.emoji_id} className="group relative">
+                              <img src={emoji.image_data} alt={emoji.name} className="w-8 h-8 object-contain" title={emoji.name} />
+                              <button
+                                type="button"
+                                onClick={() => deleteServerEmoji(emoji.emoji_id)}
+                                className="absolute -top-1 -right-1 hidden group-hover:block text-xs bg-rose-500 text-white rounded-full w-4 h-4 leading-none"
+                                title="Delete"
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ))}
                         </div>
                       )}
                     </div>
