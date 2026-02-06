@@ -5,8 +5,150 @@ import { clearStoredAuth, getStoredAuth, setStoredAuth } from './auth/storage'
 import { contextKey, useAppStore } from './store/appStore'
 import { useToastStore } from './store/toastStore'
 import type { ChatContext } from './store/appStore'
-import type { Server, ServerInviteUsageLog, ServerMember, WsChatMessage, WsMessage } from './types/protocol'
+import type { Attachment, Server, ServerInviteUsageLog, ServerMember, WsChatMessage, WsMessage } from './types/protocol'
 import './App.css'
+
+// URL processing utilities
+const URL_REGEX = /(https?:\/\/[^\s]+)/gi
+const IMAGE_EXTENSIONS = /\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?[^\s]*)?$/i
+const VIDEO_EXTENSIONS = /\.(mp4|webm|ogg|mov)(\?[^\s]*)?$/i
+const YOUTUBE_REGEX = /https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/i
+
+function isImageUrl(url: string): boolean {
+  return IMAGE_EXTENSIONS.test(url)
+}
+
+function isVideoUrl(url: string): boolean {
+  return VIDEO_EXTENSIONS.test(url)
+}
+
+function getYouTubeVideoId(url: string): string | null {
+  const match = url.match(YOUTUBE_REGEX)
+  return match ? match[1] : null
+}
+
+function sanitizeUrl(url: string): string | null {
+  try {
+    const urlObj = new URL(url)
+    if (urlObj.protocol === 'http:' || urlObj.protocol === 'https:') {
+      return urlObj.toString()
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function linkifyText(text: string): React.ReactNode[] {
+  const parts: React.ReactNode[] = []
+  let lastIndex = 0
+  const regex = new RegExp(URL_REGEX)
+  let match: RegExpExecArray | null
+
+  while ((match = regex.exec(text)) !== null) {
+    // Add text before the URL
+    if (match.index > lastIndex) {
+      parts.push(<span key={`text-${lastIndex}`}>{text.slice(lastIndex, match.index)}</span>)
+    }
+
+    const url = match[0]
+    const safeUrl = sanitizeUrl(url)
+    
+    if (safeUrl) {
+      parts.push(
+        <a
+          key={`link-${match.index}`}
+          href={safeUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-sky-400 hover:text-sky-300 underline"
+        >
+          {url}
+        </a>
+      )
+    } else {
+      parts.push(<span key={`unsafe-${match.index}`}>{url}</span>)
+    }
+
+    lastIndex = regex.lastIndex
+  }
+
+  // Add remaining text
+  if (lastIndex < text.length) {
+    parts.push(<span key={`text-${lastIndex}`}>{text.slice(lastIndex)}</span>)
+  }
+
+  return parts.length > 0 ? parts : [<span key="text-0">{text}</span>]
+}
+
+function MessageEmbeds({ content }: { content: string }): React.ReactElement | null {
+  const urls = content.match(URL_REGEX)
+  if (!urls) return null
+
+  const processedUrls = new Set<string>()
+  const embeds: React.ReactElement[] = []
+
+  urls.forEach((url, index) => {
+    if (processedUrls.has(url)) return
+    processedUrls.add(url)
+
+    const safeUrl = sanitizeUrl(url)
+    if (!safeUrl) return
+
+    // YouTube embed
+    const youtubeId = getYouTubeVideoId(safeUrl)
+    if (youtubeId) {
+      embeds.push(
+        <div key={`embed-${index}`} className="mt-2 overflow-hidden rounded-lg border border-white/10 bg-slate-900/40">
+          <iframe
+            src={`https://www.youtube.com/embed/${encodeURIComponent(youtubeId)}`}
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            allowFullScreen
+            title="YouTube video"
+            className="w-full aspect-video"
+          />
+        </div>
+      )
+    }
+    // Image embed
+    else if (isImageUrl(safeUrl)) {
+      embeds.push(
+        <div key={`embed-${index}`} className="mt-2">
+          <a href={safeUrl} target="_blank" rel="noopener noreferrer">
+            <img
+              src={safeUrl}
+              alt="Embedded image"
+              loading="lazy"
+              className="max-w-md rounded-lg border border-white/10"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none'
+              }}
+            />
+          </a>
+        </div>
+      )
+    }
+    // Video embed
+    else if (isVideoUrl(safeUrl)) {
+      embeds.push(
+        <div key={`embed-${index}`} className="mt-2 overflow-hidden rounded-lg border border-white/10 bg-slate-900/40">
+          <video
+            src={safeUrl}
+            controls
+            preload="metadata"
+            className="w-full max-w-md"
+            onError={(e) => {
+              e.currentTarget.style.display = 'none'
+            }}
+          />
+        </div>
+      )
+    }
+  })
+
+  return <>{embeds}</>
+}
+
 
 function isWsChatMessage(msg: WsMessage): msg is WsChatMessage {
   return (
@@ -789,6 +931,12 @@ function ChatPage() {
   const [inviteUsageServerId, setInviteUsageServerId] = useState<string | null>(null)
   const [inviteUsageLogs, setInviteUsageLogs] = useState<ServerInviteUsageLog[] | null>(null)
   const [isLoadingInviteUsage, setIsLoadingInviteUsage] = useState(false)
+  
+  // File upload state
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([])
+  const [isUploading, setIsUploading] = useState(false)
+  const [isDragging, setIsDragging] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // New UI state
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false)
@@ -1216,21 +1364,182 @@ function ChatPage() {
         ? `DM ${selectedContext.dmId}`
         : `${selectedContext.serverId} / ${selectedContext.channelId}`
 
-  const canSend = wsClient.readyState === WebSocket.OPEN && draft.trim().length > 0
+  const canSend = wsClient.readyState === WebSocket.OPEN && (draft.trim().length > 0 || selectedFiles.length > 0)
 
-  const send = () => {
+  const send = async () => {
     const content = draft.trim()
-    if (!content) return
+    if (!content && selectedFiles.length === 0) return
 
-    if (selectedContext.kind === 'server') {
-      wsClient.sendMessage({ type: 'message', content, context: 'server', context_id: `${selectedContext.serverId}/${selectedContext.channelId}` })
-    } else if (selectedContext.kind === 'dm') {
-      wsClient.sendMessage({ type: 'message', content, context: 'dm', context_id: selectedContext.dmId })
+    // If there are files, send message first, then upload files
+    if (selectedFiles.length > 0) {
+      await sendMessageWithFiles(content || '')
     } else {
-      wsClient.sendMessage({ type: 'message', content, context: 'global', context_id: null })
+      // Just send text message
+      if (selectedContext.kind === 'server') {
+        wsClient.sendMessage({ type: 'message', content, context: 'server', context_id: `${selectedContext.serverId}/${selectedContext.channelId}` })
+      } else if (selectedContext.kind === 'dm') {
+        wsClient.sendMessage({ type: 'message', content, context: 'dm', context_id: selectedContext.dmId })
+      } else {
+        wsClient.sendMessage({ type: 'message', content, context: 'global', context_id: null })
+      }
+      setDraft('')
+    }
+  }
+
+  const sendMessageWithFiles = async (content: string) => {
+    setIsUploading(true)
+    try {
+      // Create a one-time listener for the message response
+      let messageId: number | null = null
+      
+      const handleMessageResponse = (msg: WsMessage) => {
+        if (msg.type === 'message' && msg.id) {
+          messageId = msg.id
+        }
+      }
+      
+      const unsubscribe = wsClient.onMessage(handleMessageResponse)
+      
+      // Send the message first
+      if (selectedContext.kind === 'server') {
+        wsClient.sendMessage({ 
+          type: 'message', 
+          content, 
+          context: 'server', 
+          context_id: `${selectedContext.serverId}/${selectedContext.channelId}`
+        })
+      } else if (selectedContext.kind === 'dm') {
+        wsClient.sendMessage({ 
+          type: 'message', 
+          content, 
+          context: 'dm', 
+          context_id: selectedContext.dmId
+        })
+      } else {
+        wsClient.sendMessage({ 
+          type: 'message', 
+          content, 
+          context: 'global', 
+          context_id: null
+        })
+      }
+
+      // Wait for message ID to be assigned
+      let attempts = 0
+      while (messageId === null && attempts < 20) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+        attempts++
+      }
+      
+      unsubscribe()
+      
+      if (messageId === null) {
+        pushToast({ kind: 'error', message: 'Failed to send message' })
+        setIsUploading(false)
+        return
+      }
+
+      // Upload each file
+      const token = authToken || getStoredAuth().token
+      if (!token) {
+        pushToast({ kind: 'error', message: 'Authentication required' })
+        setIsUploading(false)
+        return
+      }
+
+      const uploadedAttachments: Attachment[] = []
+
+      for (const file of selectedFiles) {
+        const formData = new FormData()
+        formData.append('file', file)
+        formData.append('token', token)
+        formData.append('message_id', String(messageId))
+
+        const response = await fetch('/api/upload-attachment', {
+          method: 'POST',
+          body: formData,
+        })
+
+        if (!response.ok) {
+          const data = await response.json()
+          pushToast({ kind: 'error', message: data.error || `Failed to upload ${file.name}` })
+        } else {
+          const data = await response.json()
+          if (data.success && data.attachment) {
+            uploadedAttachments.push(data.attachment)
+          }
+        }
+      }
+
+      // Update the message in local state with the attachments
+      if (uploadedAttachments.length > 0) {
+        useAppStore.getState().updateMessage(messageId, { attachments: uploadedAttachments })
+      }
+
+      // Clear files and draft
+      setSelectedFiles([])
+      setDraft('')
+      pushToast({ kind: 'success', message: 'Message and files sent successfully' })
+    } catch (error) {
+      pushToast({ kind: 'error', message: 'Failed to upload files' })
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  const handleFileSelect = (files: FileList | null) => {
+    if (!files || files.length === 0) return
+
+    const executableExtensions = ['.exe', '.sh', '.bat', '.ps1', '.cmd', '.com', '.msi', '.scr', '.vbs', '.js', '.jar']
+    const maxSize = (adminSettings.max_attachment_size_mb || 10) * 1024 * 1024
+    const validFiles: File[] = []
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      const ext = file.name.toLowerCase().substring(file.name.lastIndexOf('.'))
+
+      // Check if executable
+      if (executableExtensions.includes(ext)) {
+        pushToast({ kind: 'error', message: `${file.name}: Executable files are not allowed` })
+        continue
+      }
+
+      // Check file size
+      if (file.size > maxSize) {
+        pushToast({ kind: 'error', message: `${file.name}: File exceeds maximum size of ${adminSettings.max_attachment_size_mb || 10}MB` })
+        continue
+      }
+
+      validFiles.push(file)
     }
 
-    setDraft('')
+    setSelectedFiles(prev => [...prev, ...validFiles])
+  }
+
+  const removeFile = (index: number) => {
+    setSelectedFiles(prev => prev.filter((_, i) => i !== index))
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(true)
+  }
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(false)
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(false)
+    
+    if (e.dataTransfer.files) {
+      handleFileSelect(e.dataTransfer.files)
+    }
   }
 
   const contextServerId = selectedContext.kind === 'server' ? selectedContext.serverId : null
@@ -1724,7 +2033,28 @@ function ChatPage() {
                             <div className="font-semibold text-slate-100">{m.username}</div>
                             <div className="text-xs text-slate-500">{new Date(m.timestamp).toLocaleString()}</div>
                           </div>
-                          <div className="mt-1 whitespace-pre-wrap text-sm text-slate-200">{m.content}</div>
+                          {m.content && (
+                            <>
+                              <div className="mt-1 whitespace-pre-wrap text-sm text-slate-200">{linkifyText(m.content)}</div>
+                              <MessageEmbeds content={m.content} />
+                            </>
+                          )}
+                          {m.attachments && m.attachments.length > 0 && (
+                            <div className="mt-2 flex flex-col gap-1.5">
+                              {m.attachments.map((att: Attachment) => (
+                                <a
+                                  key={att.attachment_id}
+                                  href={`/api/download-attachment/${att.attachment_id}`}
+                                  download={att.filename}
+                                  className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-slate-900/40 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800/40 hover:text-white transition w-fit"
+                                >
+                                  <span>📎</span>
+                                  <span className="font-medium">{att.filename}</span>
+                                  <span className="text-xs text-slate-500">({(att.file_size / 1024).toFixed(1)}KB)</span>
+                                </a>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -1735,27 +2065,74 @@ function ChatPage() {
           </section>
 
           <div className="border-t border-white/10 bg-slate-950/60 px-6 py-4">
-            <form
-              onSubmit={(e) => {
-                e.preventDefault()
-                if (canSend) send()
-              }}
-              className="mx-auto flex max-w-5xl gap-3"
-            >
-              <input
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                placeholder="Type a message…"
-                className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-              />
-              <button
-                type="submit"
-                disabled={!canSend}
-                className="shrink-0 rounded-2xl bg-sky-500 px-5 py-3 text-sm font-semibold text-slate-950 shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+            <div className="mx-auto max-w-5xl">
+              {/* Selected files preview */}
+              {selectedFiles.length > 0 && (
+                <div className="mb-3 flex flex-wrap gap-2">
+                  {selectedFiles.map((file, index) => (
+                    <div
+                      key={index}
+                      className="flex items-center gap-2 rounded-lg border border-white/10 bg-slate-900/40 px-3 py-2 text-sm"
+                    >
+                      <span className="text-slate-300 truncate max-w-[200px]">{file.name}</span>
+                      <span className="text-xs text-slate-500">({(file.size / 1024).toFixed(1)}KB)</span>
+                      <button
+                        type="button"
+                        onClick={() => removeFile(index)}
+                        className="ml-1 text-slate-400 hover:text-rose-400"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  if (canSend && !isUploading) send()
+                }}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                className={`flex gap-3 rounded-2xl transition ${isDragging ? 'ring-2 ring-sky-500/40 bg-sky-500/10' : ''}`}
               >
-                Send
-              </button>
-            </form>
+                <input
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  placeholder={isDragging ? "Drop files here..." : selectedFiles.length > 0 ? "Add a message (optional)…" : "Type a message…"}
+                  disabled={isUploading}
+                  className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40 disabled:opacity-50"
+                />
+                
+                {/* File upload button */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  onChange={(e) => handleFileSelect(e.target.files)}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isUploading || adminSettings.allow_file_attachments === false}
+                  className="shrink-0 rounded-2xl border border-white/10 bg-slate-900/40 px-4 py-3 text-sm font-semibold text-slate-300 hover:bg-slate-800/40 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="Attach file"
+                >
+                  📎
+                </button>
+                
+                <button
+                  type="submit"
+                  disabled={!canSend || isUploading}
+                  className="shrink-0 rounded-2xl bg-sky-500 px-5 py-3 text-sm font-semibold text-slate-950 shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isUploading ? 'Uploading...' : 'Send'}
+                </button>
+              </form>
+            </div>
           </div>
         </main>
 

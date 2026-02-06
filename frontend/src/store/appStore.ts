@@ -50,6 +50,7 @@ type AppState = {
   selectContext: (ctx: ChatContext) => void
   setMessagesForContext: (ctx: ChatContext, messages: WsChatMessage[]) => void
   appendMessage: (message: WsChatMessage) => void
+  updateMessage: (messageId: number, updates: Partial<WsChatMessage>) => void
   clearMessages: () => void
 }
 
@@ -94,6 +95,16 @@ export const useAppStore = create<AppState>((set) => ({
       const key = contextKey(ctx)
       const prev = state.messagesByContext[key] ?? []
       return { messagesByContext: { ...state.messagesByContext, [key]: [...prev, message] } }
+    }),
+  updateMessage: (messageId, updates) =>
+    set((state) => {
+      const updatedMessages: Record<string, WsChatMessage[]> = {}
+      for (const [key, messages] of Object.entries(state.messagesByContext)) {
+        updatedMessages[key] = messages.map((msg) =>
+          msg.id === messageId ? { ...msg, ...updates } : msg
+        )
+      }
+      return { messagesByContext: updatedMessages }
     }),
   clearMessages: () => set({ messagesByContext: {} }),
 }))

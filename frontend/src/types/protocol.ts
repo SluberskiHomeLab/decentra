@@ -97,6 +97,13 @@ export type WsAnnouncementUpdate = {
   max_message_length?: number
 }
 
+export type Attachment = {
+  attachment_id: string
+  filename: string
+  content_type: string
+  file_size: number
+}
+
 export type WsChatMessage = {
   type: 'message'
   id?: number
@@ -107,6 +114,7 @@ export type WsChatMessage = {
   context_id?: string | null
   messageKey?: string
   reactions?: unknown[]
+  attachments?: Attachment[]
 } & Avatar
 
 export type WsHistory = {

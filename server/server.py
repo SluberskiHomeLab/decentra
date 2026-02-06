@@ -329,6 +329,8 @@ def create_message_object(username, msg_content, context, context_id, user_profi
     # Add message ID if provided
     if message_id is not None:
         msg_obj['id'] = message_id
+        # Add attachments if message has an ID
+        msg_obj['attachments'] = db.get_message_attachments(message_id)
     
     # Add messageKey if provided (for file attachment correlation)
     if message_key:
@@ -1489,14 +1491,15 @@ async def handler(websocket):
                             context_id = f"{server_id}/{channel_id}"
                             channel_messages = db.get_messages('server', context_id, MAX_HISTORY)
                             
-                            # Get reactions for all messages
+                            # Get reactions and attachments for all messages
                             if channel_messages:
                                 message_ids = [msg['id'] for msg in channel_messages]
                                 reactions_map = db.get_reactions_for_messages(message_ids)
                                 
-                                # Add reactions to each message
+                                # Add reactions and attachments to each message
                                 for msg in channel_messages:
                                     msg['reactions'] = reactions_map.get(msg['id'], [])
+                                    msg['attachments'] = db.get_message_attachments(msg['id'])
                             
                             await websocket.send_str(json.dumps({
                                 'type': 'channel_history',
@@ -1515,14 +1518,15 @@ async def handler(websocket):
                             # Get messages from database
                             dm_messages = db.get_messages('dm', dm_id, MAX_HISTORY)
                             
-                            # Get reactions for all messages
+                            # Get reactions and attachments for all messages
                             if dm_messages:
                                 message_ids = [msg['id'] for msg in dm_messages]
                                 reactions_map = db.get_reactions_for_messages(message_ids)
                                 
-                                # Add reactions to each message
+                                # Add reactions and attachments to each message
                                 for dm_msg in dm_messages:
                                     dm_msg['reactions'] = reactions_map.get(dm_msg['id'], [])
+                                    dm_msg['attachments'] = db.get_message_attachments(dm_msg['id'])
                             
                             await websocket.send_str(json.dumps({
                                 'type': 'dm_history',

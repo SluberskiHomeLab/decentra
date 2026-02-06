@@ -403,8 +403,9 @@ async def api_upload_attachment(request):
                 'error': f'File size exceeds maximum of {max_size_mb}MB'
             }, status=413)
         
-        # Verify message exists and user owns it
+        # Get message by ID
         message = db.get_message(message_id)
+        
         if not message:
             return web.json_response({
                 'success': False,
