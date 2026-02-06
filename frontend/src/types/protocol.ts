@@ -311,6 +311,14 @@ export type WsMessage =
   | WsMessageDeleted
   | WsReactionAdded
   | WsReactionRemoved
+  | WsVoiceChannelJoined
+  | WsDirectCallStarted
+  | WsUserJoinedVoice
+  | WsUserLeftVoice
+  | WsVoiceStateUpdate
+  | WsWebRTCOffer
+  | WsWebRTCAnswer
+  | WsWebRTCIceCandidate
   | { type: string; [k: string]: any }
 
 export type WsOutboundLogin = {
@@ -474,6 +482,114 @@ export type WsOutboundRemoveReaction = {
   message_id: number
   emoji: string
 }
+
+export type WsOutboundJoinVoiceChannel = {
+  type: 'join_voice_channel'
+  server_id: string
+  channel_id: string
+}
+
+export type WsOutboundLeaveVoiceChannel = {
+  type: 'leave_voice_channel'
+}
+
+export type WsOutboundStartDirectCall = {
+  type: 'start_direct_call'
+  target_username: string
+}
+
+export type WsOutboundLeaveDirectCall = {
+  type: 'leave_direct_call'
+}
+
+export type WsOutboundVoiceStateUpdate = {
+  type: 'voice_state_update'
+  muted: boolean
+  video: boolean
+  screen_sharing: boolean
+}
+
+export type WsOutboundWebRTCOffer = {
+  type: 'webrtc_offer'
+  target_username: string
+  offer: RTCSessionDescriptionInit
+}
+
+export type WsOutboundWebRTCAnswer = {
+  type: 'webrtc_answer'
+  target_username: string
+  answer: RTCSessionDescriptionInit
+}
+
+export type WsOutboundWebRTCIceCandidate = {
+  type: 'webrtc_ice_candidate'
+  target_username: string
+  candidate: RTCIceCandidateInit
+}
+
+export type WsVoiceChannelJoined = {
+  type: 'voice_channel_joined'
+  server_id: string
+  channel_id: string
+  participants: string[]
+}
+
+export type WsDirectCallStarted = {
+  type: 'direct_call_started'
+  caller: string
+}
+
+export type WsUserJoinedVoice = {
+  type: 'user_joined_voice'
+  username: string
+  server_id?: string
+  channel_id?: string
+}
+
+export type WsUserLeftVoice = {
+  type: 'user_left_voice'
+  username: string
+  server_id?: string
+  channel_id?: string
+}
+
+export type WsVoiceStateUpdate = {
+  type: 'voice_state_update'
+  server_id?: string
+  channel_id?: string
+  username: string
+  state?: string
+  muted?: boolean
+  video?: boolean
+  screen_sharing?: boolean
+  voice_members?: Array<{
+    username: string
+    avatar?: string
+    avatar_type?: string
+    muted: boolean
+    video: boolean
+    screen_sharing: boolean
+  }>
+}
+
+export type WsWebRTCOffer = {
+  type: 'webrtc_offer'
+  from_username: string
+  offer: RTCSessionDescriptionInit
+}
+
+export type WsWebRTCAnswer = {
+  type: 'webrtc_answer'
+  from_username: string
+  answer: RTCSessionDescriptionInit
+}
+
+export type WsWebRTCIceCandidate = {
+  type: 'webrtc_ice_candidate'
+  from_username: string
+  candidate: RTCIceCandidateInit
+}
+
 
 export type CustomEmoji = {
   emoji_id: string

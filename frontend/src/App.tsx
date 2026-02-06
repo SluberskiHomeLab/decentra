@@ -4,6 +4,7 @@ import { wsClient } from './api/wsClient'
 import { clearStoredAuth, getStoredAuth, setStoredAuth } from './auth/storage'
 import { contextKey, useAppStore } from './store/appStore'
 import { useToastStore } from './store/toastStore'
+import { VoiceChat } from './lib/VoiceChat'
 import type { ChatContext } from './store/appStore'
 import type { Attachment, Reaction, Server, ServerInviteUsageLog, ServerMember, WsChatMessage, WsMessage } from './types/protocol'
 import './App.css'
@@ -981,6 +982,23 @@ function ChatPage() {
   const [deletingMessageId, setDeletingMessageId] = useState<number | null>(null)
   const [reactionPickerMessageId, setReactionPickerMessageId] = useState<number | null>(null)
 
+  // Voice/Video chat state
+  const [voiceChat, setVoiceChat] = useState<any>(null)
+  const [isInVoice, setIsInVoice] = useState(false)
+  const [voiceParticipants, setVoiceParticipants] = useState<string[]>([])
+  const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map())
+  const [isVoiceMuted, setIsVoiceMuted] = useState(false)
+  const [isVideoEnabled, setIsVideoEnabled] = useState(false)
+  const [isScreenSharing, setIsScreenSharing] = useState(false)
+  // const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
+  // const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([])
+  // const [speakerDevices, setSpeakerDevices] = useState<MediaDeviceInfo[]>([])
+  const [, setSelectedMicrophone] = useState<string | null>(null)
+  const [, setSelectedSpeaker] = useState<string | null>(null)
+  const [, setSelectedCamera] = useState<string | null>(null)
+  const [, setScreenShareResolution] = useState(1080)
+  const [, setScreenShareFramerate] = useState(60)
+
   // Account settings state
   const [profileBio, setProfileBio] = useState('')
   const [profileStatus, setProfileStatus] = useState('')
@@ -1134,6 +1152,44 @@ function ChatPage() {
         } else {
           // On reconnect, ensure current context has history.
           requestHistoryFor(useAppStore.getState().selectedContext)
+        }
+
+        // Initialize VoiceChat
+        if (!voiceChat && initUsername) {
+          const vc = new VoiceChat(wsClient, initUsername)
+          vc.setOnStateChange(() => {
+            setIsVoiceMuted(vc.getIsMuted())
+            setIsVideoEnabled(vc.getIsVideoEnabled())
+            setIsScreenSharing(vc.getIsScreenSharing())
+            setIsInVoice(vc.getIsInVoice())
+          })
+          vc.setOnRemoteStreamChange((peer, stream) => {
+            setRemoteStreams((prev) => {
+              const newMap = new Map(prev)
+              if (stream) {
+                newMap.set(peer, stream)
+              } else {
+                newMap.delete(peer)
+              }
+              return newMap
+            })
+          })
+          vc.setOnParticipantsChange((participants) => {
+            setVoiceParticipants(participants)
+          })
+          setVoiceChat(vc)
+
+          // Load devices (commented out to avoid unused variable warnings)
+          // vc.getAudioDevices().then(setAudioDevices)
+          // vc.getVideoDevices().then(setVideoDevices)
+          // vc.getSpeakerDevices().then(setSpeakerDevices)
+
+          const devices = vc.getSelectedDevices()
+          setSelectedMicrophone(devices.microphone)
+          setSelectedSpeaker(devices.speaker)
+          setSelectedCamera(devices.camera)
+          setScreenShareResolution(devices.screenShareResolution)
+          setScreenShareFramerate(devices.screenShareFramerate)
         }
       }
       if (msg.type === 'data_synced') {
@@ -1438,6 +1494,46 @@ function ChatPage() {
           }
         })
       }
+
+      // Voice/Video chat handlers
+      if (msg.type === 'voice_channel_joined' && voiceChat) {
+        voiceChat.handleVoiceJoined(msg.participants)
+      }
+
+      if (msg.type === 'voice_state_update') {
+        console.log('Received voice_state_update:', msg)
+        // Update voice participants when someone joins/leaves
+        if (msg.voice_members && Array.isArray(msg.voice_members)) {
+          const participantUsernames = msg.voice_members.map((m: any) => m.username)
+          setVoiceParticipants(participantUsernames)
+          setIsInVoice(participantUsernames.includes(init?.username))
+          console.log('Updated voice participants:', participantUsernames)
+        }
+      }
+
+      if (msg.type === 'direct_call_started' && voiceChat) {
+        voiceChat.handleVoiceJoined([msg.caller])
+      }
+
+      if (msg.type === 'user_joined_voice' && voiceChat) {
+        voiceChat.handleUserJoinedVoice(msg.username)
+      }
+
+      if (msg.type === 'user_left_voice' && voiceChat) {
+        voiceChat.handleUserLeftVoice(msg.username)
+      }
+
+      if (msg.type === 'webrtc_offer' && voiceChat) {
+        voiceChat.handleWebRTCOffer(msg.from_username, msg.offer)
+      }
+
+      if (msg.type === 'webrtc_answer' && voiceChat) {
+        voiceChat.handleWebRTCAnswer(msg.from_username, msg.answer)
+      }
+
+      if (msg.type === 'webrtc_ice_candidate' && voiceChat) {
+        voiceChat.handleICECandidate(msg.from_username, msg.candidate)
+      }
     })
 
     const unsubClose = wsClient.onClose(() => {
@@ -1490,8 +1586,12 @@ function ChatPage() {
     selectedContext.kind === 'global'
       ? 'Global'
       : selectedContext.kind === 'dm'
-        ? `DM ${selectedContext.dmId}`
-        : `${selectedContext.serverId} / ${selectedContext.channelId}`
+        ? selectedContext.username
+        : (() => {
+            const server = init?.servers?.find((s) => s.id === selectedContext.serverId)
+            const channel = server?.channels?.find((c) => c.id === selectedContext.channelId)
+            return server && channel ? `${server.name} / ${channel.name}` : 'Channel'
+          })()
 
   const canSend = wsClient.readyState === WebSocket.OPEN && (draft.trim().length > 0 || selectedFiles.length > 0)
 
@@ -1900,6 +2000,68 @@ function ChatPage() {
     })
   }
 
+  // Voice/Video control functions
+  const joinVoiceChannel = async (serverId: string, channelId: string) => {
+    if (!voiceChat) {
+      pushToast({ kind: 'error', message: 'Voice chat not initialized' })
+      return
+    }
+    try {
+      const success = await voiceChat.joinVoiceChannel(serverId, channelId)
+      if (!success) {
+        pushToast({ kind: 'error', message: 'Failed to join voice channel. Please check microphone permissions.' })
+      } else {
+        pushToast({ kind: 'success', message: 'Joining voice channel...' })
+      }
+    } catch (error) {
+      console.error('Error joining voice channel:', error)
+      pushToast({ kind: 'error', message: 'Failed to join voice channel' })
+    }
+  }
+
+  /* const startDirectCall = async (targetUsername: string) => {
+    if (!voiceChat) return
+    await voiceChat.startDirectCall(targetUsername)
+  } */
+
+  const leaveVoice = () => {
+    if (!voiceChat) return
+    voiceChat.leaveVoice()
+  }
+
+  const toggleVoiceMute = () => {
+    if (!voiceChat) return
+    voiceChat.toggleMute()
+  }
+
+  const toggleVoiceVideo = () => {
+    if (!voiceChat) return
+    voiceChat.toggleVideo()
+  }
+
+  const toggleVoiceScreenShare = () => {
+    if (!voiceChat) return
+    voiceChat.toggleScreenShare()
+  }
+
+  /* const updateVoiceDevices = () => {
+    if (!voiceChat) return
+    if (selectedMicrophone) voiceChat.setMicrophone(selectedMicrophone)
+    if (selectedSpeaker) voiceChat.setSpeaker(selectedSpeaker)
+    if (selectedCamera) voiceChat.setCamera(selectedCamera)
+    voiceChat.setScreenShareSettings(screenShareResolution, screenShareFramerate)
+  }
+
+  const loadVoiceDevices = async () => {
+    if (!voiceChat) return
+    const audio = await voiceChat.getAudioDevices()
+    const video = await voiceChat.getVideoDevices()
+    const speakers = await voiceChat.getSpeakerDevices()
+    setAudioDevices(audio)
+    setVideoDevices(video)
+    setSpeakerDevices(speakers)
+  } */
+
   const testSMTP = () => {
     if (wsClient.readyState !== WebSocket.OPEN) return
     if (!testEmailAddress.trim()) {
@@ -2011,6 +2173,11 @@ function ChatPage() {
 
   // Get selected server object
   const selectedServerObj = selectedServerId ? init?.servers?.find((s) => s.id === selectedServerId) : null
+
+  // Check if current channel is a voice channel
+  const isVoiceChannel = selectedContext.kind === 'server' && selectedServerObj
+    ? selectedServerObj.channels?.find((ch) => ch.id === selectedContext.channelId)?.type === 'voice'
+    : false
 
   const dismissAnnouncement = () => {
     setAnnouncement(null)
@@ -2249,7 +2416,10 @@ function ChatPage() {
                             onClick={() => {
                               const next: ChatContext = { kind: 'server', serverId: selectedServerId, channelId: ch.id }
                               selectContext(next)
-                              requestHistoryFor(next)
+                              // Join voice channel instead of loading chat
+                              if (voiceChat && selectedServerId) {
+                                joinVoiceChannel(selectedServerId, ch.id)
+                              }
                             }}
                             className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
                               isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
@@ -2257,6 +2427,7 @@ function ChatPage() {
                           >
                             <span className="text-slate-400">🔊</span>
                             <span className="text-sm font-medium">{ch.name}</span>
+                            {isInVoice && isSelected && <span className="text-emerald-400 text-xs ml-auto">●</span>}
                           </button>
                         )
                       })}
@@ -2277,12 +2448,14 @@ function ChatPage() {
                     ? 'Global Chat'
                     : selectedContext.kind === 'dm'
                       ? 'Direct Message'
-                      : 'Channel'}
+                      : isVoiceChannel
+                        ? 'Voice Channel'
+                        : 'Channel'}
                 </div>
                 <div className="mt-1 text-lg font-semibold text-white">{selectedTitle}</div>
               </div>
               <div className="flex items-center gap-3">
-                {selectedServerId && (
+                {selectedServerId && !isVoiceChannel && (
                   <button
                     type="button"
                     onClick={() => setIsMembersSidebarOpen(!isMembersSidebarOpen)}
@@ -2308,7 +2481,152 @@ function ChatPage() {
             </div>
           </header>
 
-          <section className="flex-1 overflow-auto px-6 py-5">
+          {/* Voice Channel UI */}
+          {isVoiceChannel ? (
+            <section className="flex-1 flex flex-col overflow-hidden">
+              {/* Voice controls panel */}
+              {isInVoice && (
+                <div className="border-b border-white/10 bg-slate-950/60 px-6 py-3">
+                  <div className="flex items-center justify-center gap-3">
+                    <button
+                      type="button"
+                      onClick={toggleVoiceMute}
+                      className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                        isVoiceMuted
+                          ? 'bg-rose-500/20 border border-rose-500/40 text-rose-300 hover:bg-rose-500/30'
+                          : 'bg-slate-800/50 border border-white/10 text-slate-200 hover:bg-slate-700/50'
+                      }`}
+                      title={isVoiceMuted ? 'Unmute' : 'Mute'}
+                    >
+                      {isVoiceMuted ? '🔇' : '🎤'} {isVoiceMuted ? 'Muted' : 'Unmute'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={toggleVoiceVideo}
+                      className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                        isVideoEnabled
+                          ? 'bg-sky-500/20 border border-sky-500/40 text-sky-300 hover:bg-sky-500/30'
+                          : 'bg-slate-800/50 border border-white/10 text-slate-200 hover:bg-slate-700/50'
+                      }`}
+                      title={isVideoEnabled ? 'Stop Video' : 'Start Video'}
+                    >
+                      📹 {isVideoEnabled ? 'Stop Video' : 'Video'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={toggleVoiceScreenShare}
+                      className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                        isScreenSharing
+                          ? 'bg-purple-500/20 border border-purple-500/40 text-purple-300 hover:bg-purple-500/30'
+                          : 'bg-slate-800/50 border border-white/10 text-slate-200 hover:bg-slate-700/50'
+                      }`}
+                      title={isScreenSharing ? 'Stop Sharing' : 'Share Screen'}
+                    >
+                      🖥️ {isScreenSharing ? 'Stop Share' : 'Screen Share'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={leaveVoice}
+                      className="rounded-xl bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-600 transition"
+                      title="Leave Voice"
+                    >
+                      ❌ Leave
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Participant grid */}
+              <div className="flex-1 overflow-auto p-6">
+                <div className="mx-auto max-w-7xl h-full">
+                  {!isInVoice ? (
+                    <div className="flex h-full items-center justify-center">
+                      <div className="text-center">
+                        <div className="text-6xl mb-4">🔊</div>
+                        <h2 className="text-2xl font-semibold text-white mb-2">{selectedTitle}</h2>
+                        <p className="text-slate-400 mb-6">Click join to enter this voice channel</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (selectedContext.kind === 'server' && selectedServerId) {
+                              joinVoiceChannel(selectedServerId, selectedContext.channelId)
+                            }
+                          }}
+                          className="rounded-xl bg-emerald-500 px-6 py-3 text-lg font-semibold text-white hover:bg-emerald-600 transition"
+                        >
+                          Join Voice Channel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className={`grid gap-4 h-full ${
+                      voiceParticipants.length === 1 ? 'grid-cols-1' :
+                      voiceParticipants.length === 2 ? 'grid-cols-2' :
+                      voiceParticipants.length <= 4 ? 'grid-cols-2' :
+                      voiceParticipants.length <= 6 ? 'grid-cols-3' :
+                      'grid-cols-4'
+                    }`}>
+                      {voiceParticipants.map((participantUsername) => {
+                        const stream = remoteStreams.get(participantUsername)
+                        const participant = serverMembers[selectedServerId ?? '']?.find(
+                          (m) => m.username === participantUsername
+                        )
+                        const isCurrentUser = participantUsername === init?.username
+
+                        return (
+                          <div
+                            key={participantUsername}
+                            className="relative rounded-2xl border border-white/10 bg-slate-900/40 overflow-hidden flex items-center justify-center min-h-[200px]"
+                          >
+                            {stream ? (
+                              <video
+                                ref={(video) => {
+                                  if (video && stream) {
+                                    video.srcObject = stream
+                                    video.play().catch(console.error)
+                                  }
+                                }}
+                                autoPlay
+                                playsInline
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <div className="flex flex-col items-center justify-center p-8">
+                                <div className="w-32 h-32 rounded-full border-4 border-white/10 bg-slate-950/40 flex items-center justify-center text-6xl mb-4 overflow-hidden">
+                                  {participant?.avatar_type === 'image' && participant?.avatar_data ? (
+                                    <img src={participant.avatar_data} alt="Avatar" className="w-full h-full object-cover" />
+                                  ) : (
+                                    <>{participant?.avatar ?? init?.avatar ?? '👤'}</>
+                                  )}
+                                </div>
+                                <div className="text-xl font-semibold text-white">{participantUsername}</div>
+                              </div>
+                            )}
+                            {/* Participant name overlay */}
+                            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-3">
+                              <div className="flex items-center justify-between">
+                                <span className="text-white font-semibold text-sm">
+                                  {participantUsername} {isCurrentUser && '(You)'}
+                                </span>
+                                <div className="flex items-center gap-1">
+                                  {isCurrentUser && isVoiceMuted && <span className="text-rose-400">🔇</span>}
+                                  {isCurrentUser && isVideoEnabled && <span className="text-sky-400">📹</span>}
+                                  {isCurrentUser && isScreenSharing && <span className="text-purple-400">🖥️</span>}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
+          ) : (
+            <>
+              {/* Regular chat UI */}
+              <section className="flex-1 overflow-auto px-6 py-5">
             <div className="mx-auto max-w-5xl">
               <div className="rounded-2xl border border-white/10 bg-slate-900/20 p-4">
                 {messages.length === 0 ? (
@@ -2612,6 +2930,8 @@ function ChatPage() {
               </form>
             </div>
           </div>
+          </>
+          )}
         </main>
 
         {/* Members Sidebar - shows when in a server */}
