@@ -63,6 +63,8 @@ export type WsTwoFaRequired = {
 export type WsInit = {
   type: 'init'
   username: string
+  email?: string
+  email_verified?: boolean
   is_admin?: boolean
   notification_mode?: string
   servers?: Server[]
@@ -241,6 +243,25 @@ export type WsNotificationModeUpdated = {
   notification_mode: string
 }
 
+export type WsEmailChanged = {
+  type: 'email_changed'
+  email: string
+  email_verified: boolean
+}
+
+export type WsUsernameChanged = {
+  type: 'username_changed'
+  old_username: string
+  new_username: string
+  token: string
+}
+
+export type WsUserRenamed = {
+  type: 'user_renamed'
+  old_username: string
+  new_username: string
+}
+
 export type WsPasswordResetRequested = {
   type: 'password_reset_requested'
   message?: string
@@ -302,6 +323,9 @@ export type WsMessage =
   | WsProfileUpdated
   | WsAvatarUpdated
   | WsNotificationModeUpdated
+  | WsEmailChanged
+  | WsUsernameChanged
+  | WsUserRenamed
   | WsPasswordResetRequested
   | WsServerIconUpdate
   | WsCustomEmojiAdded
@@ -434,6 +458,18 @@ export type WsOutboundSetAvatar = {
   avatar_type: 'emoji' | 'image'
   avatar?: string
   avatar_data?: string
+}
+
+export type WsOutboundChangeEmail = {
+  type: 'change_email'
+  new_email: string
+  password: string
+}
+
+export type WsOutboundChangeUsername = {
+  type: 'change_username'
+  new_username: string
+  password: string
 }
 
 export type WsOutboundSetup2FA = {
