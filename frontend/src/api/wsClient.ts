@@ -1,5 +1,7 @@
 import type {
   WsMessage,
+  WsOutboundChangeEmail,
+  WsOutboundChangeUsername,
   WsOutboundCreateChannel,
   WsOutboundCreateServer,
   WsOutboundCreateVoiceChannel,
@@ -158,6 +160,14 @@ export class WsClient {
   }
 
   updateProfile(payload: WsOutboundUpdateProfile) {
+    this.send(payload)
+  }
+
+  changeEmail(payload: WsOutboundChangeEmail) {
+    this.send(payload)
+  }
+
+  changeUsername(payload: WsOutboundChangeUsername) {
     this.send(payload)
   }
 

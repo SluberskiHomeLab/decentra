@@ -1008,6 +1008,12 @@ function ChatPage() {
   const [disable2FAPassword, setDisable2FAPassword] = useState('')
   const [disable2FACode, setDisable2FACode] = useState('')
   const [notificationMode, setNotificationMode] = useState<'all' | 'mentions' | 'none'>('all')
+  const [newEmail, setNewEmail] = useState('')
+  const [emailPassword, setEmailPassword] = useState('')
+  const [emailChangeStatus, setEmailChangeStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null)
+  const [newUsername, setNewUsername] = useState('')
+  const [usernamePassword, setUsernamePassword] = useState('')
+  const [usernameChangeStatus, setUsernameChangeStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null)
 
   const pushToast = useToastStore((s) => s.push)
 
@@ -1220,6 +1226,14 @@ function ChatPage() {
         setLastAuthError(message)
         pushToast({ kind: 'error', message })
         setIsLoadingInviteUsage(false)
+        // Set error status for email/username change forms if applicable
+        const lowerMsg = message.toLowerCase()
+        if (lowerMsg.includes('email')) {
+          setEmailChangeStatus({ type: 'error', message })
+        }
+        if (lowerMsg.includes('username')) {
+          setUsernameChangeStatus({ type: 'error', message })
+        }
       }
 
       if (msg.type === 'server_created') {
@@ -1391,6 +1405,57 @@ function ChatPage() {
       if (msg.type === 'notification_mode_updated') {
         pushToast({ kind: 'success', message: 'Notification settings updated' })
         wsClient.requestSync()
+      }
+
+      if (msg.type === 'email_changed') {
+        const prev = useAppStore.getState().init
+        if (prev) {
+          setInit({ ...prev, email: msg.email, email_verified: msg.email_verified })
+        }
+        setNewEmail('')
+        setEmailPassword('')
+        setEmailChangeStatus({ type: 'success', message: 'Email updated successfully' })
+      }
+
+      if (msg.type === 'username_changed') {
+        // Update auth token and username
+        const newToken = msg.token
+        const renamedUsername = msg.new_username
+        setStoredAuth({ token: newToken, username: renamedUsername })
+        setAuth({ token: newToken, username: renamedUsername })
+        const prev = useAppStore.getState().init
+        if (prev) {
+          setInit({ ...prev, username: renamedUsername })
+        }
+        setNewUsername('')
+        setUsernamePassword('')
+        setUsernameChangeStatus({ type: 'success', message: 'Username changed successfully' })
+      }
+
+      if (msg.type === 'user_renamed') {
+        const { old_username, new_username } = msg
+        const prev = useAppStore.getState().init
+        if (!prev) return
+        // Update friends list and DMs
+        const updateUsername = (list?: any[]) =>
+          list?.map((item: any) => {
+            const updated = { ...item }
+            if (updated.username === old_username) updated.username = new_username
+            if (updated.friend_username === old_username) updated.friend_username = new_username
+            return updated
+          }) || []
+
+        setInit({
+          ...prev,
+          friends: updateUsername(prev.friends),
+          friend_requests_sent: updateUsername(prev.friend_requests_sent),
+          friend_requests_received: updateUsername(prev.friend_requests_received),
+          dms: prev.dms?.map((dm: any) => ({
+            ...dm,
+            user1: dm.user1 === old_username ? new_username : dm.user1,
+            user2: dm.user2 === old_username ? new_username : dm.user2,
+          })) || [],
+        })
       }
 
       if (msg.type === 'password_reset_requested') {
@@ -2078,6 +2143,26 @@ function ChatPage() {
       type: 'update_profile',
       bio: profileBio,
       status_message: profileStatus,
+    })
+  }
+
+  const handleChangeEmail = () => {
+    if (!newEmail.trim() || !emailPassword) return
+    setEmailChangeStatus(null)
+    wsClient.changeEmail({
+      type: 'change_email',
+      new_email: newEmail.trim(),
+      password: emailPassword,
+    })
+  }
+
+  const handleChangeUsername = () => {
+    if (!newUsername.trim() || !usernamePassword) return
+    setUsernameChangeStatus(null)
+    wsClient.changeUsername({
+      type: 'change_username',
+      new_username: newUsername.trim(),
+      password: usernamePassword,
     })
   }
 
@@ -3016,8 +3101,8 @@ function ChatPage() {
         {/* User menu modal - centered overlay */}
         {isUserMenuOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setIsUserMenuOpen(false)}>
-            <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-              <div className="flex items-center justify-between border-b border-white/10 px-6 py-4">
+            <div className="w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-6 py-4">
                 <div className="flex items-center gap-3">
                   {init?.is_admin && !isAdminMode && (
                     <button
@@ -3050,7 +3135,7 @@ function ChatPage() {
                 </button>
               </div>
 
-              <div className="p-6">
+              <div className="overflow-y-auto p-6">
                 {!isAdminMode ? (
                   <div className="space-y-6">
                     <div className="text-center">
@@ -3540,6 +3625,85 @@ function ChatPage() {
               </div>
 
               <div className="p-6 space-y-6">
+                {/* Account Section */}
+                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Account</h3>
+                  <div className="space-y-4">
+                    {/* Current Username */}
+                    <div>
+                      <div className="mb-1 text-sm text-slate-200">Username</div>
+                      <div className="text-sm text-slate-400 mb-2">{init?.username}</div>
+                      <div className="space-y-2">
+                        <input
+                          type="text"
+                          value={newUsername}
+                          onChange={(e) => setNewUsername(e.target.value)}
+                          placeholder="New username"
+                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                        <input
+                          type="password"
+                          value={usernamePassword}
+                          onChange={(e) => setUsernamePassword(e.target.value)}
+                          placeholder="Confirm with password"
+                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleChangeUsername}
+                          disabled={!newUsername.trim() || !usernamePassword}
+                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Change Username
+                        </button>
+                        {usernameChangeStatus && (
+                          <div className={`text-sm ${usernameChangeStatus.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+                            {usernameChangeStatus.message}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Divider */}
+                    <div className="border-t border-white/5" />
+
+                    {/* Current Email */}
+                    <div>
+                      <div className="mb-1 text-sm text-slate-200">Email</div>
+                      <div className="text-sm text-slate-400 mb-2">{init?.email || 'No email set'}</div>
+                      <div className="space-y-2">
+                        <input
+                          type="email"
+                          value={newEmail}
+                          onChange={(e) => setNewEmail(e.target.value)}
+                          placeholder="New email address"
+                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                        <input
+                          type="password"
+                          value={emailPassword}
+                          onChange={(e) => setEmailPassword(e.target.value)}
+                          placeholder="Confirm with password"
+                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleChangeEmail}
+                          disabled={!newEmail.trim() || !emailPassword}
+                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Change Email
+                        </button>
+                        {emailChangeStatus && (
+                          <div className={`text-sm ${emailChangeStatus.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+                            {emailChangeStatus.message}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
                 {/* Profile Section */}
                 <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                   <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Profile</h3>

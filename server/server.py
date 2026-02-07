@@ -1262,6 +1262,8 @@ async def handler(websocket):
                 'username': username,
                 **current_avatar,
                 **current_profile,
+                'email': user.get('email', '') if user else '',
+                'email_verified': user.get('email_verified', False) if user else False,
                 'notification_mode': notification_mode,
                 'is_admin': is_admin,
                 'servers': user_servers,
@@ -3021,7 +3023,155 @@ async def handler(websocket):
                             'type': 'profile_updated',
                             **profile_update
                         }))
-                    
+
+                    elif data.get('type') == 'change_email':
+                        new_email = data.get('new_email', '').strip()
+                        password = data.get('password', '')
+
+                        # Validate email format
+                        if not new_email or not is_valid_email(new_email):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid email address format'
+                            }))
+                            continue
+
+                        # Verify password
+                        user = db.get_user(username)
+                        if not user or not verify_password(password, user['password_hash']):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid password'
+                            }))
+                            continue
+
+                        # Check same email
+                        if user.get('email') == new_email:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'New email is the same as current email'
+                            }))
+                            continue
+
+                        # Attempt update
+                        if db.update_user_email(username, new_email):
+                            # Optionally send verification email if SMTP configured
+                            admin_settings = db.get_admin_settings()
+                            if admin_settings.get('require_email_verification'):
+                                try:
+                                    email_sender = EmailSender(admin_settings)
+                                    if email_sender.is_configured():
+                                        verification_code = ''.join(secrets.choice(string.digits) for _ in range(6))
+                                        expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+                                        db.create_email_verification_code(new_email, username, verification_code, expires_at)
+                                        email_sender.send_verification_email(new_email, username, verification_code)
+                                except Exception as e:
+                                    print(f"Failed to send verification email: {e}")
+
+                            await websocket.send_str(json.dumps({
+                                'type': 'email_changed',
+                                'email': new_email,
+                                'email_verified': False
+                            }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Email address already in use'
+                            }))
+
+                    elif data.get('type') == 'change_username':
+                        new_username = data.get('new_username', '').strip()
+                        password = data.get('password', '')
+
+                        # Validate
+                        if not new_username:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'New username is required'
+                            }))
+                            continue
+
+                        if len(new_username) > 255:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Username is too long. Maximum 255 characters.'
+                            }))
+                            continue
+
+                        if new_username == username:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'New username is the same as current username'
+                            }))
+                            continue
+
+                        # Check availability
+                        if db.get_user(new_username):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Username already taken'
+                            }))
+                            continue
+
+                        # Verify password
+                        user = db.get_user(username)
+                        if not user or not verify_password(password, user['password_hash']):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid password'
+                            }))
+                            continue
+
+                        old_username = username
+                        if db.change_username(old_username, new_username):
+                            # Update in-memory state
+                            clients[websocket] = new_username
+
+                            if old_username in voice_states:
+                                voice_states[new_username] = voice_states.pop(old_username)
+
+                            for call_id, call_data in voice_calls.items():
+                                if old_username in call_data.get('participants', set()):
+                                    call_data['participants'].discard(old_username)
+                                    call_data['participants'].add(new_username)
+
+                            # Update session username variable
+                            username = new_username
+
+                            # Generate new JWT token
+                            new_token = generate_jwt_token(new_username)
+
+                            # Confirm to user
+                            await websocket.send_str(json.dumps({
+                                'type': 'username_changed',
+                                'old_username': old_username,
+                                'new_username': new_username,
+                                'token': new_token
+                            }))
+
+                            # Broadcast to friends
+                            for friend_username in db.get_friends(new_username):
+                                await send_to_user(friend_username, json.dumps({
+                                    'type': 'user_renamed',
+                                    'old_username': old_username,
+                                    'new_username': new_username
+                                }))
+
+                            # Broadcast to all servers user is in
+                            for server_id in db.get_user_servers(new_username):
+                                await broadcast_to_server(server_id, json.dumps({
+                                    'type': 'user_renamed',
+                                    'old_username': old_username,
+                                    'new_username': new_username
+                                }), exclude=websocket)
+
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Username changed: {old_username} -> {new_username}")
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Failed to change username. It may already be taken.'
+                            }))
+
                     elif data.get('type') == 'request_password_reset':
                         # Handle password reset request from logged-in user
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Processing password reset for authenticated user: {username}")

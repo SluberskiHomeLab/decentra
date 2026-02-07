@@ -13,6 +13,8 @@ export type InitData = {
   avatar_data?: string | null
   bio?: string
   status_message?: string
+  email?: string
+  email_verified?: boolean
   servers?: Server[]
   dms?: Dm[]
   friends?: Friend[]

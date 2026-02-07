@@ -617,8 +617,111 @@ class Database:
                         )
                     ''')
                     
+                    # Add ON UPDATE CASCADE to all foreign keys referencing users(username) (migration)
+                    # This enables PostgreSQL to automatically cascade username renames
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            -- Check if migration is already applied by inspecting a known FK
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.referential_constraints
+                                WHERE constraint_name = 'server_members_username_fkey'
+                                AND update_rule = 'CASCADE'
+                            ) THEN
+                                -- servers.owner -> users(username)
+                                ALTER TABLE servers DROP CONSTRAINT IF EXISTS servers_owner_fkey;
+                                ALTER TABLE servers ADD CONSTRAINT servers_owner_fkey
+                                    FOREIGN KEY (owner) REFERENCES users(username) ON UPDATE CASCADE;
+
+                                -- server_members.username -> users(username)
+                                ALTER TABLE server_members DROP CONSTRAINT IF EXISTS server_members_username_fkey;
+                                ALTER TABLE server_members ADD CONSTRAINT server_members_username_fkey
+                                    FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- messages.username -> users(username)
+                                ALTER TABLE messages DROP CONSTRAINT IF EXISTS messages_username_fkey;
+                                ALTER TABLE messages ADD CONSTRAINT messages_username_fkey
+                                    FOREIGN KEY (username) REFERENCES users(username) ON UPDATE CASCADE;
+
+                                -- friendships.user1 -> users(username)
+                                ALTER TABLE friendships DROP CONSTRAINT IF EXISTS friendships_user1_fkey;
+                                ALTER TABLE friendships ADD CONSTRAINT friendships_user1_fkey
+                                    FOREIGN KEY (user1) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- friendships.user2 -> users(username)
+                                ALTER TABLE friendships DROP CONSTRAINT IF EXISTS friendships_user2_fkey;
+                                ALTER TABLE friendships ADD CONSTRAINT friendships_user2_fkey
+                                    FOREIGN KEY (user2) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- direct_messages.user1 -> users(username)
+                                ALTER TABLE direct_messages DROP CONSTRAINT IF EXISTS direct_messages_user1_fkey;
+                                ALTER TABLE direct_messages ADD CONSTRAINT direct_messages_user1_fkey
+                                    FOREIGN KEY (user1) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- direct_messages.user2 -> users(username)
+                                ALTER TABLE direct_messages DROP CONSTRAINT IF EXISTS direct_messages_user2_fkey;
+                                ALTER TABLE direct_messages ADD CONSTRAINT direct_messages_user2_fkey
+                                    FOREIGN KEY (user2) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- invite_codes.creator -> users(username)
+                                ALTER TABLE invite_codes DROP CONSTRAINT IF EXISTS invite_codes_creator_fkey;
+                                ALTER TABLE invite_codes ADD CONSTRAINT invite_codes_creator_fkey
+                                    FOREIGN KEY (creator) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- invite_usage.used_by -> users(username)
+                                ALTER TABLE invite_usage DROP CONSTRAINT IF EXISTS invite_usage_used_by_fkey;
+                                ALTER TABLE invite_usage ADD CONSTRAINT invite_usage_used_by_fkey
+                                    FOREIGN KEY (used_by) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- user_roles.username -> users(username)
+                                ALTER TABLE user_roles DROP CONSTRAINT IF EXISTS user_roles_username_fkey;
+                                ALTER TABLE user_roles ADD CONSTRAINT user_roles_username_fkey
+                                    FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- password_reset_tokens.username -> users(username)
+                                ALTER TABLE password_reset_tokens DROP CONSTRAINT IF EXISTS password_reset_tokens_username_fkey;
+                                ALTER TABLE password_reset_tokens ADD CONSTRAINT password_reset_tokens_username_fkey
+                                    FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- user_2fa.username -> users(username)
+                                ALTER TABLE user_2fa DROP CONSTRAINT IF EXISTS user_2fa_username_fkey;
+                                ALTER TABLE user_2fa ADD CONSTRAINT user_2fa_username_fkey
+                                    FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- user_e2e_keys.username -> users(username)
+                                ALTER TABLE user_e2e_keys DROP CONSTRAINT IF EXISTS user_e2e_keys_username_fkey;
+                                ALTER TABLE user_e2e_keys ADD CONSTRAINT user_e2e_keys_username_fkey
+                                    FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- custom_emojis.uploader -> users(username)
+                                ALTER TABLE custom_emojis DROP CONSTRAINT IF EXISTS custom_emojis_uploader_fkey;
+                                ALTER TABLE custom_emojis ADD CONSTRAINT custom_emojis_uploader_fkey
+                                    FOREIGN KEY (uploader) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- message_reactions.username -> users(username)
+                                ALTER TABLE message_reactions DROP CONSTRAINT IF EXISTS message_reactions_username_fkey;
+                                ALTER TABLE message_reactions ADD CONSTRAINT message_reactions_username_fkey
+                                    FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+                            END IF;
+                        END $$;
+                    ''')
+
+                    # Add UNIQUE constraint on users.email (migration)
+                    # PostgreSQL allows multiple NULLs in UNIQUE columns so users without email are fine
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM pg_constraint
+                                WHERE conname = 'users_email_unique'
+                            ) THEN
+                                ALTER TABLE users ADD CONSTRAINT users_email_unique UNIQUE (email);
+                            END IF;
+                        END $$;
+                    ''')
+
                     conn.commit()
-                
+
                 # If we get here, connection was successful
                 print(f"Database connection established successfully")
                 return
@@ -722,7 +825,70 @@ class Database:
                     SET status_message = %s
                     WHERE username = %s
                 ''', (status_message, username))
-    
+
+    def update_user_email(self, username: str, new_email: str) -> bool:
+        """Update user email and reset verification status. Returns False if email is taken."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE users
+                    SET email = %s, email_verified = FALSE
+                    WHERE username = %s
+                ''', (new_email, username))
+                return cursor.rowcount > 0
+        except Exception:
+            return False  # Email unique constraint violation
+
+    def change_username(self, old_username: str, new_username: str) -> bool:
+        """Change a user's username. Cascades to all related tables via ON UPDATE CASCADE."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+
+                # Temporarily drop friendships CHECK constraint (user1 < user2)
+                # because after cascading rename, ordering may be violated
+                cursor.execute(
+                    "ALTER TABLE friendships DROP CONSTRAINT IF EXISTS friendships_check"
+                )
+
+                # Update the primary key -- ON UPDATE CASCADE handles all FK columns
+                cursor.execute(
+                    "UPDATE users SET username = %s WHERE username = %s",
+                    (new_username, old_username)
+                )
+
+                # Manually update columns without FK constraints
+                # friendships.requester has no FK
+                cursor.execute(
+                    "UPDATE friendships SET requester = %s WHERE requester = %s",
+                    (new_username, old_username)
+                )
+
+                # email_verification_codes.username has no FK
+                cursor.execute(
+                    "UPDATE email_verification_codes SET username = %s WHERE username = %s",
+                    (new_username, old_username)
+                )
+
+                # Fix friendship row ordering where user1 >= user2 after rename
+                cursor.execute('''
+                    UPDATE friendships
+                    SET user1 = LEAST(user1, user2),
+                        user2 = GREATEST(user1, user2)
+                    WHERE user1 >= user2
+                ''')
+
+                # Re-add the CHECK constraint
+                cursor.execute(
+                    "ALTER TABLE friendships ADD CONSTRAINT friendships_check CHECK (user1 < user2)"
+                )
+
+                return True
+        except Exception as e:
+            print(f"Error changing username: {e}")
+            return False
+
     def verify_user_email(self, username: str) -> bool:
         """Mark user's email as verified."""
         try:
