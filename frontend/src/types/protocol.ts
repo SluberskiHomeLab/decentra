@@ -311,6 +311,8 @@ export type WsMessage =
   | WsMessageDeleted
   | WsReactionAdded
   | WsReactionRemoved
+  | WsInboundLicenseInfo
+  | WsInboundLicenseUpdated
   | WsVoiceChannelJoined
   | WsDirectCallStarted
   | WsUserJoinedVoice
@@ -624,4 +626,59 @@ export type WsServerEmojis = {
   type: 'server_emojis'
   server_id: string
   emojis: CustomEmoji[]
+}
+
+// ── License System ──────────────────────────────────────
+
+export interface LicenseFeatures {
+  voice_chat: boolean
+  file_uploads: boolean
+  webhooks: boolean
+  custom_emojis: boolean
+  audit_logs: boolean
+  sso: boolean
+}
+
+export interface LicenseLimits {
+  max_users: number
+  max_servers: number
+  max_channels_per_server: number
+  max_file_size_mb: number
+  max_messages_history: number
+}
+
+export interface LicenseInfo {
+  tier: string
+  features: LicenseFeatures
+  limits: LicenseLimits
+  customer?: {
+    name: string
+    email: string
+    company: string
+  }
+  expires_at?: string
+  is_admin: boolean
+}
+
+export interface WsOutboundGetLicenseInfo {
+  type: 'get_license_info'
+}
+
+export interface WsOutboundUpdateLicense {
+  type: 'update_license'
+  license_key: string
+}
+
+export interface WsOutboundRemoveLicense {
+  type: 'remove_license'
+}
+
+export interface WsInboundLicenseInfo {
+  type: 'license_info'
+  data: LicenseInfo
+}
+
+export interface WsInboundLicenseUpdated {
+  type: 'license_updated'
+  data: LicenseInfo
 }

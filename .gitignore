@@ -49,3 +49,7 @@ frontend/.vite/
 
 # Local LLM agent prompts/reports (keep out of repo)
 agents/
+
+# License keys
+tools/license/keys/*_private_key.pem
+server/.license

@@ -185,6 +185,18 @@ export class WsClient {
     this.send(payload)
   }
 
+  getLicenseInfo() {
+    this.send({ type: 'get_license_info' })
+  }
+
+  updateLicense(licenseKey: string) {
+    this.send({ type: 'update_license', license_key: licenseKey })
+  }
+
+  removeLicense() {
+    this.send({ type: 'remove_license' })
+  }
+
   close() {
     this.ws?.close()
     this.ws = null

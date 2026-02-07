@@ -584,17 +584,54 @@ class Database:
                     
                     # Add DM purge schedule column if it doesn't exist (migration)
                     cursor.execute('''
-                        DO $$ 
+                        DO $$
                         BEGIN
                             IF NOT EXISTS (
-                                SELECT 1 FROM information_schema.columns 
+                                SELECT 1 FROM information_schema.columns
                                 WHERE table_name = 'admin_settings' AND column_name = 'dm_purge_schedule'
                             ) THEN
                                 ALTER TABLE admin_settings ADD COLUMN dm_purge_schedule INTEGER DEFAULT 0;
                             END IF;
                         END $$;
                     ''')
-                    
+
+                    # Add license system columns if they don't exist (migration)
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'license_key'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN license_key TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'license_tier'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN license_tier VARCHAR(50) DEFAULT 'free';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'license_expires_at'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN license_expires_at TIMESTAMP;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'license_customer_name'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN license_customer_name VARCHAR(255) DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'license_customer_email'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN license_customer_email VARCHAR(255) DEFAULT '';
+                            END IF;
+                        END $$;
+                    ''')
+
                     # Server settings table
                     cursor.execute('''
                         CREATE TABLE IF NOT EXISTS server_settings (
@@ -1938,3 +1975,78 @@ class Database:
                 })
             
             return reactions_by_message
+
+    # License operations
+    def save_license_key(self, license_key: str, tier: str = 'free', expires_at=None, customer_name: str = '', customer_email: str = '') -> bool:
+        """Save license key and associated metadata to admin settings."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # Encrypt the license key before storing
+                encrypted_key = license_key
+                if license_key:
+                    try:
+                        encryption_manager = get_encryption_manager()
+                        encrypted_key = encryption_manager.encrypt(license_key)
+                    except RuntimeError as e:
+                        print(f"Error encrypting license key: {e}")
+                        return False
+                cursor.execute('''
+                    UPDATE admin_settings
+                    SET license_key = %s, license_tier = %s, license_expires_at = %s,
+                        license_customer_name = %s, license_customer_email = %s
+                    WHERE id = 1
+                ''', (encrypted_key, tier, expires_at, customer_name, customer_email))
+                return True
+        except Exception as e:
+            print(f"Error saving license key: {e}")
+            return False
+
+    def get_license_key(self) -> dict:
+        """Get license key and associated metadata from admin settings."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT license_key, license_tier, license_expires_at,
+                           license_customer_name, license_customer_email
+                    FROM admin_settings WHERE id = 1
+                ''')
+                row = cursor.fetchone()
+                if row:
+                    result = dict(row)
+                    # Decrypt the license key if present
+                    if result.get('license_key'):
+                        try:
+                            encryption_manager = get_encryption_manager()
+                            result['license_key'] = encryption_manager.decrypt(result['license_key'])
+                        except RuntimeError as e:
+                            print(f"Error decrypting license key: {e}")
+                            result['license_key'] = ''
+                    return {
+                        'license_key': result.get('license_key', ''),
+                        'tier': result.get('license_tier', 'free'),
+                        'expires_at': result.get('license_expires_at'),
+                        'customer_name': result.get('license_customer_name', ''),
+                        'customer_email': result.get('license_customer_email', '')
+                    }
+                return {}
+        except Exception as e:
+            print(f"Error getting license key: {e}")
+            return {}
+
+    def clear_license(self) -> bool:
+        """Clear all license data from admin settings."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE admin_settings
+                    SET license_key = '', license_tier = 'free', license_expires_at = NULL,
+                        license_customer_name = '', license_customer_email = ''
+                    WHERE id = 1
+                ''')
+                return True
+        except Exception as e:
+            print(f"Error clearing license: {e}")
+            return False

@@ -10,6 +10,7 @@ import base64
 import re
 from aiohttp import web
 import bcrypt
+from license_validator import check_limit
 
 # Database instance will be set by setup_api_routes
 db = None
@@ -394,6 +395,12 @@ async def api_upload_attachment(request):
         
         # Check file size
         max_size_mb = admin_settings.get('max_attachment_size_mb', 10)
+
+        # Apply license ceiling for file size
+        license_max_size = check_limit('max_file_size_mb')
+        if license_max_size != -1:
+            max_size_mb = min(max_size_mb, license_max_size) if max_size_mb > 0 else license_max_size
+
         max_size_bytes = max_size_mb * 1024 * 1024
         file_size = len(file_data)
         

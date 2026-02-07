@@ -26,6 +26,7 @@ from database import Database
 from api import setup_api_routes
 from email_utils import EmailSender
 from ssl_utils import generate_self_signed_cert, create_ssl_context
+from license_validator import license_validator, check_feature_access, check_limit, enforce_limit, DEFAULT_FEATURES, DEFAULT_LIMITS
 
 # Initialize database
 db = Database()
@@ -764,8 +765,17 @@ async def handler(websocket):
                 
                 # Check invite code requirement
                 all_users = db.get_all_users()
+
+                # Check license user limit
+                if not enforce_limit(len(all_users), 'max_users'):
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': f'User limit reached ({check_limit("max_users")}). Instance admin can upgrade the license.'
+                    }))
+                    continue
+
                 invite_data = db.get_invite_code(invite_code) if invite_code else None
-                
+
                 # Require invite if admin setting is enabled OR if users already exist (legacy behavior)
                 if (require_invite or all_users) and not invite_data:
                     await websocket.send_str(json.dumps({
@@ -1428,7 +1438,12 @@ async def handler(websocket):
                             # Get admin settings for server limits
                             admin_settings = db.get_admin_settings()
                             max_servers_per_user = admin_settings.get('max_servers_per_user', 100)
-                            
+
+                            # Apply license ceiling
+                            license_max_servers = check_limit('max_servers')
+                            if license_max_servers != -1:
+                                max_servers_per_user = min(max_servers_per_user, license_max_servers) if max_servers_per_user > 0 else license_max_servers
+
                             # Check if user has reached server limit (0 = unlimited)
                             if max_servers_per_user > 0:
                                 user_servers = db.get_user_servers(username)
@@ -2744,7 +2759,12 @@ async def handler(websocket):
                                 # Get admin settings for channel limits
                                 admin_settings = db.get_admin_settings()
                                 max_channels = admin_settings.get('max_channels_per_server', 50)
-                                
+
+                                # Apply license ceiling
+                                license_max_channels = check_limit('max_channels_per_server')
+                                if license_max_channels != -1:
+                                    max_channels = min(max_channels, license_max_channels) if max_channels > 0 else license_max_channels
+
                                 # Check if server has reached channel limit (0 = unlimited)
                                 if max_channels > 0:
                                     server_channels = db.get_server_channels(server_id)
@@ -2782,7 +2802,12 @@ async def handler(websocket):
                                 # Get admin settings for channel limits
                                 admin_settings = db.get_admin_settings()
                                 max_channels = admin_settings.get('max_channels_per_server', 50)
-                                
+
+                                # Apply license ceiling
+                                license_max_channels = check_limit('max_channels_per_server')
+                                if license_max_channels != -1:
+                                    max_channels = min(max_channels, license_max_channels) if max_channels > 0 else license_max_channels
+
                                 # Check if server has reached channel limit (0 = unlimited)
                                 if max_channels > 0:
                                     server_channels = db.get_server_channels(server_id)
@@ -2811,6 +2836,13 @@ async def handler(websocket):
                                 }))
                     
                     elif data.get('type') == 'join_voice_channel':
+                        if not check_feature_access('voice_chat'):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Voice chat requires a Professional or Enterprise license.'
+                            }))
+                            continue
+
                         server_id = data.get('server_id', '')
                         channel_id = data.get('channel_id', '')
                         
@@ -3348,6 +3380,13 @@ async def handler(websocket):
                     
                     # Custom emoji handlers
                     elif data.get('type') == 'upload_custom_emoji':
+                        if not check_feature_access('custom_emojis'):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Custom emojis require a Professional or Enterprise license.'
+                            }))
+                            continue
+
                         server_id = data.get('server_id', '')
                         emoji_name = data.get('name', '').strip()
                         image_data = data.get('image_data', '')
@@ -3660,6 +3699,13 @@ async def handler(websocket):
                                 }))
                     
                     elif data.get('type') == 'start_voice_call':
+                        if not check_feature_access('voice_chat'):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Voice chat requires a Professional or Enterprise license.'
+                            }))
+                            continue
+
                         # Direct voice call with a friend
                         friend_username = data.get('username', '').strip()
                         
@@ -3725,7 +3771,95 @@ async def handler(websocket):
                                 'type': 'voice_call_rejected',
                                 'from': username
                             }))
-                        
+
+                    elif data.get('type') == 'get_license_info':
+                        first_user = db.get_first_user()
+                        is_admin = (username == first_user)
+                        license_data = {
+                            'tier': license_validator.get_tier(),
+                            'features': {f: license_validator.get_feature_enabled(f) for f in DEFAULT_FEATURES},
+                            'limits': {l: license_validator.get_limit(l) for l in DEFAULT_LIMITS},
+                            'is_admin': is_admin,
+                        }
+                        if is_admin:
+                            customer_info = license_validator.get_customer_info()
+                            if customer_info:
+                                license_data['customer'] = customer_info
+                            else:
+                                # Fall back to the admin's own account info
+                                user_data = db.get_user(username)
+                                if user_data:
+                                    license_data['customer'] = {
+                                        'name': user_data.get('username', ''),
+                                        'email': user_data.get('email', ''),
+                                        'company': '',
+                                    }
+                            expiry = license_validator.get_expiry()
+                            if expiry:
+                                license_data['expires_at'] = expiry
+                        await websocket.send_str(json.dumps({
+                            'type': 'license_info',
+                            'data': license_data
+                        }))
+
+                    elif data.get('type') == 'update_license':
+                        first_user = db.get_first_user()
+                        if username != first_user:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Admin access required'
+                            }))
+                            continue
+
+                        license_key = data.get('license_key', '')
+                        result = license_validator.validate_license(license_key)
+                        if result.get('valid'):
+                            tier = license_validator.get_tier()
+                            expires_at = license_validator.get_expiry()
+                            customer_info = license_validator.get_customer_info()
+                            customer_name = customer_info.get('name', '')
+                            customer_email = customer_info.get('email', '')
+                            db.save_license_key(license_key, tier, expires_at, customer_name, customer_email)
+
+                            broadcast_data = {
+                                'tier': tier,
+                                'features': {f: license_validator.get_feature_enabled(f) for f in DEFAULT_FEATURES},
+                                'limits': {l: license_validator.get_limit(l) for l in DEFAULT_LIMITS},
+                                'is_admin': False,
+                            }
+                            await broadcast(json.dumps({
+                                'type': 'license_updated',
+                                'data': broadcast_data
+                            }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': result.get('error', 'Invalid license key')
+                            }))
+
+                    elif data.get('type') == 'remove_license':
+                        first_user = db.get_first_user()
+                        if username != first_user:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Admin access required'
+                            }))
+                            continue
+
+                        license_validator.clear()
+                        db.clear_license()
+
+                        broadcast_data = {
+                            'tier': 'free',
+                            'features': dict(DEFAULT_FEATURES),
+                            'limits': dict(DEFAULT_LIMITS),
+                            'is_admin': False,
+                        }
+                        await broadcast(json.dumps({
+                            'type': 'license_updated',
+                            'data': broadcast_data
+                        }))
+
                 except json.JSONDecodeError:
                     print("Invalid JSON received")
                 except Exception as e:
@@ -3954,6 +4088,54 @@ async def cleanup_old_messages_periodically():
             print(f"Error in message purge task: {e}")
 
 
+def load_license():
+    """Load and validate the Decentra license key at startup.
+
+    Checks (in order):
+    1. DECENTRA_LICENSE_KEY environment variable
+    2. server/.license file
+    3. Database (via db.get_license_key())
+    """
+    license_key = None
+
+    # 1. Environment variable
+    env_key = os.environ.get("DECENTRA_LICENSE_KEY")
+    if env_key:
+        license_key = env_key.strip()
+
+    # 2. .license file next to this script
+    if not license_key:
+        license_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".license")
+        try:
+            with open(license_file, "r", encoding="utf-8") as f:
+                file_key = f.read().strip()
+                if file_key:
+                    license_key = file_key
+        except (FileNotFoundError, OSError):
+            pass
+
+    # 3. Database
+    if not license_key:
+        try:
+            stored = db.get_license_key()
+            if stored and stored.get('license_key'):
+                license_key = stored['license_key']
+        except Exception:
+            pass
+
+    # Validate if we found a key
+    if license_key:
+        result = license_validator.validate_license(license_key)
+        if result.get('valid'):
+            tier = license_validator.get_tier()
+            expiry = license_validator.get_expiry() or "never"
+            print(f"License: {tier} tier (expires: {expiry})")
+        else:
+            print(f"License: invalid ({result.get('error', 'unknown error')})")
+    else:
+        print("License: free tier (no license key found)")
+
+
 async def main():
     """Start the HTTPS and WebSocket server."""
     print("Decentra Chat Server")
@@ -3971,7 +4153,10 @@ async def main():
     # Initialize database counters from existing data
     init_counters_from_db()
     print(f"Initialized counters from database (servers: {server_counter}, channels: {channel_counter}, dms: {dm_counter}, roles: {role_counter})")
-    
+
+    # Load and validate license key
+    load_license()
+
     # Create aiohttp application
     app = web.Application()
     app.router.add_get('/', http_handler)

@@ -30,6 +30,7 @@ services:
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - DECENTRA_ENCRYPTION_KEY=${DECENTRA_ENCRYPTION_KEY}
+      - DECENTRA_LICENSE_KEY=${DECENTRA_LICENSE_KEY:-}
     networks:
       - decentra-network
     restart: unless-stopped

@@ -7,6 +7,8 @@ import { useToastStore } from './store/toastStore'
 import { VoiceChat } from './lib/VoiceChat'
 import type { ChatContext } from './store/appStore'
 import type { Attachment, Reaction, Server, ServerInviteUsageLog, ServerMember, WsChatMessage, WsMessage } from './types/protocol'
+import { LicensePanel } from './components/admin/LicensePanel'
+import { useLicenseStore } from './store/licenseStore'
 import './App.css'
 
 // URL processing utilities
@@ -1124,6 +1126,13 @@ function ChatPage() {
           // ignore
         }
 
+        // Request license info
+        try {
+          wsClient.getLicenseInfo()
+        } catch {
+          // ignore
+        }
+
         // Re-request history for the currently selected context after re-auth.
         requestHistoryFor(useAppStore.getState().selectedContext)
       }
@@ -1317,6 +1326,13 @@ function ChatPage() {
 
       if (msg.type === 'admin_settings') {
         setAdminSettings(msg.settings || {})
+      }
+
+      if (msg.type === 'license_info') {
+        useLicenseStore.getState().setLicenseInfo(msg.data)
+      }
+      if (msg.type === 'license_updated') {
+        useLicenseStore.getState().setLicenseInfo(msg.data)
       }
 
       if (msg.type === 'settings_saved') {
@@ -3516,6 +3532,12 @@ function ChatPage() {
                           />
                         </label>
                       </div>
+                    </section>
+
+                    {/* License Management */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">License Management</h3>
+                      <LicensePanel />
                     </section>
                   </div>
                 )}
