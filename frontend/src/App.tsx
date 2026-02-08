@@ -2854,25 +2854,40 @@ function ChatPage() {
                           {/* Reactions display */}
                           {m.reactions && Array.isArray(m.reactions) && m.reactions.length > 0 && (
                             <div className="mt-2 flex flex-wrap gap-1.5">
-                              {m.reactions.map((reaction: Reaction, rIdx: number) => {
-                                const userReacted = init?.username && Array.isArray(reaction.users) && reaction.users.includes(init.username)
-                                return (
-                                  <button
-                                    key={rIdx}
-                                    type="button"
-                                    onClick={() => userReacted ? removeReaction(m.id, reaction.emoji) : addReaction(m.id, reaction.emoji, reaction.emoji_type)}
-                                    className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs border transition ${
-                                      userReacted
-                                        ? 'bg-sky-500/20 border-sky-500/40 text-sky-300'
-                                        : 'bg-slate-900/40 border-white/10 text-slate-300 hover:bg-slate-800/40'
-                                    }`}
-                                    title={Array.isArray(reaction.users) ? reaction.users.join(', ') : ''}
-                                  >
-                                    <span>{reaction.emoji}</span>
-                                    <span className="font-semibold">{reaction.count}</span>
-                                  </button>
-                                )
-                              })}
+                              {(() => {
+                                // Group reactions by emoji
+                                const reactionGroups = m.reactions.reduce((acc: any, reaction: Reaction) => {
+                                  if (!acc[reaction.emoji]) {
+                                    acc[reaction.emoji] = {
+                                      emoji: reaction.emoji,
+                                      emoji_type: reaction.emoji_type,
+                                      usernames: []
+                                    }
+                                  }
+                                  acc[reaction.emoji].usernames.push(reaction.username)
+                                  return acc
+                                }, {})
+                                
+                                return Object.values(reactionGroups).map((group: any, rIdx: number) => {
+                                  const userReacted = init?.username && group.usernames.includes(init.username)
+                                  return (
+                                    <button
+                                      key={rIdx}
+                                      type="button"
+                                      onClick={() => userReacted ? removeReaction(m.id, group.emoji) : addReaction(m.id, group.emoji, group.emoji_type)}
+                                      className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs border transition ${
+                                        userReacted
+                                          ? 'bg-sky-500/20 border-sky-500/40 text-sky-300'
+                                          : 'bg-slate-900/40 border-white/10 text-slate-300 hover:bg-slate-800/40'
+                                      }`}
+                                      title={group.usernames.join(', ')}
+                                    >
+                                      <span>{group.emoji}</span>
+                                      <span className="font-semibold">{group.usernames.length}</span>
+                                    </button>
+                                  )
+                                })
+                              })()}
                             </div>
                           )}
                           
