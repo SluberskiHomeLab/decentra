@@ -1332,7 +1332,9 @@ function ChatPage() {
         useLicenseStore.getState().setLicenseInfo(msg.data)
       }
       if (msg.type === 'license_updated') {
-        useLicenseStore.getState().setLicenseInfo(msg.data)
+        // The broadcast may contain partial license data (e.g., missing is_admin/customer/expires_at).
+        // Instead of overwriting the store with a partial payload, request a full license_info refresh.
+        wsClient.send({ type: 'get_license_info' })
       }
 
       if (msg.type === 'settings_saved') {
