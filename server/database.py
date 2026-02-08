@@ -837,7 +837,7 @@ class Database:
                     WHERE username = %s
                 ''', (new_email, username))
                 return cursor.rowcount > 0
-        except Exception:
+        except psycopg2.IntegrityError:
             return False  # Email unique constraint violation
 
     def change_username(self, old_username: str, new_username: str) -> bool:
