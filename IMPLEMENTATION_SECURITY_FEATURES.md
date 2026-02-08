@@ -117,7 +117,41 @@ CREATE TABLE password_reset_tokens (
 - Password reset completion page
 - Token validation page
 
-### 4. Delete Attachments Feature ✅
+### 4. Email Change Verification ✅
+
+**Status**: Fully implemented backend
+
+**What was done**:
+- Created WebSocket handler to verify email changes
+- Integrated with existing email verification code system
+- Added proper validation and error handling
+- Cleanup of verification codes after successful verification
+
+**Technical Details**:
+- Verification codes are 6 digits, expire after 15 minutes
+- Codes stored in `email_verification_codes` table
+- Codes validated against current email and username
+- Email marked as verified upon successful code submission
+- Automatic cleanup of expired verification codes
+
+**WebSocket Handlers**:
+- `change_email`: Change user's email and send verification code
+- `verify_email_change`: Verify new email with 6-digit code
+
+**Flow**:
+1. User changes email via `change_email` message
+2. Server generates 6-digit code and sends verification email
+3. Email marked as `email_verified = false` in database
+4. User submits code via `verify_email_change` message
+5. Server validates code and marks email as verified
+6. Verification code deleted after successful verification
+
+**Response Messages**:
+- `email_changed`: Sent after email is changed (email_verified = false)
+- `email_verified`: Sent after successful verification (email_verified = true)
+- `error`: Sent on validation failures
+
+### 5. Delete Attachments Feature ✅
 
 **Status**: Fully implemented backend
 
@@ -191,7 +225,13 @@ Comprehensive test suite created:
    - Password update
    - Token cleanup
 
-3. **test_attachment_deletion.py**
+3. **test_email_change_verification.py**
+   - Complete email change verification flow
+   - Invalid verification code handling
+   - Expired verification code handling
+   - Multiple email changes scenario
+
+4. **test_attachment_deletion.py**
    - Attachment creation
    - Deletion verification
    - Permission checks
