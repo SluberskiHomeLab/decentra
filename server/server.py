@@ -4120,8 +4120,9 @@ def load_license():
             stored = db.get_license_key()
             if stored and stored.get('license_key'):
                 license_key = stored['license_key']
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Warning: failed to load license key from database: {e}")
+            traceback.print_exc()
 
     # Validate if we found a key
     if license_key:
