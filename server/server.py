@@ -330,8 +330,11 @@ def create_message_object(username, msg_content, context, context_id, user_profi
     # Add message ID if provided
     if message_id is not None:
         msg_obj['id'] = message_id
-        # Add attachments if message has an ID
-        msg_obj['attachments'] = db.get_message_attachments(message_id)
+        # Only query attachments when we know this message is associated with them
+        if message_key:
+            msg_obj['attachments'] = db.get_message_attachments(message_id)
+        else:
+            msg_obj['attachments'] = []
     
     # Add messageKey if provided (for file attachment correlation)
     if message_key:
