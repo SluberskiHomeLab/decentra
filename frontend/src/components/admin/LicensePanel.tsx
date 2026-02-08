@@ -59,8 +59,8 @@ function LimitRow({ name, value }: { name: string; value: number }) {
   const isUnlimited = value === -1
   const displayValue = isUnlimited ? 'Unlimited' : value.toLocaleString()
 
-  const pct = 100 // Full bar for now (no usage data from server yet)
-  const barColor = isUnlimited ? 'bg-blue-500' : pct >= 90 ? 'bg-red-500' : pct >= 70 ? 'bg-yellow-500' : 'bg-green-500'
+  // Full bar for now (no usage data from server yet)
+  const barColor = isUnlimited ? 'bg-blue-500' : 'bg-red-500'
 
   return (
     <div className="rounded-md bg-[#202225] px-3 py-2">
