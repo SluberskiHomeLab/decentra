@@ -60,4 +60,5 @@ cp tools/license/keys/license_public_key.pem server/license_public_key.pem
 **Keep `keys/license_private_key.pem` secret.** Anyone with the private key can
 create valid license keys. Never commit it to version control or share it
 outside of trusted infrastructure. The `.gitignore` should already exclude
-`*.pem` files under `tools/license/keys/`.
+private key PEM files (for example, `keys/*_private_key.pem`) under
+`tools/license/keys/`, but public key files are intentionally tracked.
