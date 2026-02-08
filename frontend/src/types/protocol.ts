@@ -107,10 +107,10 @@ export type Attachment = {
 }
 
 export type Reaction = {
+  username: string
   emoji: string
   emoji_type: 'standard' | 'custom'
-  users: string[]
-  count: number
+  created_at: string
 }
 
 export type WsChatMessage = {
