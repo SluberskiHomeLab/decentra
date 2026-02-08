@@ -119,16 +119,27 @@ class LicenseValidator:
 
         # --- Split payload and signature ----------------------------------
         separator = b"||"
-        sep_index = raw.rfind(separator)
-        if sep_index == -1:
+        # The RSA signature has a fixed length of key_size // 8 bytes.
+        sig_len = self._public_key.key_size // 8
+        # Ensure there is enough data for "<payload><separator><signature>".
+        if len(raw) <= sig_len + len(separator):
             return {
                 "valid": False,
-                "error": "License key format is invalid (missing separator).",
+                "error": "License key format is invalid (too short).",
+                "license": None,
+            }
+
+        # The separator must appear immediately before the fixed-length signature.
+        sep_index = len(raw) - sig_len - len(separator)
+        if sep_index < 0 or raw[sep_index : sep_index + len(separator)] != separator:
+            return {
+                "valid": False,
+                "error": "License key format is invalid (missing or misplaced separator).",
                 "license": None,
             }
 
         json_bytes = raw[:sep_index]
-        signature = raw[sep_index + len(separator):]
+        signature = raw[sep_index + len(separator) :]
 
         # --- Verify RSA-PSS signature -------------------------------------
         try:
