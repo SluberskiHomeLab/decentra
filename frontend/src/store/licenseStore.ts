@@ -66,6 +66,7 @@ export const useLicenseStore = create<LicenseState>((set, get) => ({
       limits: { ...DEFAULT_LIMITS },
       customer: null,
       expiresAt: null,
-      loading: false,
+      isAdmin: false,
+      loading: true,
     }),
 }))
