@@ -1468,11 +1468,13 @@ function ChatPage() {
           friends: updateUsername(prev.friends),
           friend_requests_sent: updateUsername(prev.friend_requests_sent),
           friend_requests_received: updateUsername(prev.friend_requests_received),
-          dms: prev.dms?.map((dm: any) => ({
-            ...dm,
-            user1: dm.user1 === old_username ? new_username : dm.user1,
-            user2: dm.user2 === old_username ? new_username : dm.user2,
-          })) || [],
+          dms: prev.dms?.map((dm: any) => {
+            const updated = { ...dm }
+            if (updated.username === old_username) {
+              updated.username = new_username
+            }
+            return updated
+          }) || [],
         })
       }
 
