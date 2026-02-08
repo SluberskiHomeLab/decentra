@@ -3114,6 +3114,60 @@ async def handler(websocket):
                                 'message': 'Email address already in use'
                             }))
 
+                    elif data.get('type') == 'verify_email_change':
+                        # Handle verification of changed email
+                        code = data.get('code', '').strip()
+                        
+                        # Validate verification code format (must be exactly 6 digits)
+                        if not code or not code.isdigit() or len(code) != 6:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid verification code format'
+                            }))
+                            continue
+                        
+                        # Get user's current email
+                        user = db.get_user(username)
+                        if not user:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'User not found'
+                            }))
+                            continue
+                        
+                        email = user.get('email')
+                        if not email:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'No email associated with this account'
+                            }))
+                            continue
+                        
+                        # Verify the code
+                        verification_data = db.get_email_verification_code(email, username)
+                        if not verification_data or verification_data['code'] != code:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid or expired verification code'
+                            }))
+                            continue
+                        
+                        # Mark email as verified
+                        if db.verify_user_email(username):
+                            # Clean up verification code
+                            db.delete_email_verification_code(email, username)
+                            
+                            await websocket.send_str(json.dumps({
+                                'type': 'email_verified',
+                                'email': email,
+                                'email_verified': True
+                            }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Failed to verify email'
+                            }))
+
                     elif data.get('type') == 'change_username':
                         new_username = data.get('new_username', '').strip()
                         password = data.get('password', '')
