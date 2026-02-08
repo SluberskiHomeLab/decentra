@@ -895,6 +895,12 @@ class Database:
                     (new_username, old_username)
                 )
 
+                # If no user was updated, restore the constraint and report failure
+                if cursor.rowcount == 0:
+                    cursor.execute(
+                        "ALTER TABLE friendships ADD CONSTRAINT friendships_check CHECK (user1 < user2)"
+                    )
+                    return False
                 # Manually update columns without FK constraints
                 # friendships.requester has no FK
                 cursor.execute(
