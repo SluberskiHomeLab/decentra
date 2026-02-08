@@ -3208,16 +3208,17 @@ async def handler(websocket):
                         # Handle password reset request from logged-in user
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Processing password reset for authenticated user: {username}")
                         try:
-                            identifier = data.get('identifier', '').strip() or username
-                            print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: identifier={identifier}")
+                            # For authenticated users, always rate limit by their actual account
+                            rate_limit_key = username
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: password reset rate_limit_key={rate_limit_key}")
                             
                             # Check rate limiting to prevent abuse
-                            if not check_password_reset_rate_limit(identifier):
+                            if not check_password_reset_rate_limit(rate_limit_key):
                                 await websocket.send_str(json.dumps({
                                     'type': 'error',
                                     'message': 'Too many password reset requests. Please try again later.'
                                 }))
-                                print(f"[{datetime.now().strftime('%H:%M:%S')}] Rate limit exceeded for password reset: {identifier}")
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] Rate limit exceeded for password reset: {rate_limit_key}")
                                 continue
                             
                             print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Rate limit passed")
