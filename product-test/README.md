@@ -16,6 +16,7 @@ cd product-test
 python3 test_ssl.py
 python3 test_https_server.py
 python3 test_database.py
+python3 test_email_change_verification.py
 # ... etc
 ```
 
@@ -34,7 +35,8 @@ cd product-test && python3 test_ssl.py
 - `test_auth_workflow.py` - Authentication workflow tests
 - `test_custom_emojis_reactions.py` - Custom emoji and reactions tests
 - `test_database.py` - Database functionality tests
-- `test_email_verification.py` - Email verification tests
+- `test_email_verification.py` - Email verification tests (signup flow)
+- `test_email_change_verification.py` - Email change verification tests
 - `test_encryption_key_required.py` - Encryption key validation tests
 - `test_file_attachments.py` - File attachment tests
 - `test_https_server.py` - HTTPS server tests
