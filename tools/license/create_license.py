@@ -155,7 +155,10 @@ def create_license(
         hashes.SHA256(),
     )
 
-    license_key = base64.b64encode(json_bytes + b"||" + signature).decode("ascii")
+    # Encode payload and signature separately to avoid ambiguous byte delimiters.
+    json_b64 = base64.b64encode(json_bytes).decode("ascii")
+    signature_b64 = base64.b64encode(signature).decode("ascii")
+    license_key = json_b64 + "." + signature_b64
     return license_key, license_data
 
 
