@@ -249,6 +249,12 @@ export type WsEmailChanged = {
   email_verified: boolean
 }
 
+export type WsEmailVerified = {
+  type: 'email_verified'
+  email: string
+  email_verified: boolean
+}
+
 export type WsUsernameChanged = {
   type: 'username_changed'
   old_username: string
@@ -324,6 +330,7 @@ export type WsMessage =
   | WsAvatarUpdated
   | WsNotificationModeUpdated
   | WsEmailChanged
+  | WsEmailVerified
   | WsUsernameChanged
   | WsUserRenamed
   | WsPasswordResetRequested
