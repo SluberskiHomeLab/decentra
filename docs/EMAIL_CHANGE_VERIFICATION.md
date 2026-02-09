@@ -245,5 +245,5 @@ function verifyEmail(code) {
 - Email verification is only sent if SMTP is configured and `require_email_verification` is enabled in admin settings
 - If SMTP is not configured, email is changed but remains unverified
 - Users can change their email multiple times; each change generates a new verification code
-- Verification codes are tied to a specific email address: a code generated for a previous email is not valid for a different email, but remains usable for that previous email until it expires (for example, if the user changes back to that email)
-- **All verification codes for a user are deleted after successful verification**, preventing reuse of old codes from previous email changes
+- Verification codes are tied to a specific email address until successful verification
+- **All verification codes for a user are deleted after successful verification**, preventing reuse of old codes from previous email changes (even if the user changes back to a previous email)
