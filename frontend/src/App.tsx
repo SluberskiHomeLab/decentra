@@ -413,9 +413,6 @@ function LoginPage() {
               >
                 Forgot Password?
               </button>
-              <a className="text-slate-300 hover:text-slate-200" href="/static/login.html">
-                Legacy Login
-              </a>
               <button
                 type="button"
                 className="text-slate-300 hover:text-slate-200"

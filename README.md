@@ -248,10 +248,6 @@ The application uses PostgreSQL for persistent data storage:
 - **Docker Volume**: Data stored in `decentra-data` volume for persistence
 - **Schema**: Automatically initialized on first run with all required tables
 
-### Legacy Terminal Client (`client/`)
-
-The terminal-based client is still available for backwards compatibility but is deprecated in favor of the web interface.
-
 ### Configuration
 
 The server runs on port 8765 by default and serves both HTTPS and WebSocket connections with a self-signed SSL certificate for improved local security.
@@ -628,22 +624,25 @@ For real-time messaging and updates, desktop applications should use the WebSock
 ```
 decentra/
 ├── server/
-│   ├── server.py          # HTTP and WebSocket server
-│   ├── database.py        # SQLite database layer
+│   ├── server.py          # WebSocket and HTTP server
+│   ├── database.py        # PostgreSQL database layer
 │   ├── api.py             # REST API endpoints
-│   ├── static/            # Web client files
-│   │   ├── index.html     # Login/signup page
-│   │   ├── chat.html      # Chat interface
-│   │   ├── styles.css     # Application styles
-│   │   ├── auth.js        # Authentication logic
-│   │   ├── chat.js        # Chat and WebSocket client
-│   │   └── voice.js       # WebRTC voice chat
+│   ├── encryption_utils.py # Message encryption
+│   ├── email_utils.py     # Email verification
+│   ├── ssl_utils.py       # SSL certificate generation
+│   ├── license_validator.py # License validation
 │   ├── Dockerfile         # Server container config
 │   └── requirements.txt   # Server dependencies
-├── client/                # Legacy terminal client (deprecated)
-│   ├── client.py          
-│   ├── Dockerfile         
-│   └── requirements.txt   
+├── frontend/              # React + TypeScript frontend
+│   ├── src/
+│   │   ├── App.tsx        # Main application component
+│   │   ├── api/           # WebSocket client
+│   │   ├── auth/          # Authentication storage
+│   │   ├── store/         # Zustand state management
+│   │   └── types/         # TypeScript type definitions
+│   ├── public/            # Static assets
+│   ├── Dockerfile         # Frontend container config
+│   └── package.json       # Frontend dependencies
 ├── docker-compose.yml     # Docker orchestration with volumes
 ├── API.md                 # REST API documentation
 ├── .dockerignore         # Files to exclude from Docker builds
@@ -674,8 +673,6 @@ docker-compose build --no-cache
 ```bash
 docker buildx prune -a
 ```
-
-**Note**: The Dockerfiles now pin the base image to a specific digest to prevent cache-related issues. If you need to update the base image, you'll need to update the digest in both `server/Dockerfile` and `client/Dockerfile`.
 
 ### Other Common Issues
 
