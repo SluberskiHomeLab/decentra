@@ -4179,6 +4179,77 @@ async def handler(websocket):
                             'data': broadcast_data
                         }))
 
+                    elif data.get('type') == 'force_license_checkin':
+                        from instance_fingerprint import generate_instance_fingerprint
+                        from datetime import datetime, timezone
+
+                        first_user = db.get_first_user()
+                        if username != first_user:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Admin access required'
+                            }))
+                            continue
+
+                        # Get license key from database
+                        stored = db.get_license_key()
+                        if not stored or not stored.get('license_key'):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'No license key configured'
+                            }))
+                            continue
+
+                        license_key = stored['license_key']
+
+                        # Get or generate instance fingerprint
+                        settings = db.get_admin_settings()
+                        instance_fingerprint = settings.get('instance_fingerprint')
+
+                        if not instance_fingerprint:
+                            instance_fingerprint = generate_instance_fingerprint()
+                            db.update_admin_settings({'instance_fingerprint': instance_fingerprint})
+
+                        # Perform check-in
+                        try:
+                            checkin_result = await license_validator.perform_server_checkin(
+                                license_key=license_key,
+                                instance_fingerprint=instance_fingerprint,
+                                app_version="1.0.0"
+                            )
+
+                            if checkin_result["success"] and checkin_result["valid"]:
+                                # Update last check timestamp
+                                db.update_admin_settings({
+                                    'last_license_check_at': datetime.now(timezone.utc)
+                                })
+
+                                await websocket.send_str(json.dumps({
+                                    'type': 'license_checkin_success',
+                                    'message': 'License check-in successful',
+                                    'data': {
+                                        'license_id': checkin_result["server_response"].get('license_id'),
+                                        'last_check_at': datetime.now(timezone.utc).isoformat()
+                                    }
+                                }))
+                            elif checkin_result["success"] and not checkin_result["valid"]:
+                                # License revoked
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': f'License check-in failed: {checkin_result.get("error", "Unknown error")}'
+                                }))
+                            else:
+                                # Network error or server issue
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': f'License check-in failed: {checkin_result.get("error", "Unknown error")}'
+                                }))
+                        except Exception as e:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': f'License check-in error: {str(e)}'
+                            }))
+
                 except json.JSONDecodeError:
                     print("Invalid JSON received")
                 except Exception as e:
@@ -4330,20 +4401,32 @@ async def cleanup_old_messages_periodically():
             print(f"Error in message purge task: {e}")
 
 
-def load_license():
-    """Load and validate the Decentra license key at startup.
+async def load_license():
+    """
+    Load and validate the Decentra license key at startup.
+
+    Performs both offline validation (RSA signature) and online check-in
+    to the licensing server if needed.
 
     Checks (in order):
     1. DECENTRA_LICENSE_KEY environment variable
     2. server/.license file
     3. Database (via db.get_license_key())
     """
+    from instance_fingerprint import generate_instance_fingerprint
+    from datetime import datetime, timezone
+
+    print("=" * 50)
+    print("License Validation")
+    print("=" * 50)
+
     license_key = None
 
     # 1. Environment variable
     env_key = os.environ.get("DECENTRA_LICENSE_KEY")
     if env_key:
         license_key = env_key.strip()
+        print("License key source: environment variable")
 
     # 2. .license file next to this script
     if not license_key:
@@ -4353,6 +4436,7 @@ def load_license():
                 file_key = f.read().strip()
                 if file_key:
                     license_key = file_key
+                    print("License key source: .license file")
         except (FileNotFoundError, OSError):
             pass
 
@@ -4362,21 +4446,128 @@ def load_license():
             stored = db.get_license_key()
             if stored and stored.get('license_key'):
                 license_key = stored['license_key']
+                print("License key source: database")
         except Exception as e:
             print(f"Warning: failed to load license key from database: {e}")
             traceback.print_exc()
 
     # Validate if we found a key
-    if license_key:
-        result = license_validator.validate_license(license_key)
-        if result.get('valid'):
-            tier = license_validator.get_tier()
-            expiry = license_validator.get_expiry() or "never"
-            print(f"License: {tier} tier (expires: {expiry})")
-        else:
-            print(f"License: invalid ({result.get('error', 'unknown error')})")
-    else:
+    if not license_key:
         print("License: Community tier (no license key found)")
+        print("=" * 50)
+        return
+
+    # Step 1: Validate RSA signature offline (existing logic)
+    result = license_validator.validate_license(license_key)
+
+    if not result.get('valid'):
+        print(f"License: invalid ({result.get('error', 'unknown error')})")
+        print("License: Community tier (invalid license)")
+        print("=" * 50)
+        # Update database to reflect invalid license
+        try:
+            db.update_admin_settings({
+                'license_tier': 'community',
+                'license_expires_at': None
+            })
+        except Exception as e:
+            print(f"Warning: Failed to update admin settings: {e}")
+        return
+
+    tier = license_validator.get_tier()
+    expiry = license_validator.get_expiry() or "never"
+    print(f"License signature valid: {tier} tier (expires: {expiry})")
+
+    # Step 2: Check if we need to perform server check-in
+    try:
+        settings = db.get_admin_settings()
+        last_check_at = settings.get('last_license_check_at')
+        grace_period_days = settings.get('license_check_grace_period_days', 7)
+        instance_fingerprint = settings.get('instance_fingerprint')
+
+        # Generate fingerprint if not exists
+        if not instance_fingerprint:
+            instance_fingerprint = generate_instance_fingerprint()
+            db.update_admin_settings({'instance_fingerprint': instance_fingerprint})
+            print(f"Generated instance fingerprint")
+
+        # Check if we need to contact the server
+        if license_validator.should_perform_checkin(last_check_at):
+            print("Performing license server check-in (30 days since last check)...")
+
+            checkin_result = await license_validator.perform_server_checkin(
+                license_key=license_key,
+                instance_fingerprint=instance_fingerprint,
+                app_version="1.0.0"  # Get from package.json or version file
+            )
+
+            if checkin_result["success"]:
+                # Server responded
+                if checkin_result["valid"]:
+                    # License is valid - update last check timestamp
+                    db.update_admin_settings({
+                        'last_license_check_at': datetime.now(timezone.utc)
+                    })
+                    print("✓ License server check-in successful - license is valid")
+                else:
+                    # License was revoked or invalid
+                    error_msg = checkin_result.get("error", "Unknown error")
+                    print(f"✗ License REVOKED by server: {error_msg}")
+                    print("License: Community tier (license revoked)")
+
+                    # Revoke the license locally
+                    db.update_admin_settings({
+                        'license_key': '',
+                        'license_tier': 'community',
+                        'license_expires_at': None,
+                        'license_customer_name': '',
+                        'license_customer_email': ''
+                    })
+
+                    # Clear from validator
+                    license_validator.clear()
+            else:
+                # Server check-in failed (network error, timeout, etc.)
+                if license_validator.is_in_grace_period(last_check_at, grace_period_days):
+                    days_since = (
+                        (datetime.now(timezone.utc) - last_check_at).days
+                        if last_check_at else 0
+                    )
+                    days_remaining = (30 + grace_period_days) - days_since
+                    print(
+                        f"⚠ License server check-in failed: {checkin_result['error']}"
+                    )
+                    print(
+                        f"⚠ Continuing with cached license (grace period: {days_remaining} days remaining)"
+                    )
+                else:
+                    print(
+                        "✗ License server check-in failed and grace period expired"
+                    )
+                    print("License: Community tier (grace period expired)")
+
+                    # Grace period expired - revoke license
+                    db.update_admin_settings({
+                        'license_key': '',
+                        'license_tier': 'community',
+                        'license_expires_at': None
+                    })
+                    license_validator.clear()
+        else:
+            days_since_check = (
+                (datetime.now(timezone.utc) - last_check_at).days
+                if last_check_at else 0
+            )
+            print(
+                f"License server check-in not needed "
+                f"({days_since_check} days since last check, threshold: 30 days)"
+            )
+
+    except Exception as e:
+        print(f"Warning: Failed to perform license check-in: {e}")
+        traceback.print_exc()
+
+    print("=" * 50)
 
 
 async def main():
@@ -4398,7 +4589,7 @@ async def main():
     print(f"Initialized counters from database (servers: {server_counter}, channels: {channel_counter}, dms: {dm_counter}, roles: {role_counter})")
 
     # Load and validate license key
-    load_license()
+    await load_license()
 
     # Create aiohttp application
     app = web.Application()

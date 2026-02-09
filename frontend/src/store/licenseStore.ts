@@ -9,6 +9,9 @@ interface LicenseState {
   expiresAt: string | null
   isAdmin: boolean
   loading: boolean
+  lastCheckAt: string | null
+  isInGracePeriod: boolean
+  graceDaysRemaining: number | null
 
   setLicenseInfo: (info: LicenseInfo) => void
   hasFeature: (name: keyof LicenseFeatures) => boolean
@@ -43,6 +46,9 @@ export const useLicenseStore = create<LicenseState>((set, get) => ({
   expiresAt: null,
   isAdmin: false,
   loading: true,
+  lastCheckAt: null,
+  isInGracePeriod: false,
+  graceDaysRemaining: null,
 
   setLicenseInfo: (info) =>
     set({
@@ -52,6 +58,9 @@ export const useLicenseStore = create<LicenseState>((set, get) => ({
       customer: info.customer || null,
       expiresAt: info.expires_at || null,
       isAdmin: info.is_admin,
+      lastCheckAt: info.last_check_at || null,
+      isInGracePeriod: info.is_in_grace_period || false,
+      graceDaysRemaining: info.grace_days_remaining || null,
       loading: false,
     }),
 
@@ -68,5 +77,8 @@ export const useLicenseStore = create<LicenseState>((set, get) => ({
       expiresAt: null,
       isAdmin: false,
       loading: true,
+      lastCheckAt: null,
+      isInGracePeriod: false,
+      graceDaysRemaining: null,
     }),
 }))

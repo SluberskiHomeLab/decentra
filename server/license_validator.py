@@ -16,8 +16,11 @@ import base64
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
+
+import aiohttp
+import asyncio
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
@@ -77,6 +80,8 @@ class LicenseValidator:
     """
     Validates and caches a Decentra license key.
 
+    Supports both offline RSA validation and online check-ins to a licensing server.
+
     Usage::
 
         validator = LicenseValidator()
@@ -85,10 +90,14 @@ class LicenseValidator:
             print(validator.get_tier())
     """
 
-    def __init__(self) -> None:
+    def __init__(self, license_server_url: Optional[str] = None) -> None:
         self._public_key = _load_public_key()
         self._license_data: Optional[Dict[str, Any]] = None
         self._valid: bool = False
+        self._license_server_url = license_server_url or os.getenv(
+            "LICENSE_SERVER_URL",
+            "https://licenses.decentra.example.com"
+        )
 
     # ----- core validation ------------------------------------------------
 
@@ -244,6 +253,148 @@ class LicenseValidator:
         """Remove the cached license (revert to free-tier defaults)."""
         self._license_data = None
         self._valid = False
+
+    # ----- server check-in methods ----------------------------------------
+
+    async def perform_server_checkin(
+        self,
+        license_key: str,
+        instance_fingerprint: str,
+        app_version: str = "1.0.0"
+    ) -> Dict[str, Any]:
+        """
+        Contact the licensing server to verify the license.
+
+        Returns:
+            dict with keys: success (bool), valid (bool), error (str or None),
+            server_response (dict or None)
+        """
+        from instance_fingerprint import get_platform_info
+
+        platform_info = get_platform_info()
+
+        payload = {
+            "license_key": license_key,
+            "instance_fingerprint": instance_fingerprint,
+            "hostname": platform_info.get("hostname"),
+            "platform": platform_info.get("platform"),
+            "app_version": app_version
+        }
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    f"{self._license_server_url}/api/v1/verify",
+                    json=payload,
+                    headers={"Content-Type": "application/json"}
+                ) as response:
+                    response_data = await response.json()
+
+                    if response.status == 200:
+                        logger.info(
+                            f"License check-in successful: {response_data.get('license_id')}"
+                        )
+                        return {
+                            "success": True,
+                            "valid": True,
+                            "error": None,
+                            "server_response": response_data
+                        }
+                    elif response.status == 403:
+                        # License revoked or installation limit exceeded
+                        logger.warning(
+                            f"License validation failed: {response_data.get('message')}"
+                        )
+                        return {
+                            "success": True,
+                            "valid": False,
+                            "error": response_data.get("message"),
+                            "server_response": response_data
+                        }
+                    elif response.status == 404:
+                        # License not found in server database
+                        logger.warning(
+                            "License not found on licensing server (may be offline-only)"
+                        )
+                        return {
+                            "success": True,
+                            "valid": True,  # Allow offline licenses
+                            "error": "License not registered on server",
+                            "server_response": response_data
+                        }
+                    else:
+                        logger.error(f"Unexpected response from license server: {response.status}")
+                        return {
+                            "success": False,
+                            "valid": None,
+                            "error": f"Server returned {response.status}",
+                            "server_response": None
+                        }
+        except asyncio.TimeoutError:
+            logger.warning("License server check-in timed out")
+            return {
+                "success": False,
+                "valid": None,
+                "error": "Connection timeout",
+                "server_response": None
+            }
+        except aiohttp.ClientError as e:
+            logger.warning(f"License server check-in failed: {e}")
+            return {
+                "success": False,
+                "valid": None,
+                "error": str(e),
+                "server_response": None
+            }
+        except Exception as e:
+            logger.error(f"Unexpected error during license check-in: {e}")
+            return {
+                "success": False,
+                "valid": None,
+                "error": str(e),
+                "server_response": None
+            }
+
+    def should_perform_checkin(self, last_check_at: Optional[datetime]) -> bool:
+        """
+        Determine if a server check-in is needed.
+
+        Check-in is needed if:
+        - Never checked in before (last_check_at is None)
+        - More than 30 days since last check-in
+        """
+        if last_check_at is None:
+            return True
+
+        if last_check_at.tzinfo is None:
+            last_check_at = last_check_at.replace(tzinfo=timezone.utc)
+
+        days_since_check = (datetime.now(timezone.utc) - last_check_at).days
+        return days_since_check >= 30
+
+    def is_in_grace_period(
+        self,
+        last_check_at: Optional[datetime],
+        grace_period_days: int = 7
+    ) -> bool:
+        """
+        Check if we're still within the grace period for failed check-ins.
+
+        Grace period starts AFTER the 30-day check-in window expires.
+        Total allowed offline time: 30 days (normal) + 7 days (grace) = 37 days
+        """
+        if last_check_at is None:
+            # No previous check-in - we're in grace period
+            return True
+
+        if last_check_at.tzinfo is None:
+            last_check_at = last_check_at.replace(tzinfo=timezone.utc)
+
+        days_since_check = (datetime.now(timezone.utc) - last_check_at).days
+        max_allowed_days = 30 + grace_period_days  # 37 days total
+
+        return days_since_check < max_allowed_days
 
 
 # ---------------------------------------------------------------------------

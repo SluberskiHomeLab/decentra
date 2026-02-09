@@ -652,6 +652,30 @@ class Database:
                             ) THEN
                                 ALTER TABLE admin_settings ADD COLUMN license_customer_email VARCHAR(255) DEFAULT '';
                             END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'last_license_check_at'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN last_license_check_at TIMESTAMP;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'license_server_url'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN license_server_url TEXT DEFAULT 'https://licenses.decentra.example.com';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'license_check_grace_period_days'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN license_check_grace_period_days INTEGER DEFAULT 7;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'instance_fingerprint'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN instance_fingerprint TEXT;
+                            END IF;
                         END $$;
                     ''')
 

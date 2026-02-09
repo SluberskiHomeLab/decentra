@@ -81,11 +81,12 @@ function LimitRow({ name, value }: { name: string; value: number }) {
 }
 
 export function LicensePanel() {
-  const { tier, features, limits, customer, expiresAt, isAdmin, loading } = useLicenseStore()
+  const { tier, features, limits, customer, expiresAt, isAdmin, loading, lastCheckAt, isInGracePeriod, graceDaysRemaining } = useLicenseStore()
   const [licenseKey, setLicenseKey] = useState('')
   const [activating, setActivating] = useState(false)
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; message: string } | null>(null)
   const [confirmRemove, setConfirmRemove] = useState(false)
+  const [checkingIn, setCheckingIn] = useState(false)
 
   const handleActivate = () => {
     const trimmed = licenseKey.trim()
@@ -119,6 +120,27 @@ export function LicensePanel() {
     }
     setConfirmRemove(false)
   }
+
+  const handleForceCheckin = () => {
+    setCheckingIn(true)
+    setFeedback(null)
+    try {
+      wsClient.forceLicenseCheckin()
+      setFeedback({ kind: 'success', message: 'License check-in initiated...' })
+    } catch {
+      setFeedback({ kind: 'error', message: 'Failed to initiate check-in. Check your connection.' })
+    } finally {
+      setTimeout(() => setCheckingIn(false), 2000)
+    }
+  }
+
+  const daysSinceCheck = lastCheckAt
+    ? Math.floor((Date.now() - new Date(lastCheckAt).getTime()) / (1000 * 60 * 60 * 24))
+    : null
+
+  const nextCheckDue = lastCheckAt
+    ? new Date(new Date(lastCheckAt).getTime() + 30 * 24 * 60 * 60 * 1000)
+    : null
 
   if (loading) {
     return (
@@ -162,6 +184,52 @@ export function LicensePanel() {
               <p><span className="text-[#72767d]">Email:</span> {customer.email}</p>
               <p><span className="text-[#72767d]">Company:</span> {customer.company}</p>
             </div>
+          </div>
+        )}
+
+        {/* License Server Check-in Status */}
+        {isAdmin && tier.toLowerCase() !== 'community' && (
+          <div className="mt-4 rounded-md bg-[#202225] p-3">
+            <div className="flex items-start justify-between mb-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-[#72767d]">Server Check-in</h3>
+              <button
+                className="text-xs text-[#5865f2] hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={handleForceCheckin}
+                disabled={checkingIn}
+              >
+                {checkingIn ? 'Checking...' : 'Force Check-in'}
+              </button>
+            </div>
+            {lastCheckAt ? (
+              <div className="space-y-1 text-sm text-[#dcddde]">
+                <p>
+                  <span className="text-[#72767d]">Last Check:</span>{' '}
+                  {new Date(lastCheckAt).toLocaleDateString()} ({daysSinceCheck} days ago)
+                </p>
+                {nextCheckDue && (
+                  <p>
+                    <span className="text-[#72767d]">Next Check:</span>{' '}
+                    {daysSinceCheck! < 30 ? (
+                      <span className="text-green-400">{nextCheckDue.toLocaleDateString()}</span>
+                    ) : (
+                      <span className="text-yellow-400">Due now</span>
+                    )}
+                  </p>
+                )}
+                {isInGracePeriod && graceDaysRemaining !== null && graceDaysRemaining < 7 && (
+                  <div className="mt-2 rounded-md bg-yellow-500/10 border border-yellow-500/30 px-2 py-1.5">
+                    <p className="text-xs text-yellow-400 flex items-center gap-1.5">
+                      <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                      Unable to reach licensing server. Grace period: {graceDaysRemaining} days remaining
+                    </p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-[#72767d]">Never checked in with licensing server</p>
+            )}
           </div>
         )}
       </div>

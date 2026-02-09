@@ -725,6 +725,9 @@ export interface LicenseInfo {
   }
   expires_at?: string
   is_admin: boolean
+  last_check_at?: string
+  is_in_grace_period?: boolean
+  grace_days_remaining?: number
 }
 
 export interface WsOutboundGetLicenseInfo {

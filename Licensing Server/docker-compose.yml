@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  licensing-api:
+    build: .
+    container_name: decentra-licensing-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://license_user:${DB_PASSWORD}@db:5432/decentra_licenses
+      - ADMIN_API_TOKEN=${ADMIN_API_TOKEN}
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - licensing-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  db:
+    image: postgres:15-alpine
+    container_name: decentra-licensing-db
+    environment:
+      - POSTGRES_DB=decentra_licenses
+      - POSTGRES_USER=license_user
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    networks:
+      - licensing-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U license_user -d decentra_licenses"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  nginx:
+    image: nginx:alpine
+    container_name: decentra-licensing-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - licensing-api
+    restart: unless-stopped
+    networks:
+      - licensing-network
+
+volumes:
+  postgres_data:
+
+networks:
+  licensing-network:
+    driver: bridge

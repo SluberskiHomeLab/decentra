@@ -207,6 +207,10 @@ export class WsClient {
     this.send({ type: 'remove_license' })
   }
 
+  forceLicenseCheckin() {
+    this.send({ type: 'force_license_checkin' })
+  }
+
   close() {
     this.ws?.close()
     this.ws = null
