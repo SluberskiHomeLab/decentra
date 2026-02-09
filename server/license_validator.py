@@ -30,20 +30,22 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_FEATURES: Dict[str, bool] = {
-    "voice_chat": False,
+    "voice_chat": True,
     "file_uploads": True,
-    "webhooks": False,
-    "custom_emojis": False,
-    "audit_logs": False,
+    "webhooks": True,
+    "custom_emojis": True,
+    "audit_logs": True,
     "sso": False,
 }
 
 DEFAULT_LIMITS: Dict[str, int] = {
-    "max_users": 50,
-    "max_servers": 1,
-    "max_channels_per_server": 10,
+    "max_users": 30,
+    "max_servers": 2,
+    "max_channels_per_server": 30,
     "max_file_size_mb": 10,
-    "max_messages_history": 10000,
+    "max_messages_history": -1,
+    "video_quality": "720p",
+    "screensharing_quality": "720p",
 }
 
 # Path to the public key shipped with the server
@@ -217,10 +219,10 @@ class LicenseValidator:
         )
 
     def get_tier(self) -> str:
-        """Return the tier string (``'free'`` when no license is loaded)."""
+        """Return the tier string (``'community'`` when no license is loaded)."""
         if self._license_data is None:
-            return "free"
-        return self._license_data.get("tier", "free")
+            return "community"
+        return self._license_data.get("tier", "community")
 
     def get_customer_info(self) -> Dict[str, str]:
         """Return the customer block or an empty dict."""

@@ -632,7 +632,7 @@ class Database:
                                 SELECT 1 FROM information_schema.columns
                                 WHERE table_name = 'admin_settings' AND column_name = 'license_tier'
                             ) THEN
-                                ALTER TABLE admin_settings ADD COLUMN license_tier VARCHAR(50) DEFAULT 'free';
+                                ALTER TABLE admin_settings ADD COLUMN license_tier VARCHAR(50) DEFAULT 'community';
                             END IF;
                             IF NOT EXISTS (
                                 SELECT 1 FROM information_schema.columns
@@ -2253,7 +2253,7 @@ class Database:
             return mentions_by_message
 
     # License operations
-    def save_license_key(self, license_key: str, tier: str = 'free', expires_at=None, customer_name: str = '', customer_email: str = '') -> bool:
+    def save_license_key(self, license_key: str, tier: str = 'community', expires_at=None, customer_name: str = '', customer_email: str = '') -> bool:
         """Save license key and associated metadata to admin settings."""
         try:
             with self.get_connection() as conn:
@@ -2301,7 +2301,7 @@ class Database:
                             result['license_key'] = ''
                     return {
                         'license_key': result.get('license_key', ''),
-                        'tier': result.get('license_tier', 'free'),
+                        'tier': result.get('license_tier', 'community'),
                         'expires_at': result.get('license_expires_at'),
                         'customer_name': result.get('license_customer_name', ''),
                         'customer_email': result.get('license_customer_email', '')
@@ -2318,7 +2318,7 @@ class Database:
                 cursor = conn.cursor()
                 cursor.execute('''
                     UPDATE admin_settings
-                    SET license_key = '', license_tier = 'free', license_expires_at = NULL,
+                    SET license_key = '', license_tier = 'community', license_expires_at = NULL,
                         license_customer_name = '', license_customer_email = ''
                     WHERE id = 1
                 ''')

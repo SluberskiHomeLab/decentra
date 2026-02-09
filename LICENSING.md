@@ -1,22 +1,27 @@
 # Decentra Licensing System
 
-Decentra uses an offline RSA-2048 cryptographic licensing system. The server runs in **free tier** by default with no license key required. Paid tiers unlock additional features and raise capacity limits.
+Decentra uses an offline RSA-2048 cryptographic licensing system. The server runs in **Community tier** by default with no license key required. Paid tiers unlock additional features and raise capacity limits.
 
 ## License Tiers
 
-| | Free | Professional | Enterprise |
-|---|---|---|---|
-| **Max Users** | 50 | 500 | Unlimited |
-| **Max Servers** | 1 | 5 | Unlimited |
-| **Channels per Server** | 10 | 50 | Unlimited |
-| **Max File Size** | 10 MB | 100 MB | Unlimited |
-| **Message History** | 10,000 | Unlimited | Unlimited |
-| **Voice Chat** | - | Yes | Yes |
-| **File Uploads** | Yes | Yes | Yes |
-| **Webhooks** | - | Yes | Yes |
-| **Custom Emojis** | - | Yes | Yes |
-| **Audit Logs** | - | - | Yes |
-| **SSO** | - | - | Yes |
+| | Community | Lite | Standard | Elite | Off the Walls |
+|---|---|---|---|---|---|
+| **Max Users** | 30 | 50 | 80 | Unlimited | Unlimited |
+| **Max Servers** | 2 | 5 | 8 | Unlimited | Unlimited |
+| **Channels per Server** | 30  | 50 | 150 | Unlimited | Unlimited |
+| **Max File Size** | 10 MB | 30 MB | 100 MB | Unlimited | Unlimited |
+| **Message History** | Unlimited | Unlimited | Unlimited | Unlimited | Unlimited |
+| **Voice Chat** | Yes | Yes | Yes | Yes | Yes |
+| **File Uploads** | Yes | Yes | Yes | Yes | Yes |
+| **Webhooks** | Yes | Yes | Yes | Yes | Yes |
+| **Custom Emojis** | Yes | Yes | Yes | Yes | Yes |
+| **Audit Logs** | Yes | Yes | Yes | Yes | Yes |
+| **SSO** | No | No | Yes | Yes | Yes |
+| **Video** | 720p | 720p | 1080p | 1440p | 4k |
+| **Screensharing** | 720p | 720p | 1080p | 1440p | 4k |
+| **SMTP** | Yes | Yes | Yes | Yes | Yes |
+
+**Note:** Storage is managed at the server infrastructure level and is not limited by the license tier.
 
 ## Activating a License
 
@@ -53,7 +58,7 @@ The license is stored in the database and persists across restarts.
 - **WebSocket**: Send `{"type": "remove_license"}` as an authenticated admin.
 - **Manual**: Delete the `DECENTRA_LICENSE_KEY` env var and clear the DB column, then restart.
 
-The server reverts to free-tier defaults when no valid license is present.
+The server reverts to Community tier defaults when no valid license is present.
 
 ## How It Works
 
@@ -63,7 +68,7 @@ The server reverts to free-tier defaults when no valid license is present.
 2. License keys are base64-encoded payloads in the format `JSON_DATA || RSA_SIGNATURE`
 3. The server verifies the signature using RSA-PSS with SHA-256
 4. If the signature is valid and the license has not expired, the tier's features and limits are applied
-5. If validation fails (bad signature, expired, missing key), the server runs in free tier
+5. If validation fails (bad signature, expired, missing key), the server runs in Community tier
 
 ### Enforcement Points
 
@@ -118,9 +123,9 @@ Quick start:
 cd tools/license
 python generate_keypair.py
 
-# Create a professional license valid for 1 year
+# Create a standard license valid for 1 year
 python create_license.py \
-    --tier professional \
+    --tier standard \
     --customer-name "Acme Corp" \
     --customer-email "admin@acme.com" \
     --company "Acme Corp" \
@@ -135,5 +140,5 @@ The private key (`tools/license/keys/license_private_key.pem`) must be kept secr
 - RSA-PSS signatures with SHA-256 prevent tampering with license data
 - Private keys never leave the key generation environment
 - Stored license keys are encrypted at rest in the database
-- Expired licenses gracefully degrade to free tier (no service disruption)
+- Expired licenses gracefully degrade to Community tier (no service disruption)
 - Invalid or tampered keys are rejected with an error message

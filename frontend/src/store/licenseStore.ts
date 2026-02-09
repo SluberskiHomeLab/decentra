@@ -19,24 +19,24 @@ interface LicenseState {
 }
 
 const DEFAULT_FEATURES: LicenseFeatures = {
-  voice_chat: false,
+  voice_chat: true,
   file_uploads: true,
-  webhooks: false,
-  custom_emojis: false,
-  audit_logs: false,
+  webhooks: true,
+  custom_emojis: true,
+  audit_logs: true,
   sso: false,
 }
 
 const DEFAULT_LIMITS: LicenseLimits = {
-  max_users: 50,
-  max_servers: 1,
-  max_channels_per_server: 10,
+  max_users: 30,
+  max_servers: 2,
+  max_channels_per_server: 30,
   max_file_size_mb: 10,
-  max_messages_history: 10000,
+  max_messages_history: -1,
 }
 
 export const useLicenseStore = create<LicenseState>((set, get) => ({
-  tier: 'free',
+  tier: 'community',
   features: { ...DEFAULT_FEATURES },
   limits: { ...DEFAULT_LIMITS },
   customer: null,
@@ -61,7 +61,7 @@ export const useLicenseStore = create<LicenseState>((set, get) => ({
   setLoading: (loading) => set({ loading }),
   clear: () =>
     set({
-      tier: 'free',
+      tier: 'community',
       features: { ...DEFAULT_FEATURES },
       limits: { ...DEFAULT_LIMITS },
       customer: null,

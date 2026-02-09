@@ -2915,7 +2915,7 @@ async def handler(websocket):
                         if not check_feature_access('voice_chat'):
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
-                                'message': 'Voice chat requires a Professional or Enterprise license.'
+                                'message': 'Voice chat requires a paid license tier.'
                             }))
                             continue
 
@@ -3702,7 +3702,7 @@ async def handler(websocket):
                         if not check_feature_access('custom_emojis'):
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
-                                'message': 'Custom emojis require a Professional or Enterprise license.'
+                                'message': 'Custom emojis require a paid license tier.'
                             }))
                             continue
 
@@ -4021,7 +4021,7 @@ async def handler(websocket):
                         if not check_feature_access('voice_chat'):
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
-                                'message': 'Voice chat requires a Professional or Enterprise license.'
+                                'message': 'Voice chat requires a paid license tier.'
                             }))
                             continue
 
@@ -4169,7 +4169,7 @@ async def handler(websocket):
                         db.clear_license()
 
                         broadcast_data = {
-                            'tier': 'free',
+                            'tier': 'community',
                             'features': dict(DEFAULT_FEATURES),
                             'limits': dict(DEFAULT_LIMITS),
                             'is_admin': False,
@@ -4376,7 +4376,7 @@ def load_license():
         else:
             print(f"License: invalid ({result.get('error', 'unknown error')})")
     else:
-        print("License: free tier (no license key found)")
+        print("License: Community tier (no license key found)")
 
 
 async def main():

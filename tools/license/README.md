@@ -26,7 +26,7 @@ This creates:
 
 ```bash
 python create_license.py \
-    --tier professional \
+    --tier standard \
     --customer-name "John" \
     --customer-email "john@example.com" \
     --company "Acme Corp" \
@@ -37,13 +37,13 @@ To save the key directly to a file:
 
 ```bash
 python create_license.py \
-    --tier enterprise \
+    --tier elite \
     --customer-name "Jane" \
     --customer-email "jane@example.com" \
     --output-file license.key
 ```
 
-Available tiers: `free`, `professional`, `enterprise`.
+Available tiers: `community`, `lite`, `standard`, `elite`, `off_the_walls`.
 
 ## Where the public key goes
 

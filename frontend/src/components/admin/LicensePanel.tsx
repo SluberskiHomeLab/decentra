@@ -21,9 +21,11 @@ const LIMIT_LABELS: Record<keyof LicenseLimits, string> = {
 }
 
 const TIER_COLORS: Record<string, string> = {
-  free: '#72767d',
-  professional: '#5865f2',
-  enterprise: '#9b59b6',
+  community: '#72767d',
+  lite: '#43b581',
+  standard: '#5865f2',
+  elite: '#9b59b6',
+  off_the_walls: '#faa61a',
 }
 
 function TierBadge({ tier }: { tier: string }) {
@@ -142,7 +144,7 @@ export function LicensePanel() {
               )}
             </div>
           </div>
-          {tier.toLowerCase() !== 'free' && (
+          {tier.toLowerCase() !== 'community' && (
             <div className="flex items-center gap-1 text-green-400">
               <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
                 <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
@@ -207,7 +209,7 @@ export function LicensePanel() {
               {activating ? 'Activating...' : 'Activate License'}
             </button>
 
-            {tier.toLowerCase() !== 'free' && (
+            {tier.toLowerCase() !== 'community' && (
               <button
                 className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
                   confirmRemove

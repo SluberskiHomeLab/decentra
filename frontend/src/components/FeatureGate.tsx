@@ -19,7 +19,7 @@ export function FeatureGate({ feature, fallback, children }: FeatureGateProps) {
         <div>
           <p className="text-sm font-medium text-white">Feature unavailable</p>
           <p className="text-xs text-[#72767d]">
-            This feature requires a Professional or Enterprise license. Contact your administrator.
+            This feature requires a paid license tier. Contact your administrator.
           </p>
         </div>
       </div>

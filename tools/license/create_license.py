@@ -36,41 +36,64 @@ PRIVATE_KEY_PATH = os.path.join(
 # ---------------------------------------------------------------------------
 
 TIER_PRESETS = {
-    "free": {
-        "features": {
-            "voice_chat": False,
-            "file_uploads": True,
-            "webhooks": False,
-            "custom_emojis": False,
-            "audit_logs": False,
-            "sso": False,
-        },
-        "limits": {
-            "max_users": 50,
-            "max_servers": 1,
-            "max_channels_per_server": 10,
-            "max_file_size_mb": 10,
-            "max_messages_history": 10000,
-        },
-    },
-    "professional": {
+    "community": {
         "features": {
             "voice_chat": True,
             "file_uploads": True,
             "webhooks": True,
             "custom_emojis": True,
-            "audit_logs": False,
+            "audit_logs": True,
             "sso": False,
         },
         "limits": {
-            "max_users": 500,
-            "max_servers": 5,
-            "max_channels_per_server": 50,
-            "max_file_size_mb": 100,
+            "max_users": 30,
+            "max_servers": 2,
+            "max_channels_per_server": 30,
+            "max_file_size_mb": 10,
             "max_messages_history": -1,
+            "video_quality": "720p",
+            "screensharing_quality": "720p",
         },
     },
-    "enterprise": {
+    "lite": {
+        "features": {
+            "voice_chat": True,
+            "file_uploads": True,
+            "webhooks": True,
+            "custom_emojis": True,
+            "audit_logs": True,
+            "sso": False,
+        },
+        "limits": {
+            "max_users": 50,
+            "max_servers": 5,
+            "max_channels_per_server": 50,
+            "max_file_size_mb": 30,
+            "max_messages_history": -1,
+            "video_quality": "720p",
+            "screensharing_quality": "720p",
+        },
+    },
+    "standard": {
+        "features": {
+            "voice_chat": True,
+            "file_uploads": True,
+            "webhooks": True,
+            "custom_emojis": True,
+            "audit_logs": True,
+            "sso": True,
+        },
+        "limits": {
+            "max_users": 80,
+            "max_servers": 8,
+            "max_channels_per_server": 150,
+            "max_file_size_mb": 100,
+            "max_messages_history": -1,
+            "video_quality": "1080p",
+            "screensharing_quality": "1080p",
+        },
+    },
+    "elite": {
         "features": {
             "voice_chat": True,
             "file_uploads": True,
@@ -83,8 +106,29 @@ TIER_PRESETS = {
             "max_users": -1,
             "max_servers": -1,
             "max_channels_per_server": -1,
-            "max_file_size_mb": 500,
+            "max_file_size_mb": -1,
             "max_messages_history": -1,
+            "video_quality": "1440p",
+            "screensharing_quality": "1440p",
+        },
+    },
+    "off_the_walls": {
+        "features": {
+            "voice_chat": True,
+            "file_uploads": True,
+            "webhooks": True,
+            "custom_emojis": True,
+            "audit_logs": True,
+            "sso": True,
+        },
+        "limits": {
+            "max_users": -1,
+            "max_servers": -1,
+            "max_channels_per_server": -1,
+            "max_file_size_mb": -1,
+            "max_messages_history": -1,
+            "video_quality": "4k",
+            "screensharing_quality": "4k",
         },
     },
 }
@@ -184,7 +228,7 @@ def main():
     parser.add_argument(
         "--tier",
         required=True,
-        choices=["free", "professional", "enterprise"],
+        choices=["community", "lite", "standard", "elite", "off_the_walls"],
         help="License tier.",
     )
     parser.add_argument(
