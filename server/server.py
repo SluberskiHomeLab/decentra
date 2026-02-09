@@ -3154,8 +3154,15 @@ async def handler(websocket):
                         
                         # Mark email as verified
                         if db.verify_user_email(username):
-                            # Clean up verification code
-                            db.delete_email_verification_code(email, username)
+                            # Clean up ALL verification codes for this user
+                            # This prevents reuse of old codes if deletion fails
+                            if not db.delete_all_user_verification_codes(username):
+                                print(f"Warning: Failed to delete verification codes for user {username}")
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Email verified but failed to clean up verification codes'
+                                }))
+                                continue
                             
                             await websocket.send_str(json.dumps({
                                 'type': 'email_verified',
