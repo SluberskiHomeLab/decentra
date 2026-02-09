@@ -308,7 +308,7 @@ The following table outlines the specific limits and features for each licensing
 | **Storage** | Up to Server* | 50GB | 150GB | 512GB | 1TB |
 | **SMTP** | Yes | Yes | Yes | Yes | Yes |
 
-*Note: For Community tier, storage is limited only by the hosting server's available resources.
+*Note: For Community tier, storage is limited only by the hosting server's available resources. In the license data structure, this is represented as -2 for storage_gb (-1 means unlimited, -2 means server-dependent).
 
 ### License Tiers Example
 
@@ -1051,6 +1051,7 @@ def create_license(
         )
 
     # Define features and limits based on tier
+    # Note: -1 means unlimited, -2 means server-dependent (for storage_gb)
     tier_config = {
         'community': {
             'features': {
@@ -1070,7 +1071,7 @@ def create_license(
                 'max_channels_per_server': 30,
                 'max_file_size_mb': 10,
                 'max_messages_history': -1,
-                'storage_gb': 'server'
+                'storage_gb': -2
             }
         },
         'lite': {
