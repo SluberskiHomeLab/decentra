@@ -349,8 +349,9 @@ function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950">
-      <div className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4 py-10">
+    <div className="relative min-h-screen bg-slate-950">
+      <div className="absolute inset-0 bg-cover bg-center bg-no-repeat blur-sm" style={{ backgroundImage: 'url(/login-background.png)' }} />
+      <div className="relative mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4 py-10">
         <div className="w-full max-w-md">
           <div className="mb-6">
             <div className="text-xs font-medium text-sky-200/70">Decentra</div>
