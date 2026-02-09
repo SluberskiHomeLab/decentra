@@ -352,6 +352,28 @@ class Database:
                         ON message_attachments(message_id)
                     ''')
                     
+                    # Message mentions table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS message_mentions (
+                            message_id INTEGER NOT NULL,
+                            mentioned_username VARCHAR(255) NOT NULL,
+                            created_at TIMESTAMP NOT NULL,
+                            PRIMARY KEY (message_id, mentioned_username),
+                            FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                            FOREIGN KEY (mentioned_username) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Create index for faster mention retrieval
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_mentions_user 
+                        ON message_mentions(mentioned_username)
+                    ''')
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_mentions_message 
+                        ON message_mentions(message_id)
+                    ''')
+                    
                     # Add notification_mode column if it doesn't exist (migration)
                     cursor.execute('''
                         DO $$ 
@@ -2171,6 +2193,64 @@ class Database:
                 })
             
             return reactions_by_message
+
+    # Message mention operations
+    def add_mentions(self, message_id: int, mentioned_usernames: List[str]) -> bool:
+        """Add mentions for a message."""
+        if not mentioned_usernames:
+            return True
+        
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                timestamp = datetime.now()
+                for username in mentioned_usernames:
+                    try:
+                        cursor.execute('''
+                            INSERT INTO message_mentions (message_id, mentioned_username, created_at)
+                            VALUES (%s, %s, %s)
+                        ''', (message_id, username, timestamp))
+                    except psycopg2.IntegrityError:
+                        # Mention already exists or user doesn't exist
+                        continue
+                return True
+        except Exception as e:
+            print(f"Error adding mentions: {e}")
+            return False
+    
+    def get_message_mentions(self, message_id: int) -> List[str]:
+        """Get all mentioned usernames for a message."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT mentioned_username
+                FROM message_mentions
+                WHERE message_id = %s
+            ''', (message_id,))
+            return [row['mentioned_username'] for row in cursor.fetchall()]
+    
+    def get_mentions_for_messages(self, message_ids: List[int]) -> Dict[int, List[str]]:
+        """Get mentions for multiple messages."""
+        if not message_ids:
+            return {}
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT message_id, mentioned_username
+                FROM message_mentions
+                WHERE message_id = ANY(%s)
+            ''', (message_ids,))
+            
+            # Group mentions by message_id
+            mentions_by_message = {}
+            for row in cursor.fetchall():
+                msg_id = row['message_id']
+                if msg_id not in mentions_by_message:
+                    mentions_by_message[msg_id] = []
+                mentions_by_message[msg_id].append(row['mentioned_username'])
+            
+            return mentions_by_message
 
     # License operations
     def save_license_key(self, license_key: str, tier: str = 'free', expires_at=None, customer_name: str = '', customer_email: str = '') -> bool:

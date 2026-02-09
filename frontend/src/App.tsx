@@ -42,7 +42,35 @@ function sanitizeUrl(url: string): string | null {
   }
 }
 
-function linkifyText(text: string): React.ReactNode[] {
+function linkifyText(text: string, mentionRenderer?: (content: string) => React.ReactNode): React.ReactNode[] {
+  // First, handle mentions if a renderer is provided
+  if (mentionRenderer) {
+    const mentionParts = text.split(/(@\w+)/g)
+    const processedParts: React.ReactNode[] = []
+    
+    mentionParts.forEach((part, mentionIndex) => {
+      if (part.match(/^@\w+$/)) {
+        // This is a mention - render it with the mention renderer
+        processedParts.push(
+          <span key={`mention-${mentionIndex}`}>
+            {mentionRenderer(part)}
+          </span>
+        )
+      } else if (part) {
+        // This is regular text - apply linkification to it
+        const linkified = linkifyTextPart(part, `part-${mentionIndex}`)
+        processedParts.push(...linkified)
+      }
+    })
+    
+    return processedParts.length > 0 ? processedParts : [<span key="text-0">{text}</span>]
+  }
+  
+  // No mention renderer - just linkify normally
+  return linkifyTextPart(text, 'text')
+}
+
+function linkifyTextPart(text: string, keyPrefix: string): React.ReactNode[] {
   const parts: React.ReactNode[] = []
   let lastIndex = 0
   const regex = new RegExp(URL_REGEX)
@@ -51,7 +79,7 @@ function linkifyText(text: string): React.ReactNode[] {
   while ((match = regex.exec(text)) !== null) {
     // Add text before the URL
     if (match.index > lastIndex) {
-      parts.push(<span key={`text-${lastIndex}`}>{text.slice(lastIndex, match.index)}</span>)
+      parts.push(<span key={`${keyPrefix}-${lastIndex}`}>{text.slice(lastIndex, match.index)}</span>)
     }
 
     const url = match[0]
@@ -60,7 +88,7 @@ function linkifyText(text: string): React.ReactNode[] {
     if (safeUrl) {
       parts.push(
         <a
-          key={`link-${match.index}`}
+          key={`${keyPrefix}-link-${match.index}`}
           href={safeUrl}
           target="_blank"
           rel="noopener noreferrer"
@@ -70,7 +98,7 @@ function linkifyText(text: string): React.ReactNode[] {
         </a>
       )
     } else {
-      parts.push(<span key={`unsafe-${match.index}`}>{url}</span>)
+      parts.push(<span key={`${keyPrefix}-unsafe-${match.index}`}>{url}</span>)
     }
 
     lastIndex = regex.lastIndex
@@ -78,10 +106,10 @@ function linkifyText(text: string): React.ReactNode[] {
 
   // Add remaining text
   if (lastIndex < text.length) {
-    parts.push(<span key={`text-${lastIndex}`}>{text.slice(lastIndex)}</span>)
+    parts.push(<span key={`${keyPrefix}-${lastIndex}`}>{text.slice(lastIndex)}</span>)
   }
 
-  return parts.length > 0 ? parts : [<span key="text-0">{text}</span>]
+  return parts.length > 0 ? parts : [<span key={`${keyPrefix}-0`}>{text}</span>]
 }
 
 function MessageEmbeds({ content }: { content: string }): React.ReactElement | null {
@@ -1048,6 +1076,12 @@ function ChatPage() {
   const [isVoiceMuted, setIsVoiceMuted] = useState(false)
   const [isVideoEnabled, setIsVideoEnabled] = useState(false)
   const [isScreenSharing, setIsScreenSharing] = useState(false)
+
+  // Mention autocomplete state
+  const [showMentionAutocomplete, setShowMentionAutocomplete] = useState(false)
+  const [mentionSearch, setMentionSearch] = useState('')
+  const [mentionStartPos, setMentionStartPos] = useState<number>(0)
+  const [selectedMentionIndex, setSelectedMentionIndex] = useState(0)
   // const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
   // const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([])
   // const [speakerDevices, setSpeakerDevices] = useState<MediaDeviceInfo[]>([])
@@ -1774,23 +1808,26 @@ function ChatPage() {
     const content = draft.trim()
     if (!content && selectedFiles.length === 0) return
 
+    // Extract mentions from the message
+    const mentions = extractMentions(content)
+
     // If there are files, send message first, then upload files
     if (selectedFiles.length > 0) {
-      await sendMessageWithFiles(content || '')
+      await sendMessageWithFiles(content || '', mentions)
     } else {
       // Just send text message
       if (selectedContext.kind === 'server') {
-        wsClient.sendMessage({ type: 'message', content, context: 'server', context_id: `${selectedContext.serverId}/${selectedContext.channelId}` })
+        wsClient.sendMessage({ type: 'message', content, context: 'server', context_id: `${selectedContext.serverId}/${selectedContext.channelId}`, mentions })
       } else if (selectedContext.kind === 'dm') {
-        wsClient.sendMessage({ type: 'message', content, context: 'dm', context_id: selectedContext.dmId })
+        wsClient.sendMessage({ type: 'message', content, context: 'dm', context_id: selectedContext.dmId, mentions })
       } else {
-        wsClient.sendMessage({ type: 'message', content, context: 'global', context_id: null })
+        wsClient.sendMessage({ type: 'message', content, context: 'global', context_id: null, mentions })
       }
       setDraft('')
     }
   }
 
-  const sendMessageWithFiles = async (content: string) => {
+  const sendMessageWithFiles = async (content: string, mentions: string[] = []) => {
     setIsUploading(true)
     try {
       // Create a one-time listener for the message response
@@ -1810,21 +1847,24 @@ function ChatPage() {
           type: 'message', 
           content, 
           context: 'server', 
-          context_id: `${selectedContext.serverId}/${selectedContext.channelId}`
+          context_id: `${selectedContext.serverId}/${selectedContext.channelId}`,
+          mentions
         })
       } else if (selectedContext.kind === 'dm') {
         wsClient.sendMessage({ 
           type: 'message', 
           content, 
           context: 'dm', 
-          context_id: selectedContext.dmId
+          context_id: selectedContext.dmId,
+          mentions
         })
       } else {
         wsClient.sendMessage({ 
           type: 'message', 
           content, 
           context: 'global', 
-          context_id: null
+          context_id: null,
+          mentions
         })
       }
 
@@ -2081,6 +2121,118 @@ function ChatPage() {
   const insertEmoji = (emoji: string) => {
     setDraft((prev) => prev + emoji)
     setIsEmojiPickerOpen(false)
+  }
+
+  // Mention handling functions
+  const extractMentions = (text: string): string[] => {
+    const mentionRegex = /@(\w+)/g
+    const mentions: string[] = []
+    let match
+    while ((match = mentionRegex.exec(text)) !== null) {
+      mentions.push(match[1])
+    }
+    return mentions
+  }
+
+  const handleDraftChange = (newDraft: string) => {
+    setDraft(newDraft)
+    
+    // Check if we should show mention autocomplete
+    const cursorPos = newDraft.length
+    const textBeforeCursor = newDraft.slice(0, cursorPos)
+    const lastAtIndex = textBeforeCursor.lastIndexOf('@')
+    
+    if (lastAtIndex !== -1) {
+      const textAfterAt = textBeforeCursor.slice(lastAtIndex + 1)
+      // Only show autocomplete if there's no space after @ (still typing the mention)
+      if (!textAfterAt.includes(' ')) {
+        setMentionSearch(textAfterAt.toLowerCase())
+        setMentionStartPos(lastAtIndex)
+        setShowMentionAutocomplete(true)
+        setSelectedMentionIndex(0)
+        return
+      }
+    }
+    
+    setShowMentionAutocomplete(false)
+  }
+
+  const getFilteredMentionUsers = (): ServerMember[] => {
+    if (selectedContext.kind !== 'server' || !selectedServerId) return []
+    const members = serverMembers[selectedServerId] || []
+    if (!mentionSearch) return members
+    return members.filter(m => 
+      m.username.toLowerCase().startsWith(mentionSearch)
+    )
+  }
+
+  const insertMention = (username: string) => {
+    const before = draft.slice(0, mentionStartPos)
+    const after = draft.slice(mentionStartPos + mentionSearch.length + 1)
+    setDraft(`${before}@${username} ${after}`)
+    setShowMentionAutocomplete(false)
+    setMentionSearch('')
+  }
+
+  const renderMessageContent = (content: string): React.ReactNode => {
+    // Highlight mentions with @username format
+    const parts = content.split(/(@\w+)/g)
+    return parts.map((part, index) => {
+      if (part.match(/^@\w+$/)) {
+        const mentionedUser = part.slice(1)
+        const isCurrentUser = mentionedUser === init?.username
+        return (
+          <span
+            key={index}
+            className={`font-semibold ${
+              isCurrentUser 
+                ? 'bg-sky-500/30 text-sky-300 px-1 rounded' 
+                : 'text-sky-400'
+            }`}
+          >
+            {part}
+          </span>
+        )
+      }
+      return <span key={index}>{part}</span>
+    })
+  }
+
+  const handleMentionKeyDown = (e: React.KeyboardEvent) => {
+    if (!showMentionAutocomplete) return false
+    
+    const filteredUsers = getFilteredMentionUsers()
+    if (filteredUsers.length === 0) return false
+    
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setSelectedMentionIndex((prev) => 
+        prev < filteredUsers.length - 1 ? prev + 1 : 0
+      )
+      return true
+    }
+    
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setSelectedMentionIndex((prev) => 
+        prev > 0 ? prev - 1 : filteredUsers.length - 1
+      )
+      return true
+    }
+    
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault()
+      insertMention(filteredUsers[selectedMentionIndex].username)
+      return true
+    }
+    
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      setShowMentionAutocomplete(false)
+      return true
+    }
+    
+    return false
   }
 
   // Message edit/delete/reaction functions
@@ -2933,7 +3085,7 @@ function ChatPage() {
                               {/* Normal message display */}
                               {m.content && (
                                 <>
-                                  <div className="mt-1 whitespace-pre-wrap text-sm text-slate-200">{linkifyText(m.content)}</div>
+                                  <div className="mt-1 whitespace-pre-wrap text-sm text-slate-200">{linkifyText(m.content, renderMessageContent)}</div>
                                   <MessageEmbeds content={m.content} />
                                 </>
                               )}
@@ -3057,6 +3209,36 @@ function ChatPage() {
                 </div>
               )}
 
+              {/* Mention autocomplete */}
+              {showMentionAutocomplete && selectedContext.kind === 'server' && (
+                <div className="mb-2 rounded-xl border border-white/10 bg-slate-900 p-2 shadow-xl max-h-48 overflow-y-auto">
+                  <div className="text-xs font-semibold text-slate-400 mb-1 px-2">Mention User</div>
+                  {getFilteredMentionUsers().length > 0 ? (
+                    getFilteredMentionUsers().map((member, index) => (
+                      <button
+                        key={member.username}
+                        type="button"
+                        onClick={() => insertMention(member.username)}
+                        className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition ${
+                          index === selectedMentionIndex ? 'bg-sky-500/20' : 'hover:bg-white/5'
+                        }`}
+                      >
+                        <AvatarWithStatus
+                          avatar={member.avatar}
+                          avatar_type={member.avatar_type}
+                          avatar_data={member.avatar_data}
+                          user_status={member.user_status}
+                          size="sm"
+                        />
+                        <span className="text-sm text-slate-200">{member.username}</span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="text-xs text-slate-500 px-2 py-1">No matching users</div>
+                  )}
+                </div>
+              )}
+
               <form
                 onSubmit={(e) => {
                   e.preventDefault()
@@ -3069,7 +3251,10 @@ function ChatPage() {
               >
                 <input
                   value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
+                  onChange={(e) => handleDraftChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (handleMentionKeyDown(e)) return
+                  }}
                   placeholder={isDragging ? "Drop files here..." : selectedFiles.length > 0 ? "Add a message (optional)…" : "Type a message…"}
                   disabled={isUploading}
                   className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40 disabled:opacity-50"

@@ -341,8 +341,9 @@ def create_message_object(username, msg_content, context, context_id, user_profi
     if message_key:
         msg_obj['messageKey'] = message_key
     
-    # Add reactions for new messages
+    # Add reactions and mentions for new messages
     msg_obj['reactions'] = []
+    msg_obj['mentions'] = []
     
     return msg_obj
 
@@ -1363,6 +1364,7 @@ async def handler(websocket):
                         context = data.get('context', 'global')  # 'global', 'server', or 'dm'
                         context_id = data.get('context_id', None)
                         message_key = data.get('messageKey')  # Extract messageKey for file attachment correlation
+                        mentions = data.get('mentions', [])  # Extract mentions
                         
                         # Get admin settings and enforce max message length
                         admin_settings = db.get_admin_settings()
@@ -1392,6 +1394,25 @@ async def handler(websocket):
                                         # Save message to database and get ID
                                         message_id = db.save_message(username, msg_content, 'server', context_id)
                                         
+                                        # Save mentions if any
+                                        if mentions and message_id:
+                                            # Filter mentions to only include server members
+                                            valid_mentions = [m for m in mentions if m in member_usernames and m != username]
+                                            if valid_mentions:
+                                                db.add_mentions(message_id, valid_mentions)
+                                                
+                                                # Send mention notifications
+                                                for mentioned_user in valid_mentions:
+                                                    notification = {
+                                                        'type': 'mention_notification',
+                                                        'message_id': message_id,
+                                                        'mentioned_by': username,
+                                                        'content': msg_content[:100],  # First 100 chars
+                                                        'context_type': 'server',
+                                                        'context_id': context_id
+                                                    }
+                                                    await send_to_user(mentioned_user, json.dumps(notification))
+                                        
                                         # Create message object with ID and messageKey
                                         msg_obj = create_message_object(
                                             username=username,
@@ -1402,6 +1423,10 @@ async def handler(websocket):
                                             message_key=message_key,
                                             message_id=message_id
                                         )
+                                        
+                                        # Add mentions to message object
+                                        if mentions:
+                                            msg_obj['mentions'] = [m for m in mentions if m in member_usernames]
                                         
                                         # Broadcast to server members
                                         await broadcast_to_server(server_id, json.dumps(msg_obj))
@@ -1415,6 +1440,31 @@ async def handler(websocket):
                                 # Save message to database and get ID
                                 message_id = db.save_message(username, msg_content, 'dm', context_id)
                                 
+                                # Get DM participants
+                                participants = []
+                                for dm in dm_users:
+                                    if dm['dm_id'] == context_id:
+                                        participants = [dm['user1'], dm['user2']]
+                                        break
+                                
+                                # Save mentions if any (only DM participants can be mentioned)
+                                if mentions and message_id and participants:
+                                    valid_mentions = [m for m in mentions if m in participants and m != username]
+                                    if valid_mentions:
+                                        db.add_mentions(message_id, valid_mentions)
+                                        
+                                        # Send mention notifications
+                                        for mentioned_user in valid_mentions:
+                                            notification = {
+                                                'type': 'mention_notification',
+                                                'message_id': message_id,
+                                                'mentioned_by': username,
+                                                'content': msg_content[:100],  # First 100 chars
+                                                'context_type': 'dm',
+                                                'context_id': context_id
+                                            }
+                                            await send_to_user(mentioned_user, json.dumps(notification))
+                                
                                 # Create message object with ID and messageKey
                                 msg_obj = create_message_object(
                                     username=username,
@@ -1426,13 +1476,14 @@ async def handler(websocket):
                                     message_id=message_id
                                 )
                                 
-                                # Get participants and send to both
-                                for dm in dm_users:
-                                    if dm['dm_id'] == context_id:
-                                        participants = [dm['user1'], dm['user2']]
-                                        for participant in participants:
-                                            await send_to_user(participant, json.dumps(msg_obj))
-                                        break
+                                # Add mentions to message object
+                                if mentions and participants:
+                                    msg_obj['mentions'] = [m for m in mentions if m in participants]
+                                
+                                # Send to both participants
+                                for participant in participants:
+                                    await send_to_user(participant, json.dumps(msg_obj))
+                                
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] DM from {username} in {context_id}")
                         
                         else:
@@ -1526,15 +1577,17 @@ async def handler(websocket):
                             context_id = f"{server_id}/{channel_id}"
                             channel_messages = db.get_messages('server', context_id, MAX_HISTORY)
                             
-                            # Get reactions and attachments for all messages
+                            # Get reactions, attachments, and mentions for all messages
                             if channel_messages:
                                 message_ids = [msg['id'] for msg in channel_messages]
                                 reactions_map = db.get_reactions_for_messages(message_ids)
+                                mentions_map = db.get_mentions_for_messages(message_ids)
                                 
-                                # Add reactions and attachments to each message
+                                # Add reactions, attachments, and mentions to each message
                                 for msg in channel_messages:
                                     msg['reactions'] = reactions_map.get(msg['id'], [])
                                     msg['attachments'] = db.get_message_attachments(msg['id'])
+                                    msg['mentions'] = mentions_map.get(msg['id'], [])
                             
                             await websocket.send_str(json.dumps({
                                 'type': 'channel_history',
@@ -1553,15 +1606,17 @@ async def handler(websocket):
                             # Get messages from database
                             dm_messages = db.get_messages('dm', dm_id, MAX_HISTORY)
                             
-                            # Get reactions and attachments for all messages
+                            # Get reactions, attachments, and mentions for all messages
                             if dm_messages:
                                 message_ids = [msg['id'] for msg in dm_messages]
                                 reactions_map = db.get_reactions_for_messages(message_ids)
+                                mentions_map = db.get_mentions_for_messages(message_ids)
                                 
-                                # Add reactions and attachments to each message
+                                # Add reactions, attachments, and mentions to each message
                                 for dm_msg in dm_messages:
                                     dm_msg['reactions'] = reactions_map.get(dm_msg['id'], [])
                                     dm_msg['attachments'] = db.get_message_attachments(dm_msg['id'])
+                                    dm_msg['mentions'] = mentions_map.get(dm_msg['id'], [])
                             
                             await websocket.send_str(json.dumps({
                                 'type': 'dm_history',

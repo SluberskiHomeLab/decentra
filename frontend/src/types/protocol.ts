@@ -128,6 +128,7 @@ export type WsChatMessage = {
   messageKey?: string
   reactions?: Reaction[]
   attachments?: Attachment[]
+  mentions?: string[]
   user_status?: 'online' | 'away' | 'busy' | 'offline'
 } & Avatar
 
@@ -311,6 +312,15 @@ export type WsUserStatusChanged = {
   user_status: 'online' | 'away' | 'busy' | 'offline'
 }
 
+export type WsMentionNotification = {
+  type: 'mention_notification'
+  message_id: number
+  mentioned_by: string
+  content: string
+  context_type: 'global' | 'server' | 'dm'
+  context_id?: string | null
+}
+
 export type WsMessage =
   | WsAuthSuccess
   | WsAuthError
@@ -363,6 +373,7 @@ export type WsMessage =
   | WsWebRTCAnswer
   | WsWebRTCIceCandidate
   | WsUserStatusChanged
+  | WsMentionNotification
   | { type: string; [k: string]: any }
 
 export type WsOutboundLogin = {
@@ -416,6 +427,8 @@ export type WsOutboundSendMessage = {
   content: string
   context?: 'global' | 'server' | 'dm'
   context_id?: string | null
+  mentions?: string[]
+  messageKey?: string
 }
 
 export type WsOutboundCreateServer = {
