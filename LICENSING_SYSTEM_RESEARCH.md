@@ -261,21 +261,24 @@ For Decentra, I recommend implementing a **hybrid offline cryptographic licensin
     "email": "john@example.com",
     "company": "Acme Corp"
   },
-  "tier": "enterprise",
+  "tier": "elite",
   "features": {
     "voice_chat": true,
     "file_uploads": true,
     "webhooks": true,
     "custom_emojis": true,
     "audit_logs": true,
-    "sso": true
+    "sso": true,
+    "video_quality": "1440p",
+    "screensharing_quality": "1440p"
   },
   "limits": {
-    "max_users": 500,
-    "max_servers": 50,
-    "max_channels_per_server": 100,
-    "max_file_size_mb": 100,
-    "max_messages_history": -1
+    "max_users": -1,
+    "max_servers": -1,
+    "max_channels_per_server": -1,
+    "max_file_size_mb": -1,
+    "max_messages_history": -1,
+    "storage_gb": 512
   },
   "issued_at": "2026-02-06T00:00:00Z",
   "expires_at": "2027-02-06T00:00:00Z",
@@ -283,39 +286,92 @@ For Decentra, I recommend implementing a **hybrid offline cryptographic licensin
 }
 ```
 
+### Hosting Plan Tiers Overview
+
+The following table outlines the specific limits and features for each licensing tier:
+
+| Feature | Community | Lite | Standard | Elite | Off the Walls |
+|---|---|---|---|---|---|
+| **Max Users** | 30 | 50 | 80 | Unlimited | Unlimited |
+| **Max Servers** | 2 | 5 | 8 | Unlimited | Unlimited |
+| **Channels per Server** | 30 | 50 | 150 | Unlimited | Unlimited |
+| **Max File Size** | 10 MB | 30 MB | 100 MB | Unlimited | Unlimited |
+| **Message History** | Unlimited | Unlimited | Unlimited | Unlimited | Unlimited |
+| **Voice Chat** | Yes | Yes | Yes | Yes | Yes |
+| **File Uploads** | Yes | Yes | Yes | Yes | Yes |
+| **Webhooks** | Yes | Yes | Yes | Yes | Yes |
+| **Custom Emojis** | Yes | Yes | Yes | Yes | Yes |
+| **Audit Logs** | Yes | Yes | Yes | Yes | Yes |
+| **SSO** | No | No | Yes | Yes | Yes |
+| **Video** | 720p | 720p | 1080p | 1440p | 4k |
+| **Screensharing** | 720p | 720p | 1080p | 1440p | 4k |
+| **Storage** | Up to Server* | 50GB | 150GB | 512GB | 1TB |
+| **SMTP** | Yes | Yes | Yes | Yes | Yes |
+
+*Note: For Community tier, storage is limited only by the hosting server's available resources.
+
 ### License Tiers Example
 
-#### Free Tier (Default - No License)
+#### Community Tier (Default - No License)
 - ✅ Text messaging
-- ✅ Up to 10 users
-- ✅ 1 server
-- ✅ 10 channels per server
-- ✅ 1MB file uploads
-- ❌ Voice chat
-- ❌ Custom emojis
-- ❌ Webhooks
-
-#### Professional Tier
-- ✅ All Free features
-- ✅ Up to 100 users
-- ✅ 10 servers
-- ✅ 50 channels per server
-- ✅ 25MB file uploads
-- ✅ Voice chat
+- ✅ Message History: Unlimited
+- ✅ Up to 30 users
+- ✅ 2 servers
+- ✅ 30 channels per server
+- ✅ 10MB file uploads
+- ✅ Voice chat (720p)
+- ✅ File uploads
+- ✅ Webhooks
 - ✅ Custom emojis
+- ✅ Audit logs
+- ✅ SMTP
+- ✅ Screensharing (720p)
+- ✅ Storage: Up to Server*
 - ❌ SSO
-- ❌ Audit logs
 
-#### Enterprise Tier
-- ✅ All Professional features
+#### Lite Tier
+- ✅ All Community features
+- ✅ Up to 50 users
+- ✅ 5 servers
+- ✅ 50 channels per server
+- ✅ 30MB file uploads
+- ✅ Voice chat (720p)
+- ✅ Screensharing (720p)
+- ✅ Storage: 50GB
+- ❌ SSO
+
+#### Standard Tier
+- ✅ All Lite features
+- ✅ Up to 80 users
+- ✅ 8 servers
+- ✅ 150 channels per server
+- ✅ 100MB file uploads
+- ✅ Voice chat (1080p)
+- ✅ Screensharing (1080p)
+- ✅ SSO integration
+- ✅ Storage: 150GB
+
+#### Elite Tier
+- ✅ All Standard features
 - ✅ Unlimited users
 - ✅ Unlimited servers
 - ✅ Unlimited channels
-- ✅ 100MB file uploads
-- ✅ SSO integration
-- ✅ Audit logs
+- ✅ Unlimited file uploads
+- ✅ Voice chat (1440p)
+- ✅ Screensharing (1440p)
+- ✅ Storage: 512GB
 - ✅ Priority support
-- ✅ Custom branding
+
+#### Off the Walls Tier
+- ✅ All Elite features
+- ✅ Unlimited users
+- ✅ Unlimited servers
+- ✅ Unlimited channels
+- ✅ Unlimited file uploads
+- ✅ Voice chat (4k)
+- ✅ Screensharing (4k)
+- ✅ Storage: 1TB
+- ✅ Premium support
 
 ---
 
@@ -419,8 +475,8 @@ class LicenseValidator:
     def get_tier(self) -> str:
         """Get the license tier"""
         if not self._cached_license:
-            return "free"
-        return self._cached_license.get('tier', 'free')
+            return "community"
+        return self._cached_license.get('tier', 'community')
 
     def get_customer_info(self) -> Dict[str, str]:
         """Get customer information"""
@@ -431,22 +487,25 @@ class LicenseValidator:
 # Global instance
 license_validator = LicenseValidator()
 
-# Default limits for free tier (no license)
+# Default limits for community tier (no license)
 DEFAULT_LIMITS = {
-    'max_users': 10,
-    'max_servers': 1,
-    'max_channels_per_server': 10,
-    'max_file_size_mb': 1,
-    'max_messages_history': 1000
+    'max_users': 30,
+    'max_servers': 2,
+    'max_channels_per_server': 30,
+    'max_file_size_mb': 10,
+    'max_messages_history': -1
 }
 
 DEFAULT_FEATURES = {
-    'voice_chat': False,
+    'voice_chat': True,
     'file_uploads': True,
-    'webhooks': False,
-    'custom_emojis': False,
-    'audit_logs': False,
-    'sso': False
+    'webhooks': True,
+    'custom_emojis': True,
+    'audit_logs': True,
+    'sso': False,
+    'smtp': True,
+    'video_quality': '720p',
+    'screensharing_quality': '720p'
 }
 
 def check_feature_access(feature_name: str) -> bool:
@@ -515,10 +574,10 @@ def load_license():
             return True
         except ValueError as e:
             print(f"⚠️  License validation failed: {e}")
-            print("   Running with free tier limits")
+            print("   Running with community tier limits")
             return False
     else:
-        print("ℹ️  No license found - running with free tier limits")
+        print("ℹ️  No license found - running with community tier limits")
         return False
 
 # Call on server startup
@@ -537,7 +596,7 @@ async def handle_voice_join(websocket, data):
 
     # Check if voice chat feature is enabled
     if not check_feature_access('voice_chat'):
-        await send_error(websocket, "Voice chat requires a Professional or Enterprise license")
+        await send_error(websocket, "Voice chat requires a Lite or higher tier license")
         return
 
     # Proceed with voice chat logic
@@ -820,7 +879,7 @@ export const UpgradePrompt: React.FC<{ feature: string }> = ({ feature }) => {
             {feature} requires an upgrade
           </h3>
           <p className="text-sm text-yellow-700">
-            This feature is available in Professional and Enterprise tiers.
+            This feature is available in Standard, Elite, and Off the Walls tiers.
           </p>
           <button className="mt-2 px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700">
             View Plans
@@ -897,7 +956,7 @@ function LicenseInfoPanel() {
     <div className="bg-gray-100 p-4 rounded">
       <h3 className="font-bold">License Information</h3>
       <div className="mt-2">
-        <p><strong>Tier:</strong> {license?.tier || 'Free'}</p>
+        <p><strong>Tier:</strong> {license?.tier || 'Community'}</p>
         {license?.customer.name && (
           <p><strong>Licensed to:</strong> {license.customer.name}</p>
         )}
@@ -993,55 +1052,109 @@ def create_license(
 
     # Define features and limits based on tier
     tier_config = {
-        'free': {
-            'features': {
-                'voice_chat': False,
-                'file_uploads': True,
-                'webhooks': False,
-                'custom_emojis': False,
-                'audit_logs': False,
-                'sso': False
-            },
-            'limits': {
-                'max_users': 10,
-                'max_servers': 1,
-                'max_channels_per_server': 10,
-                'max_file_size_mb': 1,
-                'max_messages_history': 1000
-            }
-        },
-        'professional': {
-            'features': {
-                'voice_chat': True,
-                'file_uploads': True,
-                'webhooks': True,
-                'custom_emojis': True,
-                'audit_logs': False,
-                'sso': False
-            },
-            'limits': {
-                'max_users': 100,
-                'max_servers': 10,
-                'max_channels_per_server': 50,
-                'max_file_size_mb': 25,
-                'max_messages_history': -1
-            }
-        },
-        'enterprise': {
+        'community': {
             'features': {
                 'voice_chat': True,
                 'file_uploads': True,
                 'webhooks': True,
                 'custom_emojis': True,
                 'audit_logs': True,
-                'sso': True
+                'sso': False,
+                'smtp': True,
+                'video_quality': '720p',
+                'screensharing_quality': '720p'
+            },
+            'limits': {
+                'max_users': 30,
+                'max_servers': 2,
+                'max_channels_per_server': 30,
+                'max_file_size_mb': 10,
+                'max_messages_history': -1,
+                'storage_gb': 'server'
+            }
+        },
+        'lite': {
+            'features': {
+                'voice_chat': True,
+                'file_uploads': True,
+                'webhooks': True,
+                'custom_emojis': True,
+                'audit_logs': True,
+                'sso': False,
+                'smtp': True,
+                'video_quality': '720p',
+                'screensharing_quality': '720p'
+            },
+            'limits': {
+                'max_users': 50,
+                'max_servers': 5,
+                'max_channels_per_server': 50,
+                'max_file_size_mb': 30,
+                'max_messages_history': -1,
+                'storage_gb': 50
+            }
+        },
+        'standard': {
+            'features': {
+                'voice_chat': True,
+                'file_uploads': True,
+                'webhooks': True,
+                'custom_emojis': True,
+                'audit_logs': True,
+                'sso': True,
+                'smtp': True,
+                'video_quality': '1080p',
+                'screensharing_quality': '1080p'
+            },
+            'limits': {
+                'max_users': 80,
+                'max_servers': 8,
+                'max_channels_per_server': 150,
+                'max_file_size_mb': 100,
+                'max_messages_history': -1,
+                'storage_gb': 150
+            }
+        },
+        'elite': {
+            'features': {
+                'voice_chat': True,
+                'file_uploads': True,
+                'webhooks': True,
+                'custom_emojis': True,
+                'audit_logs': True,
+                'sso': True,
+                'smtp': True,
+                'video_quality': '1440p',
+                'screensharing_quality': '1440p'
             },
             'limits': {
                 'max_users': -1,
                 'max_servers': -1,
                 'max_channels_per_server': -1,
-                'max_file_size_mb': 100,
-                'max_messages_history': -1
+                'max_file_size_mb': -1,
+                'max_messages_history': -1,
+                'storage_gb': 512
+            }
+        },
+        'off_the_walls': {
+            'features': {
+                'voice_chat': True,
+                'file_uploads': True,
+                'webhooks': True,
+                'custom_emojis': True,
+                'audit_logs': True,
+                'sso': True,
+                'smtp': True,
+                'video_quality': '4k',
+                'screensharing_quality': '4k'
+            },
+            'limits': {
+                'max_users': -1,
+                'max_servers': -1,
+                'max_channels_per_server': -1,
+                'max_file_size_mb': -1,
+                'max_messages_history': -1,
+                'storage_gb': 1024
             }
         }
     }
@@ -1095,7 +1208,7 @@ if __name__ == '__main__':
             customer_name="John Doe",
             customer_email="john@example.com",
             company="Acme Corp",
-            tier="enterprise",
+            tier="elite",
             duration_days=365
         )
 
@@ -1291,8 +1404,8 @@ python license_generator.py
 
 3. **Support Access**
    - Link support to license validation
-   - Premium support for paid tiers
-   - Community support for free tier
+   - Premium support for Elite and Off the Walls tiers
+   - Community support for Community tier
 
 4. **Optional Online Validation**
    - Add optional "phone home" for analytics
@@ -1491,7 +1604,7 @@ For Decentra, I strongly recommend implementing **offline RSA/Ed25519 cryptograp
 ✅ **Cryptographically secure** - NSA-grade encryption
 ✅ **Zero recurring costs** - No monthly licensing fees
 ✅ **Full control** - You own the entire stack
-✅ **Flexible licensing tiers** - Free, Professional, Enterprise
+✅ **Flexible licensing tiers** - Community, Lite, Standard, Elite, Off the Walls
 ✅ **Feature-rich limits** - Users, servers, channels, file sizes
 
 While the initial implementation takes 4-6 weeks, the long-term benefits far outweigh the upfront investment. This approach future-proofs Decentra's business model while respecting user privacy and autonomy.
