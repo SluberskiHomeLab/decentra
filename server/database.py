@@ -992,6 +992,19 @@ class Database:
         except Exception:
             return False
     
+    def delete_all_user_verification_codes(self, username: str) -> bool:
+        """Delete all email verification codes for a user."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    DELETE FROM email_verification_codes 
+                    WHERE username = %s
+                ''', (username,))
+                return True
+        except Exception:
+            return False
+    
     def cleanup_expired_verification_codes(self):
         """Remove expired verification codes."""
         try:

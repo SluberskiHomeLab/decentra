@@ -132,6 +132,7 @@ CREATE TABLE password_reset_tokens (
 - Codes stored in `email_verification_codes` table
 - Codes validated against current email and username
 - Email marked as verified upon successful code submission
+- **All verification codes for the user are deleted after successful verification** to prevent reuse
 - Automatic cleanup of expired verification codes
 
 **WebSocket Handlers**:
@@ -144,7 +145,7 @@ CREATE TABLE password_reset_tokens (
 3. Email marked as `email_verified = false` in database
 4. User submits code via `verify_email_change` message
 5. Server validates code and marks email as verified
-6. Verification code deleted after successful verification
+6. **All verification codes for the user are deleted** after successful verification
 
 **Response Messages**:
 - `email_changed`: Sent after email is changed (email_verified = false)

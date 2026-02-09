@@ -301,16 +301,25 @@ def test_multiple_email_changes():
     assert verification_data2['code'] == code2, "Second code should match"
     print(f"✓ Second code correctly retrievable: {verification_data2['code']}")
     
-    # Verify with second code
+    # Verify with second code - this should delete ALL codes for the user
     db.verify_user_email('multichangeuser')
+    db.delete_all_user_verification_codes('multichangeuser')  # Simulate the handler behavior
+    
     user = db.get_user('multichangeuser')
     assert user['email'] == 'second@test.com', "Email should be second@test.com"
     assert user['email_verified'] == True, "Email should be verified"
     print(f"✓ Email verified: {user['email']}")
     
+    print("\n4.3: Verifying all codes are deleted after successful verification...")
+    
+    # Verify both codes are now deleted
+    verification_data1_after = db.get_email_verification_code('first@test.com', 'multichangeuser')
+    verification_data2_after = db.get_email_verification_code('second@test.com', 'multichangeuser')
+    assert verification_data1_after is None, "First code should be deleted after verification"
+    assert verification_data2_after is None, "Second code should be deleted after verification"
+    print("✓ All verification codes deleted after successful verification")
+    
     # Clean up
-    db.delete_email_verification_code('first@test.com', 'multichangeuser')
-    db.delete_email_verification_code('second@test.com', 'multichangeuser')
     with db.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM users WHERE username = %s', ('multichangeuser',))

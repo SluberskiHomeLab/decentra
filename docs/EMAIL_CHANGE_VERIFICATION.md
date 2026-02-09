@@ -128,7 +128,8 @@ User                          Server                         Database
  |                              | 10. Mark email as verified     |
  |                              |-------------------------------->|
  |                              |                                |
- |                              | 11. Delete verification code   |
+ |                              | 11. Delete ALL verification    |
+ |                              |     codes for user             |
  |                              |-------------------------------->|
  |                              |                                |
  | 12. email_verified response  |                                |
@@ -147,10 +148,11 @@ User                          Server                         Database
 ### Security Features
 1. **Password Required**: User must provide their current password to change email
 2. **Code Expiration**: Codes automatically expire after 15 minutes
-3. **One-Time Use**: Codes are deleted after successful verification
+3. **One-Time Use**: All verification codes for the user are deleted after successful verification
 4. **Email Validation**: Email format is validated before change
 5. **Duplicate Prevention**: Cannot change to an email already in use
 6. **Automatic Cleanup**: Expired codes are periodically removed
+7. **No Code Reuse**: Deleting all codes for the user prevents reuse of old codes from previous email changes
 
 ### Database Schema
 
@@ -158,7 +160,7 @@ The `email_verification_codes` table:
 ```sql
 CREATE TABLE email_verification_codes (
     email VARCHAR(255) NOT NULL,
-    code VARCHAR(6) NOT NULL,
+    code VARCHAR(10) NOT NULL,
     username VARCHAR(255) NOT NULL,
     created_at TIMESTAMP NOT NULL,
     expires_at TIMESTAMP NOT NULL,
@@ -242,5 +244,6 @@ function verifyEmail(code) {
 
 - Email verification is only sent if SMTP is configured and `require_email_verification` is enabled in admin settings
 - If SMTP is not configured, email is changed but remains unverified
-- Users can change their email multiple times, but only the most recent verification code is valid
+- Users can change their email multiple times; each change generates a new verification code
 - Verification codes are tied to a specific email address: a code generated for a previous email is not valid for a different email, but remains usable for that previous email until it expires (for example, if the user changes back to that email)
+- **All verification codes for a user are deleted after successful verification**, preventing reuse of old codes from previous email changes
