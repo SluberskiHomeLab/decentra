@@ -67,7 +67,8 @@ class Database:
                             email VARCHAR(255),
                             email_verified BOOLEAN DEFAULT FALSE,
                             bio TEXT DEFAULT '',
-                            status_message VARCHAR(100) DEFAULT ''
+                            status_message VARCHAR(100) DEFAULT '',
+                            user_status VARCHAR(20) DEFAULT 'online'
                         )
                     ''')
                     
@@ -862,6 +863,16 @@ class Database:
                     SET status_message = %s
                     WHERE username = %s
                 ''', (status_message, username))
+
+    def update_user_status(self, username: str, user_status: str):
+        """Update user status (online, away, busy, offline)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE users 
+                SET user_status = %s
+                WHERE username = %s
+            ''', (user_status, username))
 
     def update_user_email(self, username: str, new_email: str) -> bool:
         """Update user email and reset verification status. Returns False if email is taken."""

@@ -13,6 +13,7 @@ export type InitData = {
   avatar_data?: string | null
   bio?: string
   status_message?: string
+  user_status?: 'online' | 'away' | 'busy' | 'offline'
   email?: string
   email_verified?: boolean
   servers?: Server[]

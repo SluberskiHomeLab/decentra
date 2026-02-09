@@ -13,6 +13,7 @@ export type Avatar = {
 export type Profile = {
   bio?: string
   status_message?: string
+  user_status?: 'online' | 'away' | 'busy' | 'offline'
 }
 
 export type ServerChannel = {
@@ -43,10 +44,12 @@ export type Server = {
 export type Dm = {
   id: string
   username: string
+  user_status?: 'online' | 'away' | 'busy' | 'offline'
 } & Avatar
 
 export type Friend = {
   username: string
+  user_status?: 'online' | 'away' | 'busy' | 'offline'
 } & Avatar &
   Profile
 
@@ -125,6 +128,7 @@ export type WsChatMessage = {
   messageKey?: string
   reactions?: Reaction[]
   attachments?: Attachment[]
+  user_status?: 'online' | 'away' | 'busy' | 'offline'
 } & Avatar
 
 export type WsHistory = {
@@ -301,6 +305,12 @@ export type WsReactionRemoved = {
   reactions: Reaction[]
 }
 
+export type WsUserStatusChanged = {
+  type: 'user_status_changed'
+  username: string
+  user_status: 'online' | 'away' | 'busy' | 'offline'
+}
+
 export type WsMessage =
   | WsAuthSuccess
   | WsAuthError
@@ -352,6 +362,7 @@ export type WsMessage =
   | WsWebRTCOffer
   | WsWebRTCAnswer
   | WsWebRTCIceCandidate
+  | WsUserStatusChanged
   | { type: string; [k: string]: any }
 
 export type WsOutboundLogin = {

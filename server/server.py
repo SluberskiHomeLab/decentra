@@ -324,7 +324,8 @@ def create_message_object(username, msg_content, context, context_id, user_profi
         'context_id': context_id,
         'avatar': user_profile.get('avatar', '👤') if user_profile else '👤',
         'avatar_type': user_profile.get('avatar_type', 'emoji') if user_profile else 'emoji',
-        'avatar_data': user_profile.get('avatar_data') if user_profile else None
+        'avatar_data': user_profile.get('avatar_data') if user_profile else None,
+        'user_status': get_user_status(username)
     }
     
     # Add message ID if provided
@@ -437,6 +438,15 @@ def get_profile_data(username):
     }
 
 
+def get_user_status(username):
+    """Get user status for a user."""
+    user = db.get_user(username)
+    if not user:
+        return 'online'
+    
+    return user.get('user_status', 'online')
+
+
 def build_user_servers_data(username):
     """Build server list data for a user including channels and permissions."""
     user_servers = []
@@ -484,10 +494,12 @@ def build_user_dms_data(username):
     for dm in dm_list:
         other_user = dm['user2'] if dm['user1'] == username else dm['user1']
         avatar_data = get_avatar_data(other_user)
+        user_status = get_user_status(other_user)
         user_dms.append({
             'id': dm['dm_id'],
             'username': other_user,
-            **avatar_data
+            **avatar_data,
+            'user_status': user_status
         })
     
     return user_dms
@@ -500,10 +512,12 @@ def build_user_friends_data(username):
     for friend in db.get_friends(username):
         avatar_data = get_avatar_data(friend)
         profile_data = get_profile_data(friend)
+        user_status = get_user_status(friend)
         friends_list.append({
             'username': friend,
             **avatar_data,
-            **profile_data
+            **profile_data,
+            'user_status': user_status
         })
     
     return friends_list
@@ -1275,6 +1289,7 @@ async def handler(websocket):
                 'username': username,
                 **current_avatar,
                 **current_profile,
+                'user_status': user.get('user_status', 'online') if user else 'online',
                 'email': user.get('email', '') if user else '',
                 'email_verified': user.get('email_verified', False) if user else False,
                 'notification_mode': notification_mode,
@@ -2550,6 +2565,7 @@ async def handler(websocket):
                                     member_data = {
                                         'username': member['username'],
                                         'is_owner': member['username'] == server['owner'],
+                                        'user_status': get_user_status(member['username']),
                                         **avatar_data
                                     }
                                     if member['username'] != server['owner']:
@@ -3058,11 +3074,44 @@ async def handler(websocket):
                             'type': 'profile_updated',
                             **profile_update
                         }))
-
-                    elif data.get('type') == 'change_email':
-                        new_email = data.get('new_email', '').strip()
-                        password = data.get('password', '')
-
+                    
+                    elif data.get('type') == 'change_user_status':
+                        # Update user status (online, away, busy, offline)
+                        user_status = data.get('user_status', 'online')
+                        
+                        # Validate status value
+                        if user_status not in ['online', 'away', 'busy', 'offline']:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid status value'
+                            }))
+                            continue
+                        
+                        # Update status in database
+                        db.update_user_status(username, user_status)
+                        
+                        # Notify all friends about status change
+                        for friend_username in db.get_friends(username):
+                            await send_to_user(friend_username, json.dumps({
+                                'type': 'user_status_changed',
+                                'username': username,
+                                'user_status': user_status
+                            }))
+                        
+                        # Notify all servers the user is in
+                        for server_id in db.get_user_servers(username):
+                            await broadcast_to_server(server_id, json.dumps({
+                                'type': 'user_status_changed',
+                                'username': username,
+                                'user_status': user_status
+                            }))
+                        
+                        # Confirm to the user
+                        await websocket.send_str(json.dumps({
+                            'type': 'user_status_changed',
+                            'username': username,
+                            'user_status': user_status
+                        }))
                         # Validate email format
                         if not new_email or not is_valid_email(new_email):
                             await websocket.send_str(json.dumps({

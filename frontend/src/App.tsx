@@ -185,6 +185,64 @@ function isWsServerJoined(msg: WsMessage): msg is { type: 'server_joined'; serve
   )
 }
 
+// Avatar component with status indicator
+function AvatarWithStatus({
+  avatar,
+  avatar_type,
+  avatar_data,
+  user_status,
+  size = 'md',
+  showStatus = true,
+}: {
+  avatar?: string
+  avatar_type?: string
+  avatar_data?: string | null
+  user_status?: 'online' | 'away' | 'busy' | 'offline'
+  size?: 'sm' | 'md' | 'lg' | 'xl'
+  showStatus?: boolean
+}) {
+  const sizeClasses = {
+    sm: 'h-6 w-6 text-sm',
+    md: 'h-8 w-8 text-lg',
+    lg: 'h-12 w-12 text-2xl',
+    xl: 'h-20 w-20 text-4xl',
+  }
+
+  const statusSizeClasses = {
+    sm: 'h-2 w-2',
+    md: 'h-2.5 w-2.5',
+    lg: 'h-3 w-3',
+    xl: 'h-4 w-4',
+  }
+
+  const statusColorClasses = {
+    online: 'bg-green-500',
+    away: 'bg-yellow-500',
+    busy: 'bg-red-500',
+    offline: 'bg-gray-500',
+  }
+
+  console.log('AvatarWithStatus render:', { user_status, showStatus, hasRing: showStatus && user_status })
+
+  return (
+    <div className="relative inline-block">
+      <span className={`flex ${sizeClasses[size]} items-center justify-center overflow-hidden rounded-full bg-slate-700`}>
+        {avatar_type === 'image' && avatar_data ? (
+          <img src={avatar_data} alt="Avatar" className="h-full w-full object-cover" />
+        ) : (
+          <>{avatar ?? '👤'}</>
+        )}
+      </span>
+      {showStatus && user_status && (
+        <span
+          className={`absolute bottom-0 right-0 ${statusSizeClasses[size]} ${statusColorClasses[user_status]} rounded-full border-2 border-slate-950`}
+          title={user_status}
+        />
+      )}
+    </div>
+  )
+}
+
 function ToastHost() {
   const toasts = useToastStore((s) => s.toasts)
   const remove = useToastStore((s) => s.remove)
@@ -1002,6 +1060,7 @@ function ChatPage() {
   // Account settings state
   const [profileBio, setProfileBio] = useState('')
   const [profileStatus, setProfileStatus] = useState('')
+  const [userStatus, setUserStatus] = useState<'online' | 'away' | 'busy' | 'offline'>('online')
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null)
   const [twoFASetup, setTwoFASetup] = useState<{ secret: string; qr_code: string; backup_codes: string[] } | null>(null)
   const [twoFACode, setTwoFACode] = useState('')
@@ -1143,6 +1202,7 @@ function ChatPage() {
       if (msg.type === 'init') {
         const initUsername = typeof msg.username === 'string' ? msg.username : authUsername ?? ''
         if (!initUsername) return
+        console.log('Init message full:', JSON.stringify(msg, null, 2))
         setInit({
           username: initUsername,
           is_admin: msg.is_admin,
@@ -1152,12 +1212,20 @@ function ChatPage() {
           avatar_data: msg.avatar_data,
           bio: msg.bio,
           status_message: msg.status_message,
+          user_status: msg.user_status,
           servers: msg.servers,
           dms: msg.dms,
           friends: msg.friends,
           friend_requests_sent: msg.friend_requests_sent,
           friend_requests_received: msg.friend_requests_received,
         })
+
+        // Sync user status
+        console.log('Init message received, user_status:', msg.user_status)
+        if (msg.user_status) {
+          setUserStatus(msg.user_status)
+          console.log('Set userStatus to:', msg.user_status)
+        }
 
         // If the user hasn't selected a context yet, default to first channel.
         if (useAppStore.getState().selectedContext.kind === 'global') {
@@ -1421,6 +1489,30 @@ function ChatPage() {
       if (msg.type === 'notification_mode_updated') {
         pushToast({ kind: 'success', message: 'Notification settings updated' })
         wsClient.requestSync()
+      }
+
+      if (msg.type === 'user_status_changed') {
+        const { username, user_status } = msg
+        // Update status in init if it's the current user
+        const prev = useAppStore.getState().init
+        if (prev && prev.username === username) {
+          setInit({ ...prev, user_status })
+          setUserStatus(user_status)
+        }
+        // Update status in friends list
+        if (prev?.friends) {
+          const updatedFriends = prev.friends.map((f) =>
+            f.username === username ? { ...f, user_status } : f
+          )
+          setInit({ ...prev, friends: updatedFriends })
+        }
+        // Update status in DMs list
+        if (prev?.dms) {
+          const updatedDms = prev.dms.map((dm) =>
+            dm.username === username ? { ...dm, user_status } : dm
+          )
+          setInit({ ...prev, dms: updatedDms })
+        }
       }
 
       if (msg.type === 'email_changed') {
@@ -2164,6 +2256,18 @@ function ChatPage() {
     })
   }
 
+  const handleChangeStatus = (newStatus: 'online' | 'away' | 'busy' | 'offline') => {
+    setUserStatus(newStatus)
+    // Update init object so the ring changes immediately
+    if (init) {
+      setInit({ ...init, user_status: newStatus })
+    }
+    wsClient.send({
+      type: 'change_user_status',
+      user_status: newStatus,
+    })
+  }
+
   const handleChangeEmail = () => {
     if (!newEmail.trim() || !emailPassword) return
     setEmailChangeStatus(null)
@@ -2368,14 +2472,16 @@ function ChatPage() {
             <button
               type="button"
               onClick={() => setIsUserMenuOpen(true)}
-              className="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-800/50 text-xl hover:bg-slate-700/50 hover:rounded-xl transition overflow-hidden"
+              className="rounded-2xl bg-slate-800/50 hover:bg-slate-700/50 hover:rounded-xl transition"
               title={init?.username ?? 'User'}
             >
-              {init?.avatar_type === 'image' && init?.avatar_data ? (
-                <img src={init.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
-              ) : (
-                <>{init?.avatar ?? '👤'}</>
-              )}
+              <AvatarWithStatus
+                avatar={init?.avatar}
+                avatar_type={init?.avatar_type}
+                avatar_data={init?.avatar_data}
+                user_status={init?.user_status}
+                size="lg"
+              />
             </button>
           </div>
         </aside>
@@ -2409,13 +2515,13 @@ function ChatPage() {
                             isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
                           }`}
                         >
-                          <span className="text-lg flex h-8 w-8 items-center justify-center overflow-hidden rounded-full">
-                            {dm.avatar_type === 'image' && dm.avatar_data ? (
-                              <img src={dm.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
-                            ) : (
-                              <>{dm.avatar ?? '👤'}</>
-                            )}
-                          </span>
+                          <AvatarWithStatus
+                            avatar={dm.avatar}
+                            avatar_type={dm.avatar_type}
+                            avatar_data={dm.avatar_data}
+                            user_status={dm.user_status}
+                            size="md"
+                          />
                           <span className="text-sm font-medium truncate">{dm.username}</span>
                         </button>
                       )
@@ -2695,14 +2801,14 @@ function ChatPage() {
                               />
                             ) : (
                               <div className="flex flex-col items-center justify-center p-8">
-                                <div className="w-32 h-32 rounded-full border-4 border-white/10 bg-slate-950/40 flex items-center justify-center text-6xl mb-4 overflow-hidden">
-                                  {participant?.avatar_type === 'image' && participant?.avatar_data ? (
-                                    <img src={participant.avatar_data} alt="Avatar" className="w-full h-full object-cover" />
-                                  ) : (
-                                    <>{participant?.avatar ?? init?.avatar ?? '👤'}</>
-                                  )}
-                                </div>
-                                <div className="text-xl font-semibold text-white">{participantUsername}</div>
+                                <AvatarWithStatus
+                                  avatar={participant?.avatar ?? init?.avatar}
+                                  avatar_type={participant?.avatar_type ?? init?.avatar_type}
+                                  avatar_data={participant?.avatar_data ?? init?.avatar_data}
+                                  user_status={participant?.user_status}
+                                  size="xl"
+                                />
+                                <div className="text-xl font-semibold text-white mt-4">{participantUsername}</div>
                               </div>
                             )}
                             {/* Participant name overlay */}
@@ -2738,12 +2844,14 @@ function ChatPage() {
                   <div className="flex flex-col gap-3">
                     {messages.map((m: WsChatMessage, idx: number) => (
                       <div key={(m.id ?? idx).toString()} className="group flex gap-3">
-                        <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-slate-950/30 text-sm overflow-hidden">
-                          {m.avatar_type === 'image' && m.avatar_data ? (
-                            <img src={m.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
-                          ) : (
-                            <>{m.avatar ?? '👤'}</>
-                          )}
+                        <div className="mt-0.5 shrink-0">
+                          <AvatarWithStatus
+                            avatar={m.avatar}
+                            avatar_type={m.avatar_type}
+                            avatar_data={m.avatar_data}
+                            user_status={m.user_status}
+                            size="md"
+                          />
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-baseline gap-x-2">
@@ -3076,13 +3184,13 @@ function ChatPage() {
                           key={member.username}
                           className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/5 transition"
                         >
-                          <span className="text-lg flex h-8 w-8 items-center justify-center overflow-hidden rounded-full">
-                            {member.avatar_type === 'image' && member.avatar_data ? (
-                              <img src={member.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
-                            ) : (
-                              <>{member.avatar ?? '👤'}</>
-                            )}
-                          </span>
+                          <AvatarWithStatus
+                            avatar={member.avatar}
+                            avatar_type={member.avatar_type}
+                            avatar_data={member.avatar_data}
+                            user_status={member.user_status}
+                            size="md"
+                          />
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-1.5">
                               <span className="text-sm font-medium text-slate-100 truncate">{member.username}</span>
@@ -3109,13 +3217,13 @@ function ChatPage() {
                           key={member.username}
                           className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/5 transition"
                         >
-                          <span className="text-lg flex h-8 w-8 items-center justify-center overflow-hidden rounded-full">
-                            {member.avatar_type === 'image' && member.avatar_data ? (
-                              <img src={member.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
-                            ) : (
-                              <>{member.avatar ?? '👤'}</>
-                            )}
-                          </span>
+                          <AvatarWithStatus
+                            avatar={member.avatar}
+                            avatar_type={member.avatar_type}
+                            avatar_data={member.avatar_data}
+                            user_status={member.user_status}
+                            size="md"
+                          />
                           <div className="flex-1 min-w-0">
                             <div className="text-sm font-medium text-slate-200 truncate">{member.username}</div>
                             {member.status_message && (
@@ -3773,6 +3881,60 @@ function ChatPage() {
                       <div className="mt-1 text-xs text-slate-400">{profileStatus.length}/100 characters</div>
                     </label>
 
+                    <div>
+                      <div className="mb-2 text-sm text-slate-200">User Status</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleChangeStatus('online')}
+                          className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                            userStatus === 'online'
+                              ? 'border-green-500/50 bg-green-500/20 text-green-300'
+                              : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="h-2.5 w-2.5 rounded-full bg-green-500" />
+                          Online
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleChangeStatus('away')}
+                          className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                            userStatus === 'away'
+                              ? 'border-yellow-500/50 bg-yellow-500/20 text-yellow-300'
+                              : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="h-2.5 w-2.5 rounded-full bg-yellow-500" />
+                          Away
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleChangeStatus('busy')}
+                          className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                            userStatus === 'busy'
+                              ? 'border-red-500/50 bg-red-500/20 text-red-300'
+                              : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="h-2.5 w-2.5 rounded-full bg-red-500" />
+                          Busy
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleChangeStatus('offline')}
+                          className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                            userStatus === 'offline'
+                              ? 'border-gray-500/50 bg-gray-500/20 text-gray-300'
+                              : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="h-2.5 w-2.5 rounded-full bg-gray-500" />
+                          Offline
+                        </button>
+                      </div>
+                    </div>
+
                     <button
                       type="button"
                       onClick={handleUpdateProfile}
@@ -3788,17 +3950,20 @@ function ChatPage() {
                   <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Avatar</h3>
                   <div className="space-y-4">
                     <div className="flex items-center gap-4">
-                      <div className="flex h-20 w-20 items-center justify-center rounded-full border border-white/10 bg-slate-950/30 text-4xl overflow-hidden">
-                        {init?.avatar_type === 'image' && init?.avatar_data ? (
-                          <img src={init.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
-                        ) : (
-                          <>{init?.avatar ?? '👤'}</>
-                        )}
-                      </div>
+                      <AvatarWithStatus
+                        avatar={init?.avatar}
+                        avatar_type={init?.avatar_type}
+                        avatar_data={init?.avatar_data}
+                        user_status={init?.user_status}
+                        size="xl"
+                      />
                       <div className="flex-1">
                         <div className="text-sm text-slate-200 mb-2">Current Avatar</div>
                         <div className="text-xs text-slate-400">
                           Type: {init?.avatar_type || 'emoji'}
+                        </div>
+                        <div className="text-xs text-slate-400">
+                          Status: {init?.user_status}
                         </div>
                       </div>
                     </div>
