@@ -157,6 +157,147 @@ function linkifyTextPartWithRenderer(text: string, keyPrefix: string, renderer: 
   return parts.length > 0 ? parts : [<span key={`${keyPrefix}-0`}>{renderer(text)}</span>]
 }
 
+// Message formatting utilities
+interface FormatToken {
+  type: 'text' | 'bold' | 'italic' | 'boldItalic' | 'code' | 'codeBlock' | 'strikethrough' | 'spoiler' | 'quote'
+  content: string
+  language?: string
+}
+
+function parseMessageFormat(text: string): FormatToken[] {
+  const tokens: FormatToken[] = []
+  let i = 0
+  
+  while (i < text.length) {
+    // Check for code block (```)
+    if (text.slice(i, i + 3) === '```') {
+      let end = text.indexOf('```', i + 3)
+      if (end === -1) {
+        // No closing ```, treat as regular text
+        tokens.push({ type: 'text', content: text.slice(i) })
+        break
+      }
+      const codeContent = text.slice(i + 3, end)
+      // Check for language specification (e.g., ```javascript)
+      const lines = codeContent.split('\n')
+      const firstLine = lines[0].trim()
+      let language = ''
+      let code = codeContent
+      if (firstLine && !firstLine.includes(' ') && lines.length > 1) {
+        language = firstLine
+        code = lines.slice(1).join('\n')
+      }
+      tokens.push({ type: 'codeBlock', content: code, language })
+      i = end + 3
+      continue
+    }
+    
+    // Check for inline code (`)
+    if (text[i] === '`') {
+      const end = text.indexOf('`', i + 1)
+      if (end === -1) {
+        tokens.push({ type: 'text', content: text.slice(i) })
+        break
+      }
+      tokens.push({ type: 'code', content: text.slice(i + 1, end) })
+      i = end + 1
+      continue
+    }
+    
+    // Check for spoiler (||)
+    if (text.slice(i, i + 2) === '||') {
+      const end = text.indexOf('||', i + 2)
+      if (end === -1) {
+        tokens.push({ type: 'text', content: text.slice(i) })
+        break
+      }
+      tokens.push({ type: 'spoiler', content: text.slice(i + 2, end) })
+      i = end + 2
+      continue
+    }
+    
+    // Check for strikethrough (~~)
+    if (text.slice(i, i + 2) === '~~') {
+      const end = text.indexOf('~~', i + 2)
+      if (end === -1) {
+        tokens.push({ type: 'text', content: text.slice(i) })
+        break
+      }
+      tokens.push({ type: 'strikethrough', content: text.slice(i + 2, end) })
+      i = end + 2
+      continue
+    }
+    
+    // Check for bold italic (***)
+    if (text.slice(i, i + 3) === '***') {
+      const end = text.indexOf('***', i + 3)
+      if (end === -1) {
+        tokens.push({ type: 'text', content: text.slice(i) })
+        break
+      }
+      tokens.push({ type: 'boldItalic', content: text.slice(i + 3, end) })
+      i = end + 3
+      continue
+    }
+    
+    // Check for italic (**)
+    if (text.slice(i, i + 2) === '**') {
+      const end = text.indexOf('**', i + 2)
+      if (end === -1) {
+        tokens.push({ type: 'text', content: text.slice(i) })
+        break
+      }
+      tokens.push({ type: 'italic', content: text.slice(i + 2, end) })
+      i = end + 2
+      continue
+    }
+    
+    // Check for bold (*)
+    if (text[i] === '*') {
+      const end = text.indexOf('*', i + 1)
+      if (end === -1) {
+        tokens.push({ type: 'text', content: text.slice(i) })
+        break
+      }
+      tokens.push({ type: 'bold', content: text.slice(i + 1, end) })
+      i = end + 1
+      continue
+    }
+    
+    // Check for quote (> at start of line)
+    if ((i === 0 || text[i - 1] === '\n') && text[i] === '>') {
+      // Find end of line
+      let end = text.indexOf('\n', i)
+      if (end === -1) end = text.length
+      const quoteContent = text.slice(i + 1, end).trim()
+      tokens.push({ type: 'quote', content: quoteContent })
+      i = end
+      continue
+    }
+    
+    // Regular text - collect until next special character
+    let textEnd = i + 1
+    while (textEnd < text.length) {
+      const char = text[textEnd]
+      const twoChar = text.slice(textEnd, textEnd + 2)
+      const threeChar = text.slice(textEnd, textEnd + 3)
+      
+      if (char === '`' || char === '*' || twoChar === '~~' || twoChar === '||' || threeChar === '```') {
+        break
+      }
+      if ((textEnd === 0 || text[textEnd - 1] === '\n') && char === '>') {
+        break
+      }
+      textEnd++
+    }
+    
+    tokens.push({ type: 'text', content: text.slice(i, textEnd) })
+    i = textEnd
+  }
+  
+  return tokens
+}
+
 function MessageEmbeds({ content }: { content: string }): React.ReactElement | null {
   const urls = content.match(URL_REGEX)
   if (!urls) return null
@@ -2591,49 +2732,138 @@ function ChatPage() {
       console.log('Debug emoji rendering:', { serverId, availableEmojis, serverEmojis, content })
     }
 
-    // Split by both mentions and custom emojis
-    const parts = content.split(/(@\w+|:\w+:)/g)
-    console.log('Split parts:', parts)
-    return parts.map((part, index) => {
-      // Handle mentions
-      if (part.match(/^@\w+$/)) {
-        const mentionedUser = part.slice(1)
-        const isCurrentUser = mentionedUser === init?.username
-        return (
-          <span
-            key={index}
-            className={`font-semibold ${
-              isCurrentUser 
-                ? 'bg-sky-500/30 text-sky-300 px-1 rounded' 
-                : 'text-sky-400'
-            }`}
-          >
-            {part}
-          </span>
-        )
-      }
-      
-      // Handle custom emojis
-      if (part.match(/^:\w+:$/)) {
-        const emojiName = part.slice(1, -1) // Remove the colons
-        const emoji = availableEmojis.find(e => e.name === emojiName)
-        console.log('Emoji lookup:', { part, emojiName, emoji, availableEmojis })
-        if (emoji) {
+    // Helper function to process mentions and custom emojis within text
+    const processTextWithEmojisAndMentions = (text: string, keyPrefix: string): React.ReactNode[] => {
+      const parts = text.split(/(@\w+|:\w+:)/g)
+      return parts.map((part, index) => {
+        const key = `${keyPrefix}-${index}`
+        
+        // Handle mentions
+        if (part.match(/^@\w+$/)) {
+          const mentionedUser = part.slice(1)
+          const isCurrentUser = mentionedUser === init?.username
           return (
-            <img
-              key={index}
-              src={emoji.image_data}
-              alt={`:${emojiName}:`}
-              title={`:${emojiName}:`}
-              className="inline-block w-5 h-5 object-contain align-text-bottom mx-0.5"
-            />
+            <span
+              key={key}
+              className={`font-semibold ${
+                isCurrentUser 
+                  ? 'bg-sky-500/30 text-sky-300 px-1 rounded' 
+                  : 'text-sky-400'
+              }`}
+            >
+              {part}
+            </span>
           )
         }
-        // If emoji not found, return the text as-is
-        return <span key={index}>{part}</span>
-      }
+        
+        // Handle custom emojis
+        if (part.match(/^:\w+:$/)) {
+          const emojiName = part.slice(1, -1)
+          const emoji = availableEmojis.find(e => e.name === emojiName)
+          if (emoji) {
+            return (
+              <img
+                key={key}
+                src={emoji.image_data}
+                alt={`:${emojiName}:`}
+                title={`:${emojiName}:`}
+                className="inline-block w-5 h-5 object-contain align-text-bottom mx-0.5"
+              />
+            )
+          }
+          return <span key={key}>{part}</span>
+        }
+        
+        return <span key={key}>{part}</span>
+      })
+    }
+
+    // Parse message formatting
+    const tokens = parseMessageFormat(content)
+    
+    // Render formatted tokens with mention and emoji support
+    return tokens.map((token, index) => {
+      const key = `fmt-${index}`
       
-      return <span key={index}>{part}</span>
+      switch (token.type) {
+        case 'bold':
+          return (
+            <strong key={key} className="font-bold">
+              {processTextWithEmojisAndMentions(token.content, `${key}-content`)}
+            </strong>
+          )
+        
+        case 'italic':
+          return (
+            <em key={key} className="italic">
+              {processTextWithEmojisAndMentions(token.content, `${key}-content`)}
+            </em>
+          )
+        
+        case 'boldItalic':
+          return (
+            <strong key={key} className="font-bold italic">
+              {processTextWithEmojisAndMentions(token.content, `${key}-content`)}
+            </strong>
+          )
+        
+        case 'code':
+          return (
+            <code key={key} className="bg-slate-800/60 text-sky-300 px-1.5 py-0.5 rounded text-sm font-mono">
+              {token.content}
+            </code>
+          )
+        
+        case 'codeBlock':
+          return (
+            <pre key={key} className="bg-slate-800/60 text-slate-200 p-3 rounded-lg overflow-x-auto my-1 border border-white/5">
+              <code className="text-sm font-mono block">
+                {token.language && (
+                  <div className="text-xs text-slate-400 mb-1">{token.language}</div>
+                )}
+                {token.content}
+              </code>
+            </pre>
+          )
+        
+        case 'strikethrough':
+          return (
+            <s key={key} className="line-through opacity-75">
+              {processTextWithEmojisAndMentions(token.content, `${key}-content`)}
+            </s>
+          )
+        
+        case 'spoiler':
+          return (
+            <span
+              key={key}
+              className="bg-slate-800 text-slate-800 hover:text-slate-200 cursor-pointer px-1 rounded transition-colors select-none"
+              title="Click to reveal spoiler"
+              onClick={(e) => {
+                const target = e.currentTarget
+                target.classList.toggle('text-slate-800')
+                target.classList.toggle('text-slate-200')
+              }}
+            >
+              {processTextWithEmojisAndMentions(token.content, `${key}-content`)}
+            </span>
+          )
+        
+        case 'quote':
+          return (
+            <div key={key} className="border-l-2 border-slate-600 pl-3 py-0.5 italic text-slate-300 my-1">
+              {processTextWithEmojisAndMentions(token.content, `${key}-content`)}
+            </div>
+          )
+        
+        case 'text':
+        default:
+          return (
+            <span key={key}>
+              {processTextWithEmojisAndMentions(token.content, `${key}-content`)}
+            </span>
+          )
+      }
     })
   }
 
