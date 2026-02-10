@@ -47,6 +47,9 @@ function parseCustomEmojis(text: string, emojis: CustomEmoji[]): React.ReactNode
   const emojiRegex = /:([a-zA-Z0-9_]+):/g
   let match: RegExpExecArray | null
 
+  // Create a Map for O(1) emoji lookups
+  const emojiMap = new Map(emojis.map(e => [e.name, e]))
+
   while ((match = emojiRegex.exec(text)) !== null) {
     // Add text before the emoji
     if (match.index > lastIndex) {
@@ -54,7 +57,7 @@ function parseCustomEmojis(text: string, emojis: CustomEmoji[]): React.ReactNode
     }
 
     const emojiName = match[1]
-    const customEmoji = emojis?.find((e) => e.name === emojiName)
+    const customEmoji = emojiMap.get(emojiName)
 
     if (customEmoji) {
       // Replace with custom emoji image
