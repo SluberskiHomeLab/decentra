@@ -6,7 +6,7 @@ import { contextKey, useAppStore } from './store/appStore'
 import { useToastStore } from './store/toastStore'
 import { VoiceChat } from './lib/VoiceChat'
 import type { ChatContext } from './store/appStore'
-import type { Attachment, Reaction, Server, ServerInviteUsageLog, ServerMember, WsChatMessage, WsMessage } from './types/protocol'
+import type { Attachment, CustomEmoji, Reaction, Server, ServerInviteUsageLog, ServerMember, WsChatMessage, WsMessage } from './types/protocol'
 import './App.css'
 
 // URL processing utilities
@@ -40,43 +40,105 @@ function sanitizeUrl(url: string): string | null {
   }
 }
 
-function linkifyText(text: string): React.ReactNode[] {
+function parseCustomEmojis(text: string, emojis: CustomEmoji[]): React.ReactNode[] {
   const parts: React.ReactNode[] = []
   let lastIndex = 0
-  const regex = new RegExp(URL_REGEX)
+  // Match :emoji_name: pattern
+  const emojiRegex = /:([a-zA-Z0-9_]+):/g
   let match: RegExpExecArray | null
 
-  while ((match = regex.exec(text)) !== null) {
-    // Add text before the URL
+  while ((match = emojiRegex.exec(text)) !== null) {
+    // Add text before the emoji
     if (match.index > lastIndex) {
       parts.push(<span key={`text-${lastIndex}`}>{text.slice(lastIndex, match.index)}</span>)
     }
 
-    const url = match[0]
-    const safeUrl = sanitizeUrl(url)
-    
-    if (safeUrl) {
+    const emojiName = match[1]
+    const customEmoji = emojis?.find((e) => e.name === emojiName)
+
+    if (customEmoji) {
+      // Replace with custom emoji image
       parts.push(
-        <a
-          key={`link-${match.index}`}
-          href={safeUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-sky-400 hover:text-sky-300 underline"
-        >
-          {url}
-        </a>
+        <img
+          key={`emoji-${match.index}`}
+          src={customEmoji.image_data}
+          alt={`:${emojiName}:`}
+          title={`:${emojiName}:`}
+          className="inline-block w-5 h-5 align-middle mx-0.5"
+        />
       )
     } else {
-      parts.push(<span key={`unsafe-${match.index}`}>{url}</span>)
+      // Keep the original text if emoji not found
+      parts.push(<span key={`text-${match.index}`}>{match[0]}</span>)
     }
 
-    lastIndex = regex.lastIndex
+    lastIndex = emojiRegex.lastIndex
   }
 
   // Add remaining text
   if (lastIndex < text.length) {
     parts.push(<span key={`text-${lastIndex}`}>{text.slice(lastIndex)}</span>)
+  }
+
+  return parts.length > 0 ? parts : [<span key="text-0">{text}</span>]
+}
+
+function processMessageContent(text: string, emojis?: CustomEmoji[]): React.ReactNode[] {
+  // First, split by URLs to preserve them
+  const urlRegex = new RegExp(URL_REGEX, 'g')
+  const parts: React.ReactNode[] = []
+  let lastIndex = 0
+  let partKey = 0
+
+  const urlMatches: Array<{ index: number; text: string; url: string }> = []
+  let match: RegExpExecArray | null
+
+  while ((match = urlRegex.exec(text)) !== null) {
+    urlMatches.push({
+      index: match.index,
+      text: match[0],
+      url: match[0]
+    })
+  }
+
+  urlMatches.forEach((urlMatch) => {
+    // Process text before URL (with emoji parsing)
+    if (urlMatch.index > lastIndex) {
+      const textSegment = text.slice(lastIndex, urlMatch.index)
+      const emojiParsed = parseCustomEmojis(textSegment, emojis || [])
+      emojiParsed.forEach((node) => {
+        parts.push(<span key={`segment-${partKey++}`}>{node}</span>)
+      })
+    }
+
+    // Add the URL as a link
+    const safeUrl = sanitizeUrl(urlMatch.url)
+    if (safeUrl) {
+      parts.push(
+        <a
+          key={`link-${partKey++}`}
+          href={safeUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-sky-400 hover:text-sky-300 underline"
+        >
+          {urlMatch.text}
+        </a>
+      )
+    } else {
+      parts.push(<span key={`unsafe-${partKey++}`}>{urlMatch.text}</span>)
+    }
+
+    lastIndex = urlMatch.index + urlMatch.text.length
+  })
+
+  // Process remaining text after last URL (with emoji parsing)
+  if (lastIndex < text.length) {
+    const textSegment = text.slice(lastIndex)
+    const emojiParsed = parseCustomEmojis(textSegment, emojis || [])
+    emojiParsed.forEach((node) => {
+      parts.push(<span key={`segment-${partKey++}`}>{node}</span>)
+    })
   }
 
   return parts.length > 0 ? parts : [<span key="text-0">{text}</span>]
@@ -2722,7 +2784,12 @@ function ChatPage() {
                               {/* Normal message display */}
                               {m.content && (
                                 <>
-                                  <div className="mt-1 whitespace-pre-wrap text-sm text-slate-200">{linkifyText(m.content)}</div>
+                                  <div className="mt-1 whitespace-pre-wrap text-sm text-slate-200">
+                                    {processMessageContent(
+                                      m.content, 
+                                      selectedContext?.kind === 'server' ? serverEmojis[selectedContext.serverId] : undefined
+                                    )}
+                                  </div>
                                   <MessageEmbeds content={m.content} />
                                 </>
                               )}
