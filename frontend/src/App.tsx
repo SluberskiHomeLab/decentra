@@ -6,7 +6,7 @@ import { contextKey, useAppStore } from './store/appStore'
 import { useToastStore } from './store/toastStore'
 import { VoiceChat } from './lib/VoiceChat'
 import type { ChatContext } from './store/appStore'
-import type { Attachment, Reaction, Server, ServerInviteUsageLog, ServerMember, WsChatMessage, WsMessage } from './types/protocol'
+import type { Attachment, CustomEmoji, Reaction, Server, ServerInviteUsageLog, ServerMember, WsChatMessage, WsMessage } from './types/protocol'
 import { LicensePanel } from './components/admin/LicensePanel'
 import { useLicenseStore } from './store/licenseStore'
 import './App.css'
@@ -57,8 +57,8 @@ function linkifyText(text: string, mentionRenderer?: (content: string) => React.
           </span>
         )
       } else if (part) {
-        // This is regular text - apply linkification to it
-        const linkified = linkifyTextPart(part, `part-${mentionIndex}`)
+        // This is regular text - apply custom renderer to it (for emojis) then linkify URLs
+        const linkified = linkifyTextPartWithRenderer(part, `part-${mentionIndex}`, mentionRenderer)
         processedParts.push(...linkified)
       }
     })
@@ -110,6 +110,50 @@ function linkifyTextPart(text: string, keyPrefix: string): React.ReactNode[] {
   }
 
   return parts.length > 0 ? parts : [<span key={`${keyPrefix}-0`}>{text}</span>]
+}
+
+function linkifyTextPartWithRenderer(text: string, keyPrefix: string, renderer: (content: string) => React.ReactNode): React.ReactNode[] {
+  const parts: React.ReactNode[] = []
+  let lastIndex = 0
+  const regex = new RegExp(URL_REGEX)
+  let match: RegExpExecArray | null
+
+  while ((match = regex.exec(text)) !== null) {
+    // Add text before the URL (with emoji rendering)
+    if (match.index > lastIndex) {
+      const textBeforeUrl = text.slice(lastIndex, match.index)
+      parts.push(<span key={`${keyPrefix}-${lastIndex}`}>{renderer(textBeforeUrl)}</span>)
+    }
+
+    const url = match[0]
+    const safeUrl = sanitizeUrl(url)
+    
+    if (safeUrl) {
+      parts.push(
+        <a
+          key={`${keyPrefix}-link-${match.index}`}
+          href={safeUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-sky-400 hover:text-sky-300 underline"
+        >
+          {url}
+        </a>
+      )
+    } else {
+      parts.push(<span key={`${keyPrefix}-unsafe-${match.index}`}>{url}</span>)
+    }
+
+    lastIndex = regex.lastIndex
+  }
+
+  // Add remaining text (with emoji rendering)
+  if (lastIndex < text.length) {
+    const remainingText = text.slice(lastIndex)
+    parts.push(<span key={`${keyPrefix}-${lastIndex}`}>{renderer(remainingText)}</span>)
+  }
+
+  return parts.length > 0 ? parts : [<span key={`${keyPrefix}-0`}>{renderer(text)}</span>]
 }
 
 function MessageEmbeds({ content }: { content: string }): React.ReactElement | null {
@@ -1080,7 +1124,7 @@ function ChatPage() {
   // Mention autocomplete state
   const [showMentionAutocomplete, setShowMentionAutocomplete] = useState(false)
   const [mentionSearch, setMentionSearch] = useState('')
-  const [mentionStartPos, setMentionStartPos] = useState<number>(0)
+  const [mentionStartPos, _setMentionStartPos] = useState<number>(0)
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0)
   // const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
   // const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([])
@@ -2473,34 +2517,6 @@ function ChatPage() {
 
   const handleDraftChange = (newDraft: string) => {
     setDraft(newDraft)
-    
-    // Check if we should show mention autocomplete
-    const cursorPos = newDraft.length
-    const textBeforeCursor = newDraft.slice(0, cursorPos)
-    const lastAtIndex = textBeforeCursor.lastIndexOf('@')
-    
-    if (lastAtIndex !== -1) {
-      const textAfterAt = textBeforeCursor.slice(lastAtIndex + 1)
-      // Only show autocomplete if there's no space after @ (still typing the mention)
-      if (!textAfterAt.includes(' ')) {
-        setMentionSearch(textAfterAt.toLowerCase())
-        setMentionStartPos(lastAtIndex)
-        setShowMentionAutocomplete(true)
-        setSelectedMentionIndex(0)
-        return
-      }
-    }
-    
-    setShowMentionAutocomplete(false)
-  }
-
-  const getFilteredMentionUsers = (): ServerMember[] => {
-    if (selectedContext.kind !== 'server' || !selectedServerId) return []
-    const members = serverMembers[selectedServerId] || []
-    if (!mentionSearch) return members
-    return members.filter(m => 
-      m.username.toLowerCase().startsWith(mentionSearch)
-    )
   }
 
   const insertMention = (username: string) => {
@@ -2511,10 +2527,29 @@ function ChatPage() {
     setMentionSearch('')
   }
 
-  const renderMessageContent = (content: string): React.ReactNode => {
-    // Highlight mentions with @username format
-    const parts = content.split(/(@\w+)/g)
+  const getFilteredMentionUsers = () => {
+    if (!selectedContext || selectedContext.kind !== 'server') return []
+    const members = serverMembers[selectedContext.serverId] || []
+    if (!mentionSearch) return members.slice(0, 10)
+    return members.filter((m: ServerMember) => 
+      m.username.toLowerCase().startsWith(mentionSearch.toLowerCase())
+    ).slice(0, 10)
+  }
+
+  const renderMessageContent = (content: string, messageContext?: string, messageContextId?: string | null): React.ReactNode => {
+    // Determine which server's emojis to use based on message context
+    let availableEmojis: CustomEmoji[] = []
+    if (messageContext === 'server' && messageContextId) {
+      const serverId = messageContextId.split('/')[0]
+      availableEmojis = serverEmojis[serverId] || []
+      console.log('Debug emoji rendering:', { serverId, availableEmojis, serverEmojis, content })
+    }
+
+    // Split by both mentions and custom emojis
+    const parts = content.split(/(@\w+|:\w+:)/g)
+    console.log('Split parts:', parts)
     return parts.map((part, index) => {
+      // Handle mentions
       if (part.match(/^@\w+$/)) {
         const mentionedUser = part.slice(1)
         const isCurrentUser = mentionedUser === init?.username
@@ -2531,6 +2566,27 @@ function ChatPage() {
           </span>
         )
       }
+      
+      // Handle custom emojis
+      if (part.match(/^:\w+:$/)) {
+        const emojiName = part.slice(1, -1) // Remove the colons
+        const emoji = availableEmojis.find(e => e.name === emojiName)
+        console.log('Emoji lookup:', { part, emojiName, emoji, availableEmojis })
+        if (emoji) {
+          return (
+            <img
+              key={index}
+              src={emoji.image_data}
+              alt={`:${emojiName}:`}
+              title={`:${emojiName}:`}
+              className="inline-block w-5 h-5 object-contain align-text-bottom mx-0.5"
+            />
+          )
+        }
+        // If emoji not found, return the text as-is
+        return <span key={index}>{part}</span>
+      }
+      
       return <span key={index}>{part}</span>
     })
   }
@@ -3424,7 +3480,7 @@ function ChatPage() {
                                   }}
                                   className="hover:underline truncate max-w-[400px]"
                                 >
-                                  {m.reply_data.deleted ? '[Message deleted]' : m.reply_data.content}
+                                  {m.reply_data.deleted ? '[Message deleted]' : renderMessageContent(m.reply_data.content, m.context, m.context_id)}
                                 </button>
                               </div>
                             </div>
@@ -3463,7 +3519,7 @@ function ChatPage() {
                               {/* Normal message display */}
                               {m.content && (
                                 <>
-                                  <div className="mt-1 whitespace-pre-wrap text-sm text-slate-200">{linkifyText(m.content, renderMessageContent)}</div>
+                                  <div className="mt-1 whitespace-pre-wrap text-sm text-slate-200">{linkifyText(m.content, (content) => renderMessageContent(content, m.context, m.context_id))}</div>
                                   <MessageEmbeds content={m.content} />
                                 </>
                               )}
@@ -3622,7 +3678,7 @@ function ChatPage() {
                 <div className="mb-2 rounded-xl border border-white/10 bg-slate-900/40 p-3 flex items-start justify-between">
                   <div className="flex-1">
                     <div className="text-xs font-semibold text-slate-400 mb-1">Replying to {replyingTo.username}</div>
-                    <div className="text-sm text-slate-300 truncate">{replyingTo.content}</div>
+                    <div className="text-sm text-slate-300 truncate">{renderMessageContent(replyingTo.content, replyingTo.context, replyingTo.context_id)}</div>
                   </div>
                   <button
                     type="button"
