@@ -96,7 +96,7 @@ class LicenseValidator:
         self._valid: bool = False
         self._license_server_url = license_server_url or os.getenv(
             "LICENSE_SERVER_URL",
-            "https://licenses.decentra.example.com"
+            "https://licensevalidation.decentrachat.cc"
         )
 
     # ----- core validation ------------------------------------------------

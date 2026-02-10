@@ -250,6 +250,22 @@ class Database:
                         )
                     ''')
                     
+                    # Server bans table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS server_bans (
+                            ban_id SERIAL PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            username VARCHAR(255) NOT NULL,
+                            banned_by VARCHAR(255) NOT NULL,
+                            reason TEXT,
+                            banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE (server_id, username),
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE,
+                            FOREIGN KEY (banned_by) REFERENCES users(username)
+                        )
+                    ''')
+                    
                     # Email verification codes table
                     cursor.execute('''
                         CREATE TABLE IF NOT EXISTS email_verification_codes (
@@ -557,6 +573,12 @@ class Database:
                                 WHERE table_name = 'messages' AND column_name = 'deleted'
                             ) THEN
                                 ALTER TABLE messages ADD COLUMN deleted BOOLEAN DEFAULT FALSE;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'messages' AND column_name = 'reply_to'
+                            ) THEN
+                                ALTER TABLE messages ADD COLUMN reply_to INTEGER REFERENCES messages(id) ON DELETE SET NULL;
                             END IF;
                         END $$;
                     ''')
@@ -1655,8 +1677,101 @@ class Database:
             ''', (role_id,))
             return [row['username'] for row in cursor.fetchall()]
     
+    # Ban operations
+    def ban_user_from_server(self, server_id: str, username: str, banned_by: str, reason: str = None) -> bool:
+        """Ban a user from a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO server_bans (server_id, username, banned_by, reason)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (server_id, username) DO UPDATE
+                    SET banned_by = EXCLUDED.banned_by,
+                        reason = EXCLUDED.reason,
+                        banned_at = CURRENT_TIMESTAMP
+                ''', (server_id, username, banned_by, reason))
+                
+                # Remove user from server members
+                cursor.execute('''
+                    DELETE FROM server_members
+                    WHERE server_id = %s AND username = %s
+                ''', (server_id, username))
+                
+                # Remove user's roles in this server
+                cursor.execute('''
+                    DELETE FROM user_roles
+                    WHERE server_id = %s AND username = %s
+                ''', (server_id, username))
+                
+                return True
+        except Exception as e:
+            print(f"Error banning user: {e}")
+            return False
+    
+    def unban_user_from_server(self, server_id: str, username: str) -> bool:
+        """Unban a user from a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    DELETE FROM server_bans
+                    WHERE server_id = %s AND username = %s
+                ''', (server_id, username))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error unbanning user: {e}")
+            return False
+    
+    def is_user_banned(self, server_id: str, username: str) -> bool:
+        """Check if a user is banned from a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT 1 FROM server_bans
+                    WHERE server_id = %s AND username = %s
+                    LIMIT 1
+                ''', (server_id, username))
+                return cursor.fetchone() is not None
+        except Exception as e:
+            print(f"Error checking ban status: {e}")
+            return False
+    
+    def get_server_bans(self, server_id: str) -> List[Dict]:
+        """Get all bans for a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT ban_id, server_id, username, banned_by, reason, banned_at
+                    FROM server_bans
+                    WHERE server_id = %s
+                    ORDER BY banned_at DESC
+                ''', (server_id,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting server bans: {e}")
+            return []
+    
+    def get_user_ban_info(self, server_id: str, username: str) -> Optional[Dict]:
+        """Get ban information for a specific user in a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT ban_id, server_id, username, banned_by, reason, banned_at
+                    FROM server_bans
+                    WHERE server_id = %s AND username = %s
+                ''', (server_id, username))
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            print(f"Error getting user ban info: {e}")
+            return None
+    
     # Message operations
-    def save_message(self, username: str, content: str, context_type: str, context_id: Optional[str] = None) -> int:
+    def save_message(self, username: str, content: str, context_type: str, context_id: Optional[str] = None, reply_to: Optional[int] = None) -> int:
         """Save a message and return its ID. Message content is encrypted before storage."""
         # Encrypt message content before storing
         try:
@@ -1668,10 +1783,10 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO messages (username, content, timestamp, context_type, context_id)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO messages (username, content, timestamp, context_type, context_id, reply_to)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 RETURNING id
-            ''', (username, encrypted_content, datetime.now(), context_type, context_id))
+            ''', (username, encrypted_content, datetime.now(), context_type, context_id, reply_to))
             result = cursor.fetchone()
             return result['id']
     
@@ -1685,9 +1800,15 @@ class Database:
                        m.context_type, m.context_id,
                        m.edited_at::text as edited_at,
                        m.deleted,
-                       u.avatar, u.avatar_type, u.avatar_data
+                       m.reply_to,
+                       u.avatar, u.avatar_type, u.avatar_data,
+                       rm.id as reply_msg_id,
+                       rm.username as reply_username,
+                       rm.content as reply_content,
+                       rm.deleted as reply_deleted
                 FROM messages m
                 LEFT JOIN users u ON m.username = u.username
+                LEFT JOIN messages rm ON m.reply_to = rm.id
                 WHERE m.context_type = %s AND m.context_id = %s
                 ORDER BY m.timestamp DESC
                 LIMIT %s
@@ -1698,6 +1819,24 @@ class Database:
                 msg = dict(row)
                 # Decrypt the message content
                 msg['content'] = self.encryption_manager.decrypt(msg['content'])
+                
+                # Add reply information if present
+                if msg.get('reply_to') and msg.get('reply_msg_id'):
+                    # Decrypt the reply content
+                    reply_content = self.encryption_manager.decrypt(msg['reply_content']) if msg['reply_content'] else None
+                    msg['reply_data'] = {
+                        'id': msg['reply_msg_id'],
+                        'username': msg['reply_username'],
+                        'content': reply_content,
+                        'deleted': msg['reply_deleted']
+                    }
+                
+                # Remove the temporary reply fields from the main message
+                msg.pop('reply_msg_id', None)
+                msg.pop('reply_username', None)
+                msg.pop('reply_content', None)
+                msg.pop('reply_deleted', None)
+                
                 messages.append(msg)
             return messages
     

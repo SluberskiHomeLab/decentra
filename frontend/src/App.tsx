@@ -1098,6 +1098,23 @@ function ChatPage() {
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null)
   const [twoFASetup, setTwoFASetup] = useState<{ secret: string; qr_code: string; backup_codes: string[] } | null>(null)
   const [twoFACode, setTwoFACode] = useState('')
+  
+  // Role management state
+  const [serverRoles, setServerRoles] = useState<Record<string, any[]>>({})
+  const [selectedRole, setSelectedRole] = useState<any | null>(null)
+  const [isCreateRoleOpen, setIsCreateRoleOpen] = useState(false)
+  const [roleName, setRoleName] = useState('')
+  const [roleColor, setRoleColor] = useState('#99AAB5')
+  const [rolePermissions, setRolePermissions] = useState<string[]>([])
+  const [memberRoles, setMemberRoles] = useState<Record<string, any[]>>({})
+  const [isViewingMemberRoles, setIsViewingMemberRoles] = useState(false)
+  const [selectedMemberForRole, setSelectedMemberForRole] = useState<string | null>(null)
+  
+  // Ban management state
+  const [serverBans, setServerBans] = useState<Record<string, any[]>>({})
+  const [isViewingBans, setIsViewingBans] = useState(false)
+  const [banUsername, setBanUsername] = useState('')
+  const [banReason, setBanReason] = useState('')
   const [disable2FAPassword, setDisable2FAPassword] = useState('')
   const [disable2FACode, setDisable2FACode] = useState('')
   const [notificationMode, setNotificationMode] = useState<'all' | 'mentions' | 'none'>('all')
@@ -1107,6 +1124,9 @@ function ChatPage() {
   const [newUsername, setNewUsername] = useState('')
   const [usernamePassword, setUsernamePassword] = useState('')
   const [usernameChangeStatus, setUsernameChangeStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null)
+  
+  // Reply state
+  const [replyingTo, setReplyingTo] = useState<WsChatMessage | null>(null)
 
   const pushToast = useToastStore((s) => s.push)
 
@@ -1464,6 +1484,92 @@ function ChatPage() {
           pushToast({ kind: 'error', message: msg.message || 'SMTP test failed' })
         }
       }
+      
+      // Role management messages
+      if (msg.type === 'server_roles') {
+        setServerRoles((prev) => ({
+          ...prev,
+          [msg.server_id]: msg.roles ?? [],
+        }))
+      }
+      
+      if (msg.type === 'role_created') {
+        pushToast({ kind: 'success', message: 'Role created successfully' })
+        if (selectedServerId) {
+          wsClient.send({ type: 'get_server_roles', server_id: selectedServerId })
+        }
+      }
+      
+      if (msg.type === 'role_updated') {
+        pushToast({ kind: 'success', message: 'Role updated successfully' })
+        if (selectedServerId) {
+          wsClient.send({ type: 'get_server_roles', server_id: selectedServerId })
+        }
+      }
+      
+      if (msg.type === 'role_deleted') {
+        pushToast({ kind: 'success', message: 'Role deleted successfully' })
+        if (selectedServerId) {
+          wsClient.send({ type: 'get_server_roles', server_id: selectedServerId })
+        }
+      }
+      
+      if (msg.type === 'role_assigned') {
+        pushToast({ kind: 'success', message: 'Role assigned successfully' })
+      }
+      
+      if (msg.type === 'role_removed') {
+        pushToast({ kind: 'success', message: 'Role removed successfully' })
+      }
+      
+      if (msg.type === 'user_roles') {
+        setMemberRoles((prev) => ({
+          ...prev,
+          [`${msg.server_id}:${msg.username}`]: msg.roles ?? [],
+        }))
+      }
+      
+      // Ban management messages
+      if (msg.type === 'server_bans') {
+        setServerBans((prev) => ({
+          ...prev,
+          [msg.server_id]: msg.bans ?? [],
+        }))
+      }
+      
+      if (msg.type === 'member_banned') {
+        pushToast({ kind: 'info', message: `${msg.username} has been banned` })
+        if (msg.server_id && selectedServerId === msg.server_id) {
+          // Refresh bans list if viewing
+          wsClient.send({ type: 'get_server_bans', server_id: msg.server_id })
+          // Refresh members list
+          wsClient.send({ type: 'get_server_members', server_id: msg.server_id })
+        }
+      }
+      
+      if (msg.type === 'member_unbanned') {
+        pushToast({ kind: 'success', message: `${msg.username} has been unbanned` })
+        if (msg.server_id && selectedServerId === msg.server_id) {
+          wsClient.send({ type: 'get_server_bans', server_id: msg.server_id })
+        }
+      }
+      
+      if (msg.type === 'banned_from_server') {
+        pushToast({ kind: 'error', message: `You have been banned from the server. Reason: ${msg.reason || 'No reason provided'}` })
+        // Remove server from list
+        const prev = useAppStore.getState().init
+        if (prev && msg.server_id) {
+          const servers = (prev.servers ?? []).filter((s) => s.id !== msg.server_id)
+          setInit({ ...prev, servers })
+        }
+      }
+      
+      if (msg.type === 'reply_notification') {
+        const repliedBy = msg.replied_by || 'Someone'
+        const content = msg.content || ''
+        const preview = content.length > 50 ? content.substring(0, 50) + '...' : content
+        pushToast({ kind: 'info', message: `${repliedBy} replied to your message: "${preview}"` })
+      }
 
       if (msg.type === 'announcement_update') {
         const enabled = msg.enabled === true
@@ -1791,6 +1897,96 @@ function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedContext])
 
+  // Load server roles when server settings modal is opened
+  useEffect(() => {
+    if (isServerSettingsOpen && selectedServerId && wsClient.readyState === WebSocket.OPEN) {
+      loadServerRoles(selectedServerId)
+      loadServerBans(selectedServerId)
+      loadServerMembers(selectedServerId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isServerSettingsOpen, selectedServerId])
+
+  // Load member roles for the selected server
+  useEffect(() => {
+    if (selectedContext.kind === 'server' && wsClient.readyState === WebSocket.OPEN) {
+      const serverId = selectedContext.serverId
+      const members = serverMembers[serverId]
+      
+      if (members && members.length > 0) {
+        // Load roles for all members
+        members.forEach((member: any) => {
+          loadUserRoles(serverId, member.username)
+        })
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedContext, serverMembers])
+
+  // Helper function to get username style based on role color
+  const getUsernameStyle = (message: any) => {
+    if (message.role_color) {
+      return { color: message.role_color }
+    }
+    return {}
+  }
+
+  // Helper function to get the highest role color for a member
+  const getMemberRoleColor = (serverId: string, username: string) => {
+    const memberKey = `${serverId}:${username}`
+    const userRoles = memberRoles[memberKey] || []
+    
+    // Return the color of the first role (highest priority)
+    if (userRoles.length > 0 && userRoles[0].color) {
+      return userRoles[0].color
+    }
+    
+    return null
+  }
+
+  // Helper function to organize members by role
+  const organizeMembersByRole = (serverId: string, members: any[]) => {
+    const roleGroups: Record<string, { role: any | null; members: any[] }> = {}
+    
+    members.forEach((member) => {
+      const memberKey = `${serverId}:${member.username}`
+      const userRoles = memberRoles[memberKey] || []
+      
+      // Get the highest role (first in the array)
+      const highestRole = userRoles.length > 0 ? userRoles[0] : null
+      const roleName = highestRole?.name || 'No Role'
+      
+      if (!roleGroups[roleName]) {
+        roleGroups[roleName] = {
+          role: highestRole,
+          members: []
+        }
+      }
+      
+      roleGroups[roleName].members.push(member)
+    })
+    
+    // Sort members within each role group alphabetically
+    Object.values(roleGroups).forEach((group) => {
+      group.members.sort((a, b) => a.username.localeCompare(b.username))
+    })
+    
+    // Convert to array and sort by role name
+    const sortedGroups = Object.entries(roleGroups)
+      .map(([roleName, group]) => ({
+        roleName,
+        ...group
+      }))
+      .sort((a, b) => {
+        // "No Role" should be at the bottom
+        if (a.roleName === 'No Role') return 1
+        if (b.roleName === 'No Role') return -1
+        return a.roleName.localeCompare(b.roleName)
+      })
+    
+    return sortedGroups
+  }
+
   const selectedTitle =
     selectedContext.kind === 'global'
       ? 'Global'
@@ -1810,24 +2006,28 @@ function ChatPage() {
 
     // Extract mentions from the message
     const mentions = extractMentions(content)
+    
+    // Get reply_to ID if replying
+    const reply_to = replyingTo?.id || undefined
 
     // If there are files, send message first, then upload files
     if (selectedFiles.length > 0) {
-      await sendMessageWithFiles(content || '', mentions)
+      await sendMessageWithFiles(content || '', mentions, reply_to)
     } else {
       // Just send text message
       if (selectedContext.kind === 'server') {
-        wsClient.sendMessage({ type: 'message', content, context: 'server', context_id: `${selectedContext.serverId}/${selectedContext.channelId}`, mentions })
+        wsClient.sendMessage({ type: 'message', content, context: 'server', context_id: `${selectedContext.serverId}/${selectedContext.channelId}`, mentions, reply_to })
       } else if (selectedContext.kind === 'dm') {
-        wsClient.sendMessage({ type: 'message', content, context: 'dm', context_id: selectedContext.dmId, mentions })
+        wsClient.sendMessage({ type: 'message', content, context: 'dm', context_id: selectedContext.dmId, mentions, reply_to })
       } else {
-        wsClient.sendMessage({ type: 'message', content, context: 'global', context_id: null, mentions })
+        wsClient.sendMessage({ type: 'message', content, context: 'global', context_id: null, mentions, reply_to })
       }
       setDraft('')
+      setReplyingTo(null)
     }
   }
 
-  const sendMessageWithFiles = async (content: string, mentions: string[] = []) => {
+  const sendMessageWithFiles = async (content: string, mentions: string[] = [], reply_to?: number) => {
     setIsUploading(true)
     try {
       // Create a one-time listener for the message response
@@ -1848,7 +2048,8 @@ function ChatPage() {
           content, 
           context: 'server', 
           context_id: `${selectedContext.serverId}/${selectedContext.channelId}`,
-          mentions
+          mentions,
+          reply_to
         })
       } else if (selectedContext.kind === 'dm') {
         wsClient.sendMessage({ 
@@ -1856,7 +2057,8 @@ function ChatPage() {
           content, 
           context: 'dm', 
           context_id: selectedContext.dmId,
-          mentions
+          mentions,
+          reply_to
         })
       } else {
         wsClient.sendMessage({ 
@@ -1864,7 +2066,8 @@ function ChatPage() {
           content, 
           context: 'global', 
           context_id: null,
-          mentions
+          mentions,
+          reply_to
         })
       }
 
@@ -1920,9 +2123,10 @@ function ChatPage() {
         useAppStore.getState().updateMessage(messageId, { attachments: uploadedAttachments })
       }
 
-      // Clear files and draft
+      // Clear files, draft, and reply
       setSelectedFiles([])
       setDraft('')
+      setReplyingTo(null)
       pushToast({ kind: 'success', message: 'Message and files sent successfully' })
     } catch (error) {
       pushToast({ kind: 'error', message: 'Failed to upload files' })
@@ -2121,6 +2325,139 @@ function ChatPage() {
   const insertEmoji = (emoji: string) => {
     setDraft((prev) => prev + emoji)
     setIsEmojiPickerOpen(false)
+  }
+
+  // Role management functions
+  const loadServerRoles = (serverId: string) => {
+    wsClient.send({
+      type: 'get_server_roles',
+      server_id: serverId,
+    })
+  }
+
+  const createRole = () => {
+    if (!selectedServerId || !roleName.trim()) return
+    wsClient.send({
+      type: 'create_role',
+      server_id: selectedServerId,
+      name: roleName.trim(),
+      color: roleColor,
+      permissions: rolePermissions,
+    })
+    setIsCreateRoleOpen(false)
+    setRoleName('')
+    setRoleColor('#3B82F6')
+    setRolePermissions([])
+  }
+
+  const updateRole = () => {
+    if (!selectedServerId || !selectedRole || !roleName.trim()) return
+    wsClient.send({
+      type: 'update_role',
+      server_id: selectedServerId,
+      role_id: selectedRole,
+      name: roleName.trim(),
+      color: roleColor,
+      permissions: rolePermissions,
+    })
+    setIsCreateRoleOpen(false)
+    setSelectedRole(null)
+    setRoleName('')
+    setRoleColor('#3B82F6')
+    setRolePermissions([])
+  }
+
+  const deleteRole = (roleId: string) => {
+    if (!selectedServerId || !confirm('Are you sure you want to delete this role?')) return
+    wsClient.send({
+      type: 'delete_role',
+      server_id: selectedServerId,
+      role_id: roleId,
+    })
+  }
+
+  const openEditRole = (role: any) => {
+    setSelectedRole(role.id)
+    setRoleName(role.name)
+    setRoleColor(role.color || '#3B82F6')
+    setRolePermissions(role.permissions || [])
+    setIsCreateRoleOpen(true)
+  }
+
+  const togglePermission = (permission: string) => {
+    setRolePermissions((prev) =>
+      prev.includes(permission)
+        ? prev.filter((p) => p !== permission)
+        : [...prev, permission]
+    )
+  }
+
+  const assignRoleToMember = (username: string, roleId: string) => {
+    if (!selectedServerId) return
+    wsClient.send({
+      type: 'assign_role',
+      server_id: selectedServerId,
+      username,
+      role_id: roleId,
+    })
+    // Refresh user roles
+    loadUserRoles(selectedServerId, username)
+  }
+
+  const removeRoleFromMember = (username: string, roleId: string) => {
+    if (!selectedServerId) return
+    wsClient.send({
+      type: 'remove_role_from_user',
+      server_id: selectedServerId,
+      username,
+      role_id: roleId,
+    })
+    // Refresh user roles
+    loadUserRoles(selectedServerId, username)
+  }
+
+  const loadUserRoles = (serverId: string, username: string) => {
+    wsClient.send({
+      type: 'get_user_roles',
+      server_id: serverId,
+      username,
+    })
+  }
+
+  const loadServerMembers = (serverId: string) => {
+    wsClient.send({
+      type: 'get_server_members',
+      server_id: serverId,
+    })
+  }
+
+  // Ban management functions
+  const loadServerBans = (serverId: string) => {
+    wsClient.send({
+      type: 'get_server_bans',
+      server_id: serverId,
+    })
+  }
+
+  const banMember = () => {
+    if (!selectedServerId || !banUsername.trim()) return
+    wsClient.send({
+      type: 'ban_member',
+      server_id: selectedServerId,
+      username: banUsername.trim(),
+      reason: banReason.trim() || undefined,
+    })
+    setBanUsername('')
+    setBanReason('')
+  }
+
+  const unbanMember = (username: string) => {
+    if (!selectedServerId) return
+    wsClient.send({
+      type: 'unban_member',
+      server_id: selectedServerId,
+      username,
+    })
   }
 
   // Mention handling functions
@@ -2995,7 +3332,7 @@ function ChatPage() {
                 ) : (
                   <div className="flex flex-col gap-3">
                     {messages.map((m: WsChatMessage, idx: number) => (
-                      <div key={(m.id ?? idx).toString()} className="group flex gap-3">
+                      <div key={(m.id ?? idx).toString()} id={m.id ? `message-${m.id}` : undefined} className="group flex gap-3 transition rounded-lg px-2 py-1">
                         <div className="mt-0.5 shrink-0">
                           <AvatarWithStatus
                             avatar={m.avatar}
@@ -3007,7 +3344,12 @@ function ChatPage() {
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-baseline gap-x-2">
-                            <div className="font-semibold text-slate-100">{m.username}</div>
+                            <div 
+                              className="font-semibold text-slate-100" 
+                              style={getUsernameStyle(m)}
+                            >
+                              {m.username}
+                            </div>
                             <div className="text-xs text-slate-500">
                               {new Date(m.timestamp).toLocaleString()}
                               {m.edited_at && <span className="ml-1.5 text-slate-600">(edited)</span>}
@@ -3016,6 +3358,15 @@ function ChatPage() {
                             <div className="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
                               {m.id && (
                                 <>
+                                  {/* Reply button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => setReplyingTo(m)}
+                                    className="text-slate-400 hover:text-sky-400 text-sm px-1.5 py-0.5 rounded"
+                                    title="Reply"
+                                  >
+                                    ↩️
+                                  </button>
                                   {/* Reaction button */}
                                   <button
                                     type="button"
@@ -3051,6 +3402,33 @@ function ChatPage() {
                               )}
                             </div>
                           </div>
+                          
+                          {/* Reply reference - show if this message is a reply */}
+                          {m.reply_data && (
+                            <div className="mt-1 mb-1 pl-3 border-l-2 border-slate-600 text-xs text-slate-400">
+                              <div className="flex items-center gap-1">
+                                <span>↩️</span>
+                                <span className="font-medium text-slate-300">{m.reply_data.username}</span>
+                                <span>•</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    // Jump to message functionality
+                                    if (!m.reply_data) return
+                                    const element = document.getElementById(`message-${m.reply_data.id}`)
+                                    if (element) {
+                                      element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                                      element.classList.add('bg-sky-500/10')
+                                      setTimeout(() => element.classList.remove('bg-sky-500/10'), 2000)
+                                    }
+                                  }}
+                                  className="hover:underline truncate max-w-[400px]"
+                                >
+                                  {m.reply_data.deleted ? '[Message deleted]' : m.reply_data.content}
+                                </button>
+                              </div>
+                            </div>
+                          )}
                           
                           {/* Edit mode */}
                           {editingMessageId === m.id ? (
@@ -3238,6 +3616,24 @@ function ChatPage() {
                   )}
                 </div>
               )}
+              
+              {/* Replying to indicator */}
+              {replyingTo && (
+                <div className="mb-2 rounded-xl border border-white/10 bg-slate-900/40 p-3 flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="text-xs font-semibold text-slate-400 mb-1">Replying to {replyingTo.username}</div>
+                    <div className="text-sm text-slate-300 truncate">{replyingTo.content}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setReplyingTo(null)}
+                    className="ml-2 text-slate-400 hover:text-slate-200 text-lg"
+                    title="Cancel reply"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
 
               <form
                 onSubmit={(e) => {
@@ -3361,62 +3757,49 @@ function ChatPage() {
                   <div className="px-3 py-2 text-sm text-slate-400">No members</div>
                 ) : (
                   <div className="space-y-1">
-                    {/* Owner first */}
-                    {serverMembers[selectedServerId]
-                      .filter((member) => member.is_owner)
-                      .map((member) => (
-                        <div
-                          key={member.username}
-                          className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/5 transition"
+                    {/* Organize members by role */}
+                    {organizeMembersByRole(selectedServerId, serverMembers[selectedServerId]).map((roleGroup, idx) => (
+                      <div key={roleGroup.roleName}>
+                        {/* Role section header */}
+                        {idx > 0 && <div className="h-2"></div>}
+                        <div 
+                          className="px-2 py-1 text-xs font-semibold uppercase tracking-wide"
+                          style={{ color: roleGroup.role?.color || '#99AAB5' }}
                         >
-                          <AvatarWithStatus
-                            avatar={member.avatar}
-                            avatar_type={member.avatar_type}
-                            avatar_data={member.avatar_data}
-                            user_status={member.user_status}
-                            size="md"
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-sm font-medium text-slate-100 truncate">{member.username}</span>
-                              <span className="text-xs" title="Server Owner">👑</span>
+                          {roleGroup.roleName} — {roleGroup.members.length}
+                        </div>
+                        
+                        {/* Members in this role */}
+                        {roleGroup.members.map((member) => (
+                          <div
+                            key={member.username}
+                            className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/5 transition"
+                          >
+                            <AvatarWithStatus
+                              avatar={member.avatar}
+                              avatar_type={member.avatar_type}
+                              avatar_data={member.avatar_data}
+                              user_status={member.user_status}
+                              size="md"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span 
+                                  className="text-sm font-medium truncate"
+                                  style={{ color: getMemberRoleColor(selectedServerId, member.username) || '#e2e8f0' }}
+                                >
+                                  {member.username}
+                                </span>
+                                {member.is_owner && <span className="text-xs" title="Server Owner">👑</span>}
+                              </div>
+                              {member.status_message && (
+                                <div className="text-xs text-slate-400 truncate">{member.status_message}</div>
+                              )}
                             </div>
-                            {member.status_message && (
-                              <div className="text-xs text-slate-400 truncate">{member.status_message}</div>
-                            )}
                           </div>
-                        </div>
-                      ))}
-                    
-                    {/* Members section separator */}
-                    {serverMembers[selectedServerId].some((m) => m.is_owner) && 
-                     serverMembers[selectedServerId].some((m) => !m.is_owner) && (
-                      <div className="px-2 text-xs font-medium text-slate-500 uppercase mt-3 mb-1">Members</div>
-                    )}
-                    
-                    {/* Regular members */}
-                    {serverMembers[selectedServerId]
-                      .filter((member) => !member.is_owner)
-                      .map((member) => (
-                        <div
-                          key={member.username}
-                          className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/5 transition"
-                        >
-                          <AvatarWithStatus
-                            avatar={member.avatar}
-                            avatar_type={member.avatar_type}
-                            avatar_data={member.avatar_data}
-                            user_status={member.user_status}
-                            size="md"
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="text-sm font-medium text-slate-200 truncate">{member.username}</div>
-                            {member.status_message && (
-                              <div className="text-xs text-slate-400 truncate">{member.status_message}</div>
-                            )}
-                          </div>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -4343,9 +4726,9 @@ function ChatPage() {
 
         {/* Server Settings Modal */}
         {isServerSettingsOpen && selectedServerObj && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setIsServerSettingsOpen(false)}>
-            <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-              <div className="flex items-center justify-between border-b border-white/10 px-6 py-4">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsServerSettingsOpen(false)}>
+            <div className="w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-white/10 px-6 py-4 flex-shrink-0">
                 <div className="flex items-center gap-3">
                   <span className="text-2xl">{selectedServerObj.icon ?? '🏠'}</span>
                   <h2 className="text-xl font-semibold text-white">{selectedServerObj.name} Settings</h2>
@@ -4359,7 +4742,7 @@ function ChatPage() {
                 </button>
               </div>
 
-              <div className="p-6">
+              <div className="p-6 overflow-y-auto flex-1">
                 <div className="space-y-6">
                   {/* Create Channel Section */}
                   <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
@@ -4570,6 +4953,361 @@ function ChatPage() {
                       )}
                     </div>
                   </section>
+
+                  {/* Roles & Permissions Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Roles & Permissions</h3>
+                    <div className="space-y-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            loadServerRoles(selectedServerId)
+                          }
+                          setSelectedRole(null)
+                          setRoleName('')
+                          setRoleColor('#3B82F6')
+                          setRolePermissions([])
+                          setIsCreateRoleOpen(true)
+                        }}
+                        className="w-full rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                      >
+                        Create New Role
+                      </button>
+
+                      {selectedServerId && serverRoles[selectedServerId]?.length > 0 && (
+                        <div className="space-y-2 max-h-64 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                          {serverRoles[selectedServerId].map((role: any) => (
+                            <div
+                              key={role.id}
+                              className="flex items-center justify-between rounded-lg border border-white/10 bg-slate-900/60 p-3"
+                            >
+                              <div className="flex items-center gap-3">
+                                <div
+                                  className="h-4 w-4 rounded"
+                                  style={{ backgroundColor: role.color || '#3B82F6' }}
+                                />
+                                <div>
+                                  <div className="text-sm font-semibold text-white">{role.name}</div>
+                                  <div className="text-xs text-slate-400">
+                                    {role.permissions?.length || 0} permission(s)
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="flex gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => openEditRole(role)}
+                                  className="rounded-lg bg-slate-700 px-3 py-1 text-xs font-semibold text-slate-200 hover:bg-slate-600"
+                                >
+                                  Edit
+                                </button>
+                                {role.name !== 'Admin' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteRole(role.id)}
+                                    className="rounded-lg bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-500"
+                                  >
+                                    Delete
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+
+                  {/* Member Roles Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Member Roles</h3>
+                    <div className="space-y-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            loadServerMembers(selectedServerId)
+                            // Load roles for all members
+                            if (serverMembers[selectedServerId]) {
+                              serverMembers[selectedServerId].forEach((member: any) => {
+                                loadUserRoles(selectedServerId, member.username)
+                              })
+                            }
+                          }
+                          setIsViewingMemberRoles(!isViewingMemberRoles)
+                        }}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                      >
+                        {isViewingMemberRoles ? 'Hide Member Roles' : 'View Member Roles'}
+                      </button>
+
+                      {isViewingMemberRoles && selectedServerId && serverMembers[selectedServerId] && (
+                        <div className="space-y-2 max-h-96 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                          {serverMembers[selectedServerId].map((member: any) => {
+                            const memberKey = `${selectedServerId}:${member.username}`
+                            const userRoles = memberRoles[memberKey] || []
+                            const availableRoles = serverRoles[selectedServerId] || []
+                            
+                            return (
+                              <div
+                                key={member.username}
+                                className="rounded-lg border border-white/10 bg-slate-900/60 p-3"
+                              >
+                                <div className="flex items-center justify-between mb-2">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-semibold text-white">
+                                      {member.username}
+                                    </span>
+                                    {member.is_owner && (
+                                      <span className="text-xs bg-sky-500/20 text-sky-300 px-2 py-0.5 rounded">
+                                        Owner
+                                      </span>
+                                    )}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedMemberForRole(
+                                      selectedMemberForRole === member.username ? null : member.username
+                                    )}
+                                    className="text-xs rounded-lg bg-slate-700 px-3 py-1 text-slate-200 hover:bg-slate-600"
+                                  >
+                                    {selectedMemberForRole === member.username ? 'Close' : 'Manage Roles'}
+                                  </button>
+                                </div>
+
+                                {/* Current roles */}
+                                {userRoles.length > 0 && (
+                                  <div className="flex flex-wrap gap-1.5 mb-2">
+                                    {userRoles.map((role: any) => (
+                                      <div
+                                        key={role.id}
+                                        className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-slate-800/60 px-2 py-1"
+                                      >
+                                        <div
+                                          className="h-3 w-3 rounded"
+                                          style={{ backgroundColor: role.color || '#3B82F6' }}
+                                        />
+                                        <span className="text-xs text-slate-200">{role.name}</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => removeRoleFromMember(member.username, role.id)}
+                                          className="text-slate-400 hover:text-rose-400 text-xs"
+                                          title="Remove role"
+                                        >
+                                          ×
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {/* Role assignment dropdown */}
+                                {selectedMemberForRole === member.username && (
+                                  <div className="mt-2 space-y-1.5">
+                                    <div className="text-xs text-slate-400 mb-1">Assign Role:</div>
+                                    {availableRoles
+                                      .filter((role: any) => !userRoles.some((ur: any) => ur.id === role.id))
+                                      .map((role: any) => (
+                                        <button
+                                          key={role.id}
+                                          type="button"
+                                          onClick={() => {
+                                            assignRoleToMember(member.username, role.id)
+                                            setSelectedMemberForRole(null)
+                                          }}
+                                          className="w-full flex items-center gap-2 rounded-lg border border-white/10 bg-slate-800/40 px-3 py-2 text-left hover:bg-slate-700/40"
+                                        >
+                                          <div
+                                            className="h-3 w-3 rounded"
+                                            style={{ backgroundColor: role.color || '#3B82F6' }}
+                                          />
+                                          <span className="text-xs text-slate-200">{role.name}</span>
+                                        </button>
+                                      ))}
+                                    {availableRoles.filter((role: any) => !userRoles.some((ur: any) => ur.id === role.id)).length === 0 && (
+                                      <div className="text-xs text-slate-500 text-center py-2">
+                                        All roles assigned
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+
+                  {/* Banned Members Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Banned Members</h3>
+                    <div className="space-y-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            loadServerBans(selectedServerId)
+                          }
+                          setIsViewingBans(!isViewingBans)
+                        }}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                      >
+                        {isViewingBans ? 'Hide Banned Members' : 'View Banned Members'}
+                      </button>
+
+                      {isViewingBans && (
+                        <>
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              value={banUsername}
+                              onChange={(e) => setBanUsername(e.target.value)}
+                              placeholder="Username to ban"
+                              className="flex-1 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                            <input
+                              type="text"
+                              value={banReason}
+                              onChange={(e) => setBanReason(e.target.value)}
+                              placeholder="Reason (optional)"
+                              className="flex-1 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                            <button
+                              type="button"
+                              onClick={banMember}
+                              disabled={!banUsername.trim()}
+                              className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
+                            >
+                              Ban
+                            </button>
+                          </div>
+
+                          {selectedServerId && serverBans[selectedServerId]?.length > 0 ? (
+                            <div className="space-y-2 max-h-48 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                              {serverBans[selectedServerId].map((ban: any, idx: number) => (
+                                <div
+                                  key={idx}
+                                  className="flex items-center justify-between rounded-lg border border-white/10 bg-slate-900/60 p-3"
+                                >
+                                  <div>
+                                    <div className="text-sm font-semibold text-white">{ban.username}</div>
+                                    {ban.reason && (
+                                      <div className="text-xs text-slate-400">Reason: {ban.reason}</div>
+                                    )}
+                                    <div className="text-xs text-slate-500">
+                                      Banned: {new Date(ban.banned_at).toLocaleDateString()}
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => unbanMember(ban.username)}
+                                    className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
+                                  >
+                                    Unban
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            selectedServerId && serverBans[selectedServerId] && (
+                              <div className="text-sm text-slate-400 text-center py-4">
+                                No banned members
+                              </div>
+                            )
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </section>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Create/Edit Role Modal */}
+        {isCreateRoleOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsCreateRoleOpen(false)}>
+            <div className="w-full max-w-md max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-white/10 px-6 py-4 flex-shrink-0">
+                <h2 className="text-xl font-semibold text-white">{selectedRole ? 'Edit Role' : 'Create Role'}</h2>
+                <button
+                  type="button"
+                  onClick={() => setIsCreateRoleOpen(false)}
+                  className="text-2xl text-slate-400 hover:text-slate-200"
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="p-6 overflow-y-auto flex-1">
+                <div className="space-y-4">
+                  <label className="block">
+                    <div className="mb-1 text-sm text-slate-200">Role Name</div>
+                    <input
+                      type="text"
+                      value={roleName}
+                      onChange={(e) => setRoleName(e.target.value)}
+                      placeholder="Enter role name"
+                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    />
+                  </label>
+
+                  <label className="block">
+                    <div className="mb-1 text-sm text-slate-200">Role Color</div>
+                    <input
+                      type="color"
+                      value={roleColor}
+                      onChange={(e) => setRoleColor(e.target.value)}
+                      className="w-full h-10 rounded-xl border border-white/10 bg-slate-950/40 cursor-pointer"
+                    />
+                  </label>
+
+                  <div>
+                    <div className="mb-2 text-sm text-slate-200">Permissions</div>
+                    <div className="space-y-2 max-h-64 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                      {[
+                        { key: 'administrator', label: 'Administrator (All Permissions)' },
+                        { key: 'manage_server', label: 'Manage Server' },
+                        { key: 'manage_channels', label: 'Manage Channels' },
+                        { key: 'ban_members', label: 'Ban Members' },
+                        { key: 'delete_messages', label: 'Delete Messages' },
+                        { key: 'manage_emojis', label: 'Manage Emojis' },
+                        { key: 'send_messages', label: 'Send Messages' },
+                        { key: 'read_messages', label: 'Read Messages' },
+                      ].map((perm) => (
+                        <label key={perm.key} className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={rolePermissions.includes(perm.key)}
+                            onChange={() => togglePermission(perm.key)}
+                            className="rounded border-white/10 bg-slate-950/40 text-sky-500 focus:ring-sky-500/40"
+                          />
+                          <span className="text-sm text-slate-200">{perm.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex gap-3 justify-end pt-4">
+                    <button
+                      type="button"
+                      onClick={() => setIsCreateRoleOpen(false)}
+                      className="rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={selectedRole ? updateRole : createRole}
+                      disabled={!roleName.trim()}
+                      className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                    >
+                      {selectedRole ? 'Update Role' : 'Create Role'}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

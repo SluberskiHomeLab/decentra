@@ -130,6 +130,13 @@ export type WsChatMessage = {
   attachments?: Attachment[]
   mentions?: string[]
   user_status?: 'online' | 'away' | 'busy' | 'offline'
+  role_color?: string
+  reply_data?: {
+    id: number
+    username: string
+    content: string
+    deleted: boolean
+  }
 } & Avatar
 
 export type WsHistory = {
@@ -429,6 +436,7 @@ export type WsOutboundSendMessage = {
   context_id?: string | null
   mentions?: string[]
   messageKey?: string
+  reply_to?: number
 }
 
 export type WsOutboundCreateServer = {
