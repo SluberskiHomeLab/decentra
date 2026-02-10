@@ -9,6 +9,7 @@ import type { ChatContext } from './store/appStore'
 import type { Attachment, CustomEmoji, Reaction, Server, ServerInviteUsageLog, ServerMember, WsChatMessage, WsMessage } from './types/protocol'
 import { LicensePanel } from './components/admin/LicensePanel'
 import { useLicenseStore } from './store/licenseStore'
+import { notificationManager } from './utils/notifications'
 import './App.css'
 
 // URL processing utilities
@@ -1162,6 +1163,7 @@ function ChatPage() {
   const [disable2FAPassword, setDisable2FAPassword] = useState('')
   const [disable2FACode, setDisable2FACode] = useState('')
   const [notificationMode, setNotificationMode] = useState<'all' | 'mentions' | 'none'>('all')
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default')
   const [newEmail, setNewEmail] = useState('')
   const [emailPassword, setEmailPassword] = useState('')
   const [emailChangeStatus, setEmailChangeStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null)
@@ -1223,6 +1225,13 @@ function ChatPage() {
       setAuth({ token: stored.token, username: stored.username })
     }
   }, [authToken, setAuth])
+
+  // Check notification permission on mount
+  useEffect(() => {
+    if (notificationManager.isSupported()) {
+      setNotificationPermission(notificationManager.getPermission())
+    }
+  }, [])
 
   useEffect(() => {
     reconnectRef.current.stopped = false
@@ -1500,6 +1509,22 @@ function ChatPage() {
 
       if (isWsChatMessage(msg)) {
         appendMessage(msg)
+        
+        // Show browser notification for new messages based on notification mode
+        const currentUsername = useAppStore.getState().init?.username
+        const shouldNotify = currentUsername && msg.username !== currentUsername
+        
+        if (shouldNotify && notificationMode === 'all') {
+          console.log('[App] Showing message notification for:', msg.username, 'mode:', notificationMode)
+          const contextType = msg.context === 'global' ? 'global' : msg.context === 'server' ? 'server' : 'dm'
+          notificationManager.showMessageNotification(
+            msg.username || 'Someone',
+            msg.content || '',
+            contextType
+          )
+        } else if (shouldNotify) {
+          console.log('[App] Skipping message notification, mode:', notificationMode, 'shouldNotify:', shouldNotify)
+        }
       }
 
       if (msg.type === 'admin_settings') {
@@ -1608,11 +1633,32 @@ function ChatPage() {
         }
       }
       
+      if (msg.type === 'mention_notification') {
+        console.log('[App] Received mention_notification:', msg)
+        const mentionedBy = msg.mentioned_by || 'Someone'
+        const content = msg.content || ''
+        const preview = content.length > 50 ? content.substring(0, 50) + '...' : content
+        pushToast({ kind: 'info', message: `${mentionedBy} mentioned you: "${preview}"` })
+        
+        // Show browser notification if permission granted and mode allows
+        if (notificationMode !== 'none') {
+          console.log('[App] Showing mention notification, mode:', notificationMode)
+          notificationManager.showMentionNotification(mentionedBy, content, msg.context_type || 'global')
+        }
+      }
+      
       if (msg.type === 'reply_notification') {
+        console.log('[App] Received reply_notification:', msg)
         const repliedBy = msg.replied_by || 'Someone'
         const content = msg.content || ''
         const preview = content.length > 50 ? content.substring(0, 50) + '...' : content
         pushToast({ kind: 'info', message: `${repliedBy} replied to your message: "${preview}"` })
+        
+        // Show browser notification if permission granted and mode allows
+        if (notificationMode !== 'none') {
+          console.log('[App] Showing reply notification, mode:', notificationMode)
+          notificationManager.showReplyNotification(repliedBy, content)
+        }
       }
 
       if (msg.type === 'announcement_update') {
@@ -4737,15 +4783,90 @@ function ChatPage() {
                 <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                   <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Notifications</h3>
                   <div className="space-y-4">
+                    {/* Browser Notifications Permission */}
+                    <div className="rounded-xl border border-white/10 bg-slate-950/20 p-3">
+                      <label className="block mb-2">
+                        <div className="text-sm font-medium text-slate-200">Browser Notifications</div>
+                        <div className="text-xs text-slate-400 mt-1">
+                          {notificationManager.isSupported() 
+                            ? 'Get desktop notifications for mentions, replies, and messages'
+                            : 'Browser notifications are not supported in your browser'}
+                        </div>
+                      </label>
+                      {notificationManager.isSupported() && (
+                        <div className="flex items-center gap-3">
+                          <div className="text-xs text-slate-300">
+                            Status: <span className={`font-semibold ${
+                              notificationPermission === 'granted' ? 'text-emerald-400' :
+                              notificationPermission === 'denied' ? 'text-red-400' :
+                              'text-amber-400'
+                            }`}>
+                              {notificationPermission === 'granted' ? 'Enabled' :
+                               notificationPermission === 'denied' ? 'Blocked' :
+                               'Not requested'}
+                            </span>
+                          </div>
+                          {notificationPermission !== 'granted' && notificationPermission !== 'denied' && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const permission = await notificationManager.requestPermission()
+                                setNotificationPermission(permission)
+                                if (permission === 'granted') {
+                                  pushToast({ kind: 'success', message: 'Browser notifications enabled' })
+                                  // Show test notification immediately
+                                  setTimeout(() => {
+                                    notificationManager.showNotification('Notifications Enabled!', {
+                                      body: 'You will now receive desktop notifications for messages, mentions, and replies.',
+                                      icon: '/favicon.ico',
+                                    })
+                                  }, 500)
+                                } else {
+                                  pushToast({ kind: 'error', message: 'Browser notifications permission denied' })
+                                }
+                              }}
+                              className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
+                            >
+                              Enable Notifications
+                            </button>
+                          )}
+                          {notificationPermission === 'granted' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                notificationManager.showNotification('Test Notification', {
+                                  body: 'This is a test notification. If you see this, notifications are working!',
+                                  icon: '/favicon.ico',
+                                })
+                                pushToast({ kind: 'info', message: 'Test notification sent - check your system tray!' })
+                              }}
+                              className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+                            >
+                              Test Notification
+                            </button>
+                          )}
+                          {notificationPermission === 'denied' && (
+                            <div className="text-xs text-red-400">
+                              Please enable notifications in your browser settings
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    
+                    {/* Notification Mode */}
                     <label className="block">
                       <div className="mb-2 text-sm text-slate-200">Notification Mode</div>
+                      <div className="text-xs text-slate-400 mb-2">
+                        Controls when you receive notifications (only works when browser notifications are enabled)
+                      </div>
                       <select
                         value={notificationMode}
                         onChange={(e) => setNotificationMode(e.target.value as 'all' | 'mentions' | 'none')}
                         className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
                       >
                         <option value="all">All messages</option>
-                        <option value="mentions">Only mentions</option>
+                        <option value="mentions">Only mentions and replies</option>
                         <option value="none">None</option>
                       </select>
                     </label>
