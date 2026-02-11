@@ -4442,7 +4442,9 @@ async def handler(websocket):
                             continue
 
                         license_key = data.get('license_key', '')
+                        logger.info(f"Received license key update request. Key length: {len(license_key)}, First 50 chars: {license_key[:50] if license_key else 'empty'}")
                         result = license_validator.validate_license(license_key)
+                        logger.info(f"License validation result: {result.get('valid')}, Error: {result.get('error')}")
                         if result.get('valid'):
                             tier = license_validator.get_tier()
                             expires_at = license_validator.get_expiry()

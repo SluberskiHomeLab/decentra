@@ -119,38 +119,27 @@ class LicenseValidator:
             }
 
         # --- Decode base64 ------------------------------------------------
+        # License key format: base64(json) + "." + base64(signature)
         try:
-            raw = base64.b64decode(license_key)
-        except Exception:
+            parts = license_key.split(".")
+            if len(parts) != 2:
+                logger.error(f"License key has {len(parts)} parts instead of 2")
+                return {
+                    "valid": False,
+                    "error": "License key format is invalid (missing or misplaced separator).",
+                    "license": None,
+                }
+            
+            json_bytes = base64.b64decode(parts[0])
+            signature = base64.b64decode(parts[1])
+            logger.info(f"Successfully decoded license key: JSON={len(json_bytes)} bytes, Signature={len(signature)} bytes")
+        except Exception as e:
+            logger.error(f"Base64 decode error: {e}")
             return {
                 "valid": False,
                 "error": "License key is not valid base64.",
                 "license": None,
             }
-
-        # --- Split payload and signature ----------------------------------
-        separator = b"||"
-        # The RSA signature has a fixed length of key_size // 8 bytes.
-        sig_len = self._public_key.key_size // 8
-        # Ensure there is enough data for "<payload><separator><signature>".
-        if len(raw) <= sig_len + len(separator):
-            return {
-                "valid": False,
-                "error": "License key format is invalid (too short).",
-                "license": None,
-            }
-
-        # The separator must appear immediately before the fixed-length signature.
-        sep_index = len(raw) - sig_len - len(separator)
-        if sep_index < 0 or raw[sep_index : sep_index + len(separator)] != separator:
-            return {
-                "valid": False,
-                "error": "License key format is invalid (missing or misplaced separator).",
-                "license": None,
-            }
-
-        json_bytes = raw[:sep_index]
-        signature = raw[sep_index + len(separator) :]
 
         # --- Verify RSA-PSS signature -------------------------------------
         try:

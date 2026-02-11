@@ -89,7 +89,8 @@ export function LicensePanel() {
   const [checkingIn, setCheckingIn] = useState(false)
 
   const handleActivate = () => {
-    const trimmed = licenseKey.trim()
+    // Remove all whitespace including newlines, tabs, and spaces
+    const trimmed = licenseKey.replace(/\s+/g, '')
     if (!trimmed) {
       setFeedback({ kind: 'error', message: 'Please enter a license key.' })
       return
