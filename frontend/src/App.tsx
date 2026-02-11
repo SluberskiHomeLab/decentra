@@ -1344,7 +1344,9 @@ function ChatPage() {
     if (wsClient.readyState !== WebSocket.OPEN) return
 
     if (ctx.kind === 'server') {
+      // Load both history and emojis at the same time
       wsClient.getChannelHistory({ type: 'get_channel_history', server_id: ctx.serverId, channel_id: ctx.channelId })
+      loadServerEmojis(ctx.serverId)
     } else if (ctx.kind === 'dm') {
       wsClient.getDmHistory({ type: 'get_dm_history', dm_id: ctx.dmId })
     }
@@ -1650,6 +1652,14 @@ function ChatPage() {
 
       if (isWsChatMessage(msg)) {
         appendMessage(msg)
+        
+        // Load emojis for the server this message is from
+        if (msg.context === 'server' && msg.context_id) {
+          const serverId = msg.context_id.split('/')[0]
+          if (!serverEmojis[serverId] && wsClient.readyState === WebSocket.OPEN) {
+            loadServerEmojis(serverId)
+          }
+        }
         
         // Show browser notification for new messages based on notification mode
         const currentUsername = useAppStore.getState().init?.username
@@ -1970,10 +1980,35 @@ function ChatPage() {
       }
 
       if (msg.type === 'server_emojis') {
+        console.log('📦 Received server_emojis:', { server_id: msg.server_id, emoji_count: msg.emojis.length })
         setServerEmojis((prev) => ({
           ...prev,
           [msg.server_id]: msg.emojis,
         }))
+        
+        // Force re-render of all messages in this server by triggering messages refresh
+        // This ensures emojis render correctly when data arrives after messages
+        setTimeout(() => {
+          const store = useAppStore.getState()
+          Object.keys(store.messagesByContext).forEach((key) => {
+            // Only update contexts that belong to this server
+            if (key.startsWith(`server:${msg.server_id}/`)) {
+              const messages = store.messagesByContext[key]
+              if (messages && messages.length > 0) {
+                console.log(`🔄 Forcing re-render for context ${key} after emojis arrived`)
+                // Extract the context from the key and trigger a re-render
+                const [, contextId] = key.split(':', 2)
+                if (contextId && contextId.includes('/')) {
+                  const [serverId, channelId] = contextId.split('/', 2)
+                  setMessagesForContext(
+                    { kind: 'server', serverId, channelId },
+                    [...messages]
+                  )
+                }
+              }
+            }
+          })
+        }, 0)
       }
 
       if (msg.type === 'message_edited') {
@@ -2051,9 +2086,22 @@ function ChatPage() {
         // Update voice participants when someone joins/leaves
         if (msg.voice_members && Array.isArray(msg.voice_members)) {
           const participantUsernames = msg.voice_members.map((m: any) => m.username)
-          setVoiceParticipants(participantUsernames)
-          setIsInVoice(participantUsernames.includes(init?.username))
-          console.log('Updated voice participants:', participantUsernames)
+          const currentChannel = voiceChat?.getCurrentChannel()
+          const matchesCurrentChannel =
+            !!currentChannel?.server &&
+            !!currentChannel?.channel &&
+            msg.server_id === currentChannel.server &&
+            msg.channel_id === currentChannel.channel
+
+          if (matchesCurrentChannel) {
+            setVoiceParticipants(participantUsernames)
+            const isUserInVoice = participantUsernames.includes(init?.username)
+            setIsInVoice(isUserInVoice)
+            if (voiceChat) {
+              voiceChat.handleVoiceJoined(participantUsernames)
+            }
+            console.log('Updated voice participants:', participantUsernames)
+          }
         }
       }
 
@@ -2070,15 +2118,24 @@ function ChatPage() {
       }
 
       if (msg.type === 'webrtc_offer' && voiceChat) {
-        voiceChat.handleWebRTCOffer(msg.from_username, msg.offer)
+        const fromUsername = (msg as any).from_username ?? (msg as any).from
+        if (fromUsername) {
+          voiceChat.handleWebRTCOffer(fromUsername, msg.offer)
+        }
       }
 
       if (msg.type === 'webrtc_answer' && voiceChat) {
-        voiceChat.handleWebRTCAnswer(msg.from_username, msg.answer)
+        const fromUsername = (msg as any).from_username ?? (msg as any).from
+        if (fromUsername) {
+          voiceChat.handleWebRTCAnswer(fromUsername, msg.answer)
+        }
       }
 
       if (msg.type === 'webrtc_ice_candidate' && voiceChat) {
-        voiceChat.handleICECandidate(msg.from_username, msg.candidate)
+        const fromUsername = (msg as any).from_username ?? (msg as any).from
+        if (fromUsername) {
+          voiceChat.handleICECandidate(fromUsername, msg.candidate)
+        }
       }
     })
 
@@ -2120,13 +2177,40 @@ function ChatPage() {
     }
   }, [init])
 
-  // Load server emojis when selected server changes
+  // Load server emojis when selected server changes and when component mounts
   useEffect(() => {
     if (selectedContext.kind === 'server' && wsClient.readyState === WebSocket.OPEN) {
+      // Always load emojis when context changes to ensure we have fresh data
+      console.log('🎯 Loading emojis for server:', selectedContext.serverId)
       loadServerEmojis(selectedContext.serverId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedContext])
+  }, [selectedContext, wsClient.readyState])
+
+  // Debug: Log whenever serverEmojis changes
+  useEffect(() => {
+    console.log('🔄 serverEmojis state updated:', Object.keys(serverEmojis).map(sid => ({ serverId: sid, count: serverEmojis[sid].length })))
+  }, [serverEmojis])
+
+  // Keep emojis for all visible servers in sync
+  useEffect(() => {
+    if (wsClient.readyState === WebSocket.OPEN && init?.servers) {
+      // Periodically ensure all server emojis are loaded
+      const serverIds = init.servers.map(s => s.id)
+      serverIds.forEach(serverId => {
+        // Only load if we don't have emojis for this server yet
+        if (!serverEmojis[serverId]) {
+          loadServerEmojis(serverId)
+        }
+      })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [init?.servers, wsClient.readyState])
+
+  // Debug logging for emoji state changes
+  useEffect(() => {
+    console.log('serverEmojis updated:', Object.keys(serverEmojis).map(key => ({ [key]: serverEmojis[key]?.length || 0 })))
+  }, [serverEmojis])
 
   // Load server roles when server settings modal is opened
   useEffect(() => {
@@ -2547,10 +2631,16 @@ function ChatPage() {
   }
 
   const loadServerEmojis = (serverId: string) => {
-    wsClient.send({
-      type: 'get_server_emojis',
-      server_id: serverId,
-    })
+    console.log('🎨 loadServerEmojis requested:', { serverId, wsReady: wsClient.readyState === WebSocket.OPEN })
+    if (wsClient.readyState === WebSocket.OPEN) {
+      wsClient.send({
+        type: 'get_server_emojis',
+        server_id: serverId,
+      })
+      console.log('🎨 loadServerEmojis request sent to server')
+    } else {
+      console.warn('🎨 loadServerEmojis skipped: WebSocket not ready', wsClient.readyState)
+    }
   }
 
   const insertEmoji = (emoji: string) => {
@@ -2726,15 +2816,33 @@ function ChatPage() {
   const renderMessageContent = (content: string, messageContext?: string, messageContextId?: string | null): React.ReactNode => {
     // Determine which server's emojis to use based on message context
     let availableEmojis: CustomEmoji[] = []
-    if (messageContext === 'server' && messageContextId) {
-      const serverId = messageContextId.split('/')[0]
+    let serverId: string | null = null
+    
+    console.log('🎬 renderMessageContent START:', { content: content.substring(0, 50), messageContext, messageContextId, serverEmojisKeys: Object.keys(serverEmojis) })
+    
+    // Infer context if not provided but contextId exists
+    let actualContext = messageContext
+    if (!actualContext && messageContextId) {
+      if (messageContextId.includes('/')) {
+        actualContext = 'server'
+        console.log('✨ Inferred context as "server" from context_id:', messageContextId)
+      } else if (messageContextId.startsWith('dm_')) {
+        actualContext = 'dm'
+      }
+    }
+    
+    if (actualContext === 'server' && messageContextId) {
+      serverId = messageContextId.split('/')[0]
       availableEmojis = serverEmojis[serverId] || []
-      console.log('Debug emoji rendering:', { serverId, availableEmojis, serverEmojis, content })
+      console.log('renderMessageContent called:', { serverId, emojiCount: availableEmojis.length, hasEmojisInState: !!serverEmojis[serverId], contentPreview: content.substring(0, 50), actualEmojis: serverEmojis[serverId] })
+    } else {
+      console.log('⚠️ renderMessageContent: NO CONTEXT!', { messageContext, actualContext, messageContextId })
     }
 
     // Helper function to process mentions and custom emojis within text
     const processTextWithEmojisAndMentions = (text: string, keyPrefix: string): React.ReactNode[] => {
       const parts = text.split(/(@\w+|:\w+:)/g)
+      console.log('🔍 processTextWithEmojisAndMentions:', { text: text.substring(0, 50), partsCount: parts.length, parts: parts.slice(0, 10), availableEmojiCount: availableEmojis.length })
       return parts.map((part, index) => {
         const key = `${keyPrefix}-${index}`
         
@@ -2760,7 +2868,12 @@ function ChatPage() {
         if (part.match(/^:\w+:$/)) {
           const emojiName = part.slice(1, -1)
           const emoji = availableEmojis.find(e => e.name === emojiName)
+          console.log('🎨 Emoji lookup:', { emojiName, found: !!emoji, availableNames: availableEmojis.map(e => e.name) })
+          if (!emoji && availableEmojis.length > 0) {
+            console.log('❌ Emoji not found:', { emojiName, availableCount: availableEmojis.length, available: availableEmojis.map(e => e.name) })
+          }
           if (emoji) {
+            console.log('✅ Rendering emoji image:', emojiName)
             return (
               <img
                 key={key}
@@ -2780,10 +2893,12 @@ function ChatPage() {
 
     // Parse message formatting
     const tokens = parseMessageFormat(content)
+    console.log('📝 After parseMessageFormat:', { tokenCount: tokens.length, availableEmojiCount: availableEmojis.length, tokens: tokens.map(t => ({ type: t.type, content: t.content?.substring(0, 20) })) })
     
     // Render formatted tokens with mention and emoji support
     return tokens.map((token, index) => {
       const key = `fmt-${index}`
+      console.log('🔧 Processing token:', { index, type: token.type, content: token.content?.substring(0, 30), availableEmojiCountNow: availableEmojis.length })
       
       switch (token.type) {
         case 'bold':

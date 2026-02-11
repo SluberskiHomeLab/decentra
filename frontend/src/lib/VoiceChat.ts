@@ -19,6 +19,7 @@ export class VoiceChat {
   private screenShareResolution: number
   private screenShareFramerate: number
   private iceServers: RTCConfiguration
+  private shouldInitiateOffers: boolean
   private onStateChange: (() => void) | null
   private onRemoteStreamChange: ((peer: string, stream: MediaStream | null) => void) | null
   private onParticipantsChange: ((participants: string[]) => void) | null
@@ -45,6 +46,7 @@ export class VoiceChat {
     this.onStateChange = null
     this.onRemoteStreamChange = null
     this.onParticipantsChange = null
+    this.shouldInitiateOffers = false
 
     // Load device preferences
     this.loadDevicePreferences()
@@ -317,6 +319,7 @@ export class VoiceChat {
     this.currentVoiceServer = serverId
     this.currentVoiceChannel = channelId
     this.inDirectCall = false
+    this.shouldInitiateOffers = true
 
     console.log('Sending join_voice_channel message to server')
     this.ws.send({
@@ -336,6 +339,7 @@ export class VoiceChat {
 
     this.inDirectCall = true
     this.directCallPeer = targetUsername
+    this.shouldInitiateOffers = true
 
     this.ws.send({
       type: 'start_direct_call',
@@ -373,6 +377,7 @@ export class VoiceChat {
     this.isMuted = false
     this.isVideoEnabled = false
     this.isScreenSharing = false
+    this.shouldInitiateOffers = false
 
     // Notify server
     if (this.inDirectCall) {
@@ -463,19 +468,36 @@ export class VoiceChat {
   }
 
   async handleVoiceJoined(participants: string[]) {
-    // Create peer connections for all existing participants
-    for (const peer of participants) {
-      if (peer !== this.username) {
-        const pc = await this.createPeerConnection(peer)
-        const offer = await pc.createOffer()
-        await pc.setLocalDescription(offer)
+    const participantSet = new Set(participants)
+    const inVoice = participantSet.has(this.username)
 
-        this.ws.send({
-          type: 'webrtc_offer',
-          target_username: peer,
-          offer: offer,
-        })
+    // Close peer connections that are no longer in the voice member list.
+    for (const [peer, pc] of this.peerConnections) {
+      if (!participantSet.has(peer)) {
+        pc.close()
+        this.peerConnections.delete(peer)
+        if (this.onRemoteStreamChange) {
+          this.onRemoteStreamChange(peer, null)
+        }
       }
+    }
+
+    if (inVoice) {
+      // Create peer connections for any new participants.
+      for (const peer of participants) {
+        if (this.shouldInitiateOffers && peer !== this.username && !this.peerConnections.has(peer)) {
+          const pc = await this.createPeerConnection(peer)
+          const offer = await pc.createOffer()
+          await pc.setLocalDescription(offer)
+
+          this.ws.send({
+            type: 'webrtc_offer',
+            target_username: peer,
+            offer: offer,
+          })
+        }
+      }
+      this.shouldInitiateOffers = false
     }
 
     if (this.onParticipantsChange) {

@@ -3983,7 +3983,7 @@ async def handler(websocket):
                     
                     # WebRTC signaling
                     elif data.get('type') == 'webrtc_offer':
-                        target_user = data.get('target')
+                        target_user = data.get('target') or data.get('target_username')
                         offer = data.get('offer')
                         context = data.get('context', {})
                         
@@ -3991,29 +3991,32 @@ async def handler(websocket):
                             await send_to_user(target_user, json.dumps({
                                 'type': 'webrtc_offer',
                                 'from': username,
+                                'from_username': username,
                                 'offer': offer,
                                 'context': context
                             }))
                     
                     elif data.get('type') == 'webrtc_answer':
-                        target_user = data.get('target')
+                        target_user = data.get('target') or data.get('target_username')
                         answer = data.get('answer')
                         
                         if target_user:
                             await send_to_user(target_user, json.dumps({
                                 'type': 'webrtc_answer',
                                 'from': username,
+                                'from_username': username,
                                 'answer': answer
                             }))
                     
                     elif data.get('type') == 'webrtc_ice_candidate':
-                        target_user = data.get('target')
+                        target_user = data.get('target') or data.get('target_username')
                         candidate = data.get('candidate')
                         
                         if target_user:
                             await send_to_user(target_user, json.dumps({
                                 'type': 'webrtc_ice_candidate',
                                 'from': username,
+                                'from_username': username,
                                 'candidate': candidate
                             }))
                     
