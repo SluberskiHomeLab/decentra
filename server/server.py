@@ -6,6 +6,7 @@ A simple WebSocket-based chat server for decentralized communication.
 
 import asyncio
 import json
+import logging
 import websockets
 from datetime import datetime, timedelta, timezone
 import bcrypt
@@ -27,6 +28,14 @@ from api import setup_api_routes
 from email_utils import EmailSender
 from ssl_utils import generate_self_signed_cert, create_ssl_context
 from license_validator import license_validator, check_feature_access, check_limit, enforce_limit, DEFAULT_FEATURES, DEFAULT_LIMITS
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+    datefmt='%H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 # Initialize database
 db = Database()
