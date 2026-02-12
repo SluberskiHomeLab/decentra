@@ -1214,6 +1214,10 @@ function ChatPage() {
   const [serverName, setServerName] = useState('')
   const [channelName, setChannelName] = useState('')
   const [channelType, setChannelType] = useState<'text' | 'voice'>('text')
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>('')
+  const [categoryName, setCategoryName] = useState('')
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null)
+  const [editingCategoryName, setEditingCategoryName] = useState('')
   const [dmUsername, setDmUsername] = useState('')
   const [joinInviteCode, setJoinInviteCode] = useState('')
   const [lastInviteCode, setLastInviteCode] = useState<string | null>(null)
@@ -1587,6 +1591,151 @@ function ChatPage() {
             s.id === msg.server_id ? { ...s, channels: [...(s.channels ?? []), msg.channel] } : s,
           )
           setInit({ ...prev, servers: nextServers })
+        }
+      }
+
+      if (msg.type === 'category_created') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) =>
+            s.id === msg.server_id ? { ...s, categories: [...(s.categories ?? []), msg.category] } : s,
+          )
+          setInit({ ...prev, servers: nextServers })
+        }
+      }
+
+      if (msg.type === 'category_updated') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) =>
+            s.id === msg.server_id
+              ? { ...s, categories: (s.categories ?? []).map((cat) => (cat.id === msg.category_id ? { ...cat, name: msg.name } : cat)) }
+              : s,
+          )
+          setInit({ ...prev, servers: nextServers })
+        }
+      }
+
+      if (msg.type === 'category_deleted') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) =>
+            s.id === msg.server_id
+              ? {
+                  ...s,
+                  categories: (s.categories ?? []).filter((cat) => cat.id !== msg.category_id),
+                  channels: (s.channels ?? []).map((ch) => (ch.category_id === msg.category_id ? { ...ch, category_id: null } : ch))
+                }
+              : s,
+          )
+          setInit({ ...prev, servers: nextServers })
+        }
+      }
+
+      if (msg.type === 'category_positions_updated') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) => {
+            if (s.id === msg.server_id) {
+              const positionMap = new Map<string, number>(
+                msg.positions.map((p: { category_id: string; position: number }) => [p.category_id, p.position])
+              )
+              return {
+                ...s,
+                categories: (s.categories ?? [])
+                  .map((cat) => {
+                    const newPos = positionMap.get(cat.id)
+                    return newPos !== undefined ? { ...cat, position: newPos } : cat
+                  })
+                  .sort((a, b) => {
+                    const aPos = typeof a.position === 'number' ? a.position : 0
+                    const bPos = typeof b.position === 'number' ? b.position : 0
+                    return aPos - bPos
+                  })
+              }
+            }
+            return s
+          })
+          setInit({ ...prev, servers: nextServers })
+        }
+      }
+
+      if (msg.type === 'channel_positions_updated') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) => {
+            if (s.id === msg.server_id) {
+              const positionMap = new Map<string, { position: number; category_id?: string | null }>(
+                msg.positions.map((p: { channel_id: string; position: number; category_id?: string | null }) => [
+                  p.channel_id,
+                  { position: p.position, category_id: p.category_id }
+                ])
+              )
+              return {
+                ...s,
+                channels: (s.channels ?? [])
+                  .map((ch) => {
+                    const update = positionMap.get(ch.id)
+                    if (update) {
+                      return {
+                        ...ch,
+                        position: update.position,
+                        category_id: update.category_id !== undefined ? update.category_id : ch.category_id
+                      }
+                    }
+                    return ch
+                  })
+                  .sort((a, b) => {
+                    const aPos = typeof a.position === 'number' ? a.position : 0
+                    const bPos = typeof b.position === 'number' ? b.position : 0
+                    return aPos - bPos
+                  })
+              }
+            }
+            return s
+          })
+          setInit({ ...prev, servers: nextServers })
+        }
+      }
+
+      if (msg.type === 'channel_category_updated') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) =>
+            s.id === msg.server_id
+              ? {
+                  ...s,
+                  channels: (s.channels ?? []).map((ch) =>
+                    ch.id === msg.channel_id ? { ...ch, category_id: msg.category_id } : ch
+                  )
+                }
+              : s
+          )
+          setInit({ ...prev, servers: nextServers })
+        }
+      }
+
+      if (msg.type === 'channel_deleted') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) =>
+            s.id === msg.server_id
+              ? { ...s, channels: (s.channels ?? []).filter((ch) => ch.id !== msg.channel_id) }
+              : s
+          )
+          setInit({ ...prev, servers: nextServers })
+          
+          // If the current channel was deleted, switch to the first available channel
+          const currentCtx = useAppStore.getState().selectedContext
+          if (currentCtx.kind === 'server' && currentCtx.serverId === msg.server_id && currentCtx.channelId === msg.channel_id) {
+            const updatedServer = nextServers.find(s => s.id === msg.server_id)
+            if (updatedServer && updatedServer.channels && updatedServer.channels.length > 0) {
+              const firstChannel = updatedServer.channels[0]
+              const next: ChatContext = { kind: 'server', serverId: msg.server_id, channelId: firstChannel.id }
+              selectContext(next)
+              requestHistoryFor(next)
+            }
+          }
         }
       }
 
@@ -2624,7 +2773,13 @@ function ChatPage() {
     if (channelType === 'voice') {
       wsClient.createVoiceChannel({ type: 'create_voice_channel', server_id: contextServerId, name })
     } else {
-      wsClient.createChannel({ type: 'create_channel', server_id: contextServerId, name, channel_type: 'text' })
+      wsClient.createChannel({
+        type: 'create_channel',
+        server_id: contextServerId,
+        name,
+        channel_type: 'text',
+        category_id: selectedCategoryId || undefined,
+      })
     }
     setChannelName('')
   }
@@ -3617,71 +3772,96 @@ function ChatPage() {
 
               {/* Channels list */}
               <div className="flex-1 overflow-auto p-2">
-                <div className="mb-3">
-                  <div className="px-2 text-xs font-medium text-slate-400 uppercase mb-1">Text Channels</div>
-                  <div className="space-y-1">
-                    {(selectedServerObj.channels ?? [])
-                      .filter((ch) => ch.type !== 'voice')
-                      .map((ch) => {
-                        const isSelected =
-                          selectedContext.kind === 'server' &&
-                          selectedContext.serverId === selectedServerId &&
-                          selectedContext.channelId === ch.id
-                        return (
-                          <button
-                            key={ch.id}
-                            type="button"
-                            onClick={() => {
-                              const next: ChatContext = { kind: 'server', serverId: selectedServerId, channelId: ch.id }
-                              selectContext(next)
-                              requestHistoryFor(next)
-                            }}
-                            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
-                              isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
-                            }`}
-                          >
-                            <span className="text-slate-400">#</span>
-                            <span className="text-sm font-medium">{ch.name}</span>
-                          </button>
-                        )
-                      })}
-                  </div>
-                </div>
+                {/* Render categories with their channels */}
+                {(selectedServerObj.categories ?? [])
+                  .sort((a, b) => a.position - b.position)
+                  .map((category) => {
+                    const categoryChannels = (selectedServerObj.channels ?? [])
+                      .filter((ch) => ch.category_id === category.id)
+                      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
 
-                <div>
-                  <div className="px-2 text-xs font-medium text-slate-400 uppercase mb-1">Voice Channels</div>
-                  <div className="space-y-1">
-                    {(selectedServerObj.channels ?? [])
-                      .filter((ch) => ch.type === 'voice')
-                      .map((ch) => {
-                        const isSelected =
-                          selectedContext.kind === 'server' &&
-                          selectedContext.serverId === selectedServerId &&
-                          selectedContext.channelId === ch.id
-                        return (
-                          <button
-                            key={ch.id}
-                            type="button"
-                            onClick={() => {
-                              const next: ChatContext = { kind: 'server', serverId: selectedServerId, channelId: ch.id }
-                              selectContext(next)
-                              // Join voice channel instead of loading chat
-                              if (voiceChat && selectedServerId) {
-                                joinVoiceChannel(selectedServerId, ch.id)
-                              }
-                            }}
-                            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
-                              isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
-                            }`}
-                          >
-                            <span className="text-slate-400">🔊</span>
-                            <span className="text-sm font-medium">{ch.name}</span>
-                            {isInVoice && isSelected && <span className="text-emerald-400 text-xs ml-auto">●</span>}
-                          </button>
-                        )
-                      })}
-                  </div>
-                </div>
+                    return (
+                      <div key={category.id} className="mb-3">
+                        <div className="px-2 text-xs font-medium text-slate-400 uppercase mb-1">{category.name}</div>
+                        <div className="space-y-1">
+                          {categoryChannels.map((ch) => {
+                            const isSelected =
+                              selectedContext.kind === 'server' &&
+                              selectedContext.serverId === selectedServerId &&
+                              selectedContext.channelId === ch.id
+                            return (
+                              <button
+                                key={ch.id}
+                                type="button"
+                                onClick={() => {
+                                  const next: ChatContext = { kind: 'server', serverId: selectedServerId, channelId: ch.id }
+                                  if (ch.type === 'voice') {
+                                    // Join voice channel instead of loading chat
+                                    selectContext(next)
+                                    joinVoiceChannel(selectedServerId, ch.id)
+                                  } else {
+                                    selectContext(next)
+                                    requestHistoryFor(next)
+                                  }
+                                }}
+                                className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
+                                  isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
+                                }`}
+                              >
+                                <span className="text-slate-400">{ch.type === 'voice' ? '🔊' : '#'}</span>
+                                <span className="text-sm font-medium">{ch.name}</span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )
+                  })}
+
+                {/* Render channels without a category */}
+                {(() => {
+                  const uncategorizedChannels = (selectedServerObj.channels ?? [])
+                    .filter((ch) => !ch.category_id)
+                    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+
+                  if (uncategorizedChannels.length === 0) return null
+
+                  return (
+                    <div className="mb-3">
+                      <div className="px-2 text-xs font-medium text-slate-400 uppercase mb-1">Uncategorized</div>
+                      <div className="space-y-1">
+                        {uncategorizedChannels.map((ch) => {
+                          const isSelected =
+                            selectedContext.kind === 'server' &&
+                            selectedContext.serverId === selectedServerId &&
+                            selectedContext.channelId === ch.id
+                          return (
+                            <button
+                              key={ch.id}
+                              type="button"
+                              onClick={() => {
+                                const next: ChatContext = { kind: 'server', serverId: selectedServerId, channelId: ch.id }
+                                if (ch.type === 'voice') {
+                                  selectContext(next)
+                                  joinVoiceChannel(selectedServerId, ch.id)
+                                } else {
+                                  selectContext(next)
+                                  requestHistoryFor(next)
+                                }
+                              }}
+                              className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
+                                isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
+                              }`}
+                            >
+                              <span className="text-slate-400">{ch.type === 'voice' ? '🔊' : '#'}</span>
+                              <span className="text-sm font-medium">{ch.name}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })()}
               </div>
             </div>
           </aside>
@@ -5370,6 +5550,198 @@ function ChatPage() {
 
               <div className="p-6 overflow-y-auto flex-1">
                 <div className="space-y-6">
+                  {/* Category Management Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Categories</h3>
+                    <div className="space-y-3">
+                      {/* Create Category */}
+                      <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                        <div className="mb-2 text-sm font-medium text-slate-200">Create Category</div>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={categoryName}
+                            onChange={(e) => setCategoryName(e.target.value)}
+                            placeholder="Category name (e.g., 📚 Resources)"
+                            className="flex-1 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (categoryName.trim() && selectedServerId) {
+                                wsClient.send({ type: 'create_category', server_id: selectedServerId, name: categoryName.trim() })
+                                setCategoryName('')
+                              }
+                            }}
+                            disabled={!categoryName.trim() || wsClient.readyState !== WebSocket.OPEN}
+                            className="rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                          >
+                            Create
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* List Categories */}
+                      <div className="space-y-2">
+                        <div className="text-xs font-medium text-slate-400 mb-2">Manage Categories</div>
+                        {(() => {
+                          const sortedCategories = (selectedServerObj.categories ?? []).sort((a, b) => a.position - b.position)
+                          
+                          const moveCategoryUp = (categoryId: string, currentPosition: number) => {
+                            if (currentPosition === 0) return
+                            const newPositions = sortedCategories.map((cat, idx) => {
+                              if (cat.id === categoryId) {
+                                return { category_id: cat.id, position: currentPosition - 1 }
+                              }
+                              if (idx === currentPosition - 1) {
+                                return { category_id: cat.id, position: currentPosition }
+                              }
+                              return { category_id: cat.id, position: idx }
+                            })
+                            wsClient.send({ type: 'update_category_positions', server_id: selectedServerId, positions: newPositions })
+                          }
+                          
+                          const moveCategoryDown = (categoryId: string, currentPosition: number) => {
+                            if (currentPosition === sortedCategories.length - 1) return
+                            const newPositions = sortedCategories.map((cat, idx) => {
+                              if (cat.id === categoryId) {
+                                return { category_id: cat.id, position: currentPosition + 1 }
+                              }
+                              if (idx === currentPosition + 1) {
+                                return { category_id: cat.id, position: currentPosition }
+                              }
+                              return { category_id: cat.id, position: idx }
+                            })
+                            wsClient.send({ type: 'update_category_positions', server_id: selectedServerId, positions: newPositions })
+                          }
+                          
+                          return sortedCategories.map((category, index) => (
+                            <div key={category.id} className="rounded-lg border border-white/10 bg-slate-950/40 p-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2 flex-1 min-w-0">
+                                  {/* Reorder buttons */}
+                                  <div className="flex flex-col gap-0.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => moveCategoryUp(category.id, index)}
+                                      disabled={index === 0}
+                                      className="rounded bg-slate-700 px-1.5 py-0.5 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                      title="Move up"
+                                    >
+                                      ▲
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => moveCategoryDown(category.id, index)}
+                                      disabled={index === sortedCategories.length - 1}
+                                      className="rounded bg-slate-700 px-1.5 py-0.5 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                      title="Move down"
+                                    >
+                                      ▼
+                                    </button>
+                                  </div>
+                                  
+                                  {/* Category name */}
+                                  <div className="flex-1 min-w-0">
+                                    {editingCategoryId === category.id ? (
+                                      <input
+                                        type="text"
+                                        value={editingCategoryName}
+                                        onChange={(e) => setEditingCategoryName(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') {
+                                            if (editingCategoryName.trim()) {
+                                              wsClient.send({
+                                                type: 'update_category',
+                                                category_id: category.id,
+                                                name: editingCategoryName.trim()
+                                              })
+                                            }
+                                            setEditingCategoryId(null)
+                                            setEditingCategoryName('')
+                                          } else if (e.key === 'Escape') {
+                                            setEditingCategoryId(null)
+                                            setEditingCategoryName('')
+                                          }
+                                        }}
+                                        className="w-full rounded border border-sky-500/40 bg-slate-900 px-2 py-1 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                                        autoFocus
+                                      />
+                                    ) : (
+                                      <div className="text-sm font-medium text-slate-200 truncate">{category.name}</div>
+                                    )}
+                                  </div>
+                                </div>
+                                
+                                {/* Action buttons */}
+                                <div className="flex items-center gap-1 flex-shrink-0">
+                                  {editingCategoryId === category.id ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (editingCategoryName.trim()) {
+                                            wsClient.send({
+                                              type: 'update_category',
+                                              category_id: category.id,
+                                              name: editingCategoryName.trim()
+                                            })
+                                          }
+                                          setEditingCategoryId(null)
+                                          setEditingCategoryName('')
+                                        }}
+                                        className="rounded bg-green-600 px-2 py-1 text-xs font-semibold text-white hover:bg-green-500"
+                                      >
+                                        ✓
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEditingCategoryId(null)
+                                          setEditingCategoryName('')
+                                        }}
+                                        className="rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-500"
+                                      >
+                                        ✕
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEditingCategoryId(category.id)
+                                          setEditingCategoryName(category.name)
+                                        }}
+                                        className="rounded bg-slate-700 px-2 py-1 text-xs font-semibold text-slate-200 hover:bg-slate-600"
+                                      >
+                                        Edit
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (confirm(`Delete category "${category.name}"? Channels will not be deleted.`)) {
+                                            wsClient.send({ type: 'delete_category', category_id: category.id })
+                                          }
+                                        }}
+                                        className="rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-500"
+                                      >
+                                        Delete
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        })()}
+                        {(selectedServerObj.categories ?? []).length === 0 && (
+                          <div className="text-xs text-slate-500 text-center py-4">No categories yet. Create one above!</div>
+                        )}
+                      </div>
+                    </div>
+                  </section>
+
                   {/* Create Channel Section */}
                   <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                     <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Create Channel</h3>
@@ -5397,17 +5769,190 @@ function ChatPage() {
                         </select>
                       </label>
 
+                      <label className="block">
+                        <div className="mb-1 text-sm text-slate-200">Category (Optional)</div>
+                        <select
+                          value={selectedCategoryId}
+                          onChange={(e) => setSelectedCategoryId(e.target.value)}
+                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        >
+                          <option value="">No Category</option>
+                          {(selectedServerObj.categories ?? [])
+                            .sort((a, b) => a.position - b.position)
+                            .map((cat) => (
+                              <option key={cat.id} value={cat.id}>
+                                {cat.name}
+                              </option>
+                            ))}
+                        </select>
+                      </label>
+
                       <button
                         type="button"
                         onClick={() => {
                           createChannel()
                           setChannelName('')
+                          setSelectedCategoryId('')
                         }}
                         disabled={!channelName.trim() || wsClient.readyState !== WebSocket.OPEN}
                         className="w-full rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
                       >
                         Create Channel
                       </button>
+                    </div>
+                  </section>
+
+                  {/* Manage Channels Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Manage Channels</h3>
+                    <div className="space-y-3">
+                      <div className="text-xs font-medium text-slate-400 mb-2">Existing Channels</div>
+                      {(() => {
+                        const sortedChannels = (selectedServerObj.channels ?? []).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+                        
+                        const moveChannelUp = (currentIndex: number) => {
+                          if (currentIndex === 0) return
+                          const currentChannel = sortedChannels[currentIndex]
+                          // Find the previous channel in the same category
+                          let targetIndex = -1
+                          for (let i = currentIndex - 1; i >= 0; i--) {
+                            if (sortedChannels[i].category_id === currentChannel.category_id) {
+                              targetIndex = i
+                              break
+                            }
+                          }
+                          if (targetIndex === -1) return
+                          
+                          const newPositions = sortedChannels.map((ch, idx) => {
+                            if (idx === currentIndex) {
+                              return { channel_id: ch.id, position: targetIndex, category_id: ch.category_id }
+                            }
+                            if (idx === targetIndex) {
+                              return { channel_id: ch.id, position: currentIndex, category_id: ch.category_id }
+                            }
+                            return { channel_id: ch.id, position: idx, category_id: ch.category_id }
+                          })
+                          wsClient.send({ type: 'update_channel_positions', server_id: selectedServerId, positions: newPositions })
+                        }
+                        
+                        const moveChannelDown = (currentIndex: number) => {
+                          if (currentIndex === sortedChannels.length - 1) return
+                          const currentChannel = sortedChannels[currentIndex]
+                          // Find the next channel in the same category
+                          let targetIndex = -1
+                          for (let i = currentIndex + 1; i < sortedChannels.length; i++) {
+                            if (sortedChannels[i].category_id === currentChannel.category_id) {
+                              targetIndex = i
+                              break
+                            }
+                          }
+                          if (targetIndex === -1) return
+                          
+                          const newPositions = sortedChannels.map((ch, idx) => {
+                            if (idx === currentIndex) {
+                              return { channel_id: ch.id, position: targetIndex, category_id: ch.category_id }
+                            }
+                            if (idx === targetIndex) {
+                              return { channel_id: ch.id, position: currentIndex, category_id: ch.category_id }
+                            }
+                            return { channel_id: ch.id, position: idx, category_id: ch.category_id }
+                          })
+                          wsClient.send({ type: 'update_channel_positions', server_id: selectedServerId, positions: newPositions })
+                        }
+                        
+                        const canMoveUp = (currentIndex: number) => {
+                          if (currentIndex === 0) return false
+                          const currentChannel = sortedChannels[currentIndex]
+                          for (let i = currentIndex - 1; i >= 0; i--) {
+                            if (sortedChannels[i].category_id === currentChannel.category_id) {
+                              return true
+                            }
+                          }
+                          return false
+                        }
+                        
+                        const canMoveDown = (currentIndex: number) => {
+                          if (currentIndex === sortedChannels.length - 1) return false
+                          const currentChannel = sortedChannels[currentIndex]
+                          for (let i = currentIndex + 1; i < sortedChannels.length; i++) {
+                            if (sortedChannels[i].category_id === currentChannel.category_id) {
+                              return true
+                            }
+                          }
+                          return false
+                        }
+                        
+                        return sortedChannels.map((channel, index) => (
+                          <div key={channel.id} className="rounded-lg border border-white/10 bg-slate-950/40 p-3">
+                            <div className="flex items-center justify-between gap-2 mb-2">
+                              <div className="flex items-center gap-2 min-w-0 flex-1">
+                                {/* Reorder buttons */}
+                                <div className="flex flex-col gap-0.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => moveChannelUp(index)}
+                                    disabled={!canMoveUp(index)}
+                                    className="rounded bg-slate-700 px-1.5 py-0.5 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                    title="Move up"
+                                  >
+                                    ▲
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => moveChannelDown(index)}
+                                    disabled={!canMoveDown(index)}
+                                    className="rounded bg-slate-700 px-1.5 py-0.5 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                    title="Move down"
+                                  >
+                                    ▼
+                                  </button>
+                                </div>
+                                
+                                <span className="text-slate-400">{channel.type === 'voice' ? '🔊' : '#'}</span>
+                                <div className="text-sm font-medium text-slate-200 truncate">{channel.name}</div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (confirm(`Delete channel "${channel.name}"? This cannot be undone.`)) {
+                                    wsClient.send({ type: 'delete_channel', channel_id: channel.id })
+                                  }
+                                }}
+                                className="rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-500 flex-shrink-0"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                            <label className="block">
+                              <div className="mb-1 text-xs text-slate-400">Move to Category</div>
+                              <select
+                                value={channel.category_id || ''}
+                                onChange={(e) => {
+                                  const newCategoryId = e.target.value || null
+                                  wsClient.send({
+                                    type: 'update_channel_category',
+                                    channel_id: channel.id,
+                                    category_id: newCategoryId
+                                  })
+                                }}
+                                className="w-full rounded border border-white/10 bg-slate-900 px-2 py-1 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                              >
+                                <option value="">No Category</option>
+                                {(selectedServerObj.categories ?? [])
+                                  .sort((a, b) => a.position - b.position)
+                                  .map((cat) => (
+                                    <option key={cat.id} value={cat.id}>
+                                      {cat.name}
+                                    </option>
+                                  ))}
+                              </select>
+                            </label>
+                          </div>
+                        ))
+                      })()}
+                      {(selectedServerObj.channels ?? []).length === 0 && (
+                        <div className="text-xs text-slate-500 text-center py-4">No channels yet. Create one above!</div>
+                      )}
                     </div>
                   </section>
 

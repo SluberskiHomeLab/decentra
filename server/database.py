@@ -85,14 +85,29 @@ class Database:
                         )
                     ''')
                     
+                    # Categories table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS categories (
+                            category_id VARCHAR(255) PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            name VARCHAR(255) NOT NULL,
+                            position INTEGER DEFAULT 0,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
+                        )
+                    ''')
+                    
                     # Channels table
                     cursor.execute('''
                         CREATE TABLE IF NOT EXISTS channels (
                             channel_id VARCHAR(255) PRIMARY KEY,
                             server_id VARCHAR(255) NOT NULL,
+                            category_id VARCHAR(255),
                             name VARCHAR(255) NOT NULL,
                             type VARCHAR(50) DEFAULT 'text',
-                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
+                            position INTEGER DEFAULT 0,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (category_id) REFERENCES categories(category_id) ON DELETE CASCADE
                         )
                     ''')
                     
@@ -738,6 +753,26 @@ class Database:
                             FOREIGN KEY (channel_id) REFERENCES channels(channel_id) ON DELETE CASCADE
                         )
                     ''')
+                    
+                    # Add category_id and position to channels if they don't exist (migration)
+                    cursor.execute('''
+                        DO $$ 
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'channels' AND column_name = 'category_id'
+                            ) THEN
+                                ALTER TABLE channels ADD COLUMN category_id VARCHAR(255) REFERENCES categories(category_id) ON DELETE CASCADE;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'channels' AND column_name = 'position'
+                            ) THEN
+                                ALTER TABLE channels ADD COLUMN position INTEGER DEFAULT 0;
+                            END IF;
+                        END $$;
+                    ''')
+
                     
                     # Add ON UPDATE CASCADE to all foreign keys referencing users(username) (migration)
                     # This enables PostgreSQL to automatically cascade username renames
@@ -1457,15 +1492,15 @@ class Database:
             return False
     
     # Channel operations
-    def create_channel(self, channel_id: str, server_id: str, name: str, channel_type: str = 'text') -> bool:
+    def create_channel(self, channel_id: str, server_id: str, name: str, channel_type: str = 'text', category_id: Optional[str] = None, position: int = 0) -> bool:
         """Create a new channel."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT INTO channels (channel_id, server_id, name, type)
-                    VALUES (%s, %s, %s, %s)
-                ''', (channel_id, server_id, name, channel_type))
+                    INSERT INTO channels (channel_id, server_id, name, type, category_id, position)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                ''', (channel_id, server_id, name, channel_type, category_id, position))
                 return True
         except psycopg2.IntegrityError:
             return False
@@ -1475,9 +1510,111 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT * FROM channels WHERE server_id = %s ORDER BY channel_id
+                SELECT * FROM channels WHERE server_id = %s ORDER BY position, channel_id
             ''', (server_id,))
             return [dict(row) for row in cursor.fetchall()]
+    
+    def delete_channel(self, channel_id: str) -> bool:
+        """Delete a channel."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM channels WHERE channel_id = %s', (channel_id,))
+                return cursor.rowcount > 0
+        except psycopg2.Error:
+            return False
+    
+    # Category operations
+    def create_category(self, category_id: str, server_id: str, name: str, position: int = 0) -> bool:
+        """Create a new category."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO categories (category_id, server_id, name, position)
+                    VALUES (%s, %s, %s, %s)
+                ''', (category_id, server_id, name, position))
+                return True
+        except psycopg2.IntegrityError:
+            return False
+    
+    def get_server_categories(self, server_id: str) -> List[Dict]:
+        """Get all categories for a server."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM categories WHERE server_id = %s ORDER BY position, category_id
+            ''', (server_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def update_category(self, category_id: str, name: str) -> bool:
+        """Update a category name."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE categories SET name = %s WHERE category_id = %s
+                ''', (name, category_id))
+                return cursor.rowcount > 0
+        except psycopg2.Error:
+            return False
+    
+    def delete_category(self, category_id: str) -> bool:
+        """Delete a category. Channels in this category will have category_id set to NULL."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM categories WHERE category_id = %s', (category_id,))
+                return True
+        except psycopg2.Error:
+            return False
+    
+    def update_category_positions(self, positions: List[Tuple[str, int]]) -> bool:
+        """Update positions of multiple categories.
+        
+        Args:
+            positions: List of (category_id, position) tuples
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                for category_id, position in positions:
+                    cursor.execute('''
+                        UPDATE categories SET position = %s WHERE category_id = %s
+                    ''', (position, category_id))
+                return True
+        except psycopg2.Error:
+            return False
+    
+    def update_channel_positions(self, positions: List[Tuple[str, int]]) -> bool:
+        """Update positions of multiple channels.
+        
+        Args:
+            positions: List of (channel_id, position) tuples
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                for channel_id, position in positions:
+                    cursor.execute('''
+                        UPDATE channels SET position = %s WHERE channel_id = %s
+                    ''', (position, channel_id))
+                return True
+        except psycopg2.Error:
+            return False
+    
+    def update_channel_category(self, channel_id: str, category_id: Optional[str]) -> bool:
+        """Update a channel's category."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE channels SET category_id = %s WHERE channel_id = %s
+                ''', (category_id, channel_id))
+                return cursor.rowcount > 0
+        except psycopg2.Error:
+            return False
+
     
     # Server members operations
     def add_server_member(self, server_id: str, username: str) -> bool:

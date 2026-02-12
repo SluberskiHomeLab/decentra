@@ -119,6 +119,7 @@ voice_members = {}
 # Helper counters for IDs (load from database on startup)
 server_counter = 0
 channel_counter = 0
+category_counter = 0
 dm_counter = 0
 role_counter = 0
 
@@ -297,6 +298,13 @@ def get_next_channel_id():
     return f"channel_{channel_counter}"
 
 
+def get_next_category_id():
+    """Get next category ID."""
+    global category_counter
+    category_counter += 1
+    return f"category_{category_counter}"
+
+
 def get_next_role_id():
     """Get next role ID."""
     global role_counter
@@ -376,7 +384,7 @@ def create_message_object(username, msg_content, context, context_id, user_profi
 
 def init_counters_from_db():
     """Initialize ID counters from database."""
-    global server_counter, channel_counter, dm_counter, role_counter
+    global server_counter, channel_counter, category_counter, dm_counter, role_counter
     
     # Get highest server ID
     servers = db.get_all_servers()
@@ -392,6 +400,15 @@ def init_counters_from_db():
         if channel_ids:
             max_channel = max([int(c.split('_')[1]) for c in channel_ids] + [0])
             channel_counter = max_channel
+    
+    # Get highest category ID
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT category_id FROM categories')
+        category_ids = [row['category_id'] for row in cursor.fetchall()]
+        if category_ids:
+            max_category = max([int(c.split('_')[1]) for c in category_ids] + [0])
+            category_counter = max_category
     
     # Get highest DM ID
     dms = db.get_user_dms('')  # Empty string won't match, but we get all DMs
@@ -475,7 +492,7 @@ def get_user_status(username):
 
 
 def build_user_servers_data(username):
-    """Build server list data for a user including channels and permissions."""
+    """Build server list data for a user including categories, channels and permissions."""
     user_servers = []
     user_server_ids = db.get_user_servers(username)
     
@@ -483,6 +500,7 @@ def build_user_servers_data(username):
         server_data = db.get_server(server_id)
         if server_data:
             channels = db.get_server_channels(server_id)
+            categories = db.get_server_categories(server_id)
             server_info = {
                 'id': server_id,
                 'name': server_data['name'],
@@ -490,8 +508,18 @@ def build_user_servers_data(username):
                 'icon': server_data.get('icon', '🏠'),
                 'icon_type': server_data.get('icon_type', 'emoji'),
                 'icon_data': server_data.get('icon_data'),
+                'categories': [
+                    {'id': cat['category_id'], 'name': cat['name'], 'position': cat.get('position', 0)}
+                    for cat in categories
+                ],
                 'channels': [
-                    {'id': ch['channel_id'], 'name': ch['name'], 'type': ch.get('type', 'text')}
+                    {
+                        'id': ch['channel_id'],
+                        'name': ch['name'],
+                        'type': ch.get('type', 'text'),
+                        'category_id': ch.get('category_id'),
+                        'position': ch.get('position', 0)
+                    }
                     for ch in channels
                 ]
             }
@@ -656,6 +684,7 @@ def get_admin_permissions():
         'administrator': True,
         'manage_server': True,
         'manage_channels': True,
+        'manage_categories': True,
         'manage_roles': True,
         'create_invite': True,
         'ban_members': True,
@@ -1646,12 +1675,19 @@ async def handler(websocket):
                                     continue
                             
                             server_id = get_next_server_id()
-                            channel_id = get_next_channel_id()
                             
                             # Create server in database
                             db.create_server(server_id, server_name, username)
-                            # Create default general channel
-                            db.create_channel(channel_id, server_id, 'general', 'text')
+                            
+                            # Create default "General" category
+                            category_id = get_next_category_id()
+                            db.create_category(category_id, server_id, 'General', 0)
+                            
+                            # Create default channels in the General category
+                            text_channel_id = get_next_channel_id()
+                            voice_channel_id = get_next_channel_id()
+                            db.create_channel(text_channel_id, server_id, 'general', 'text', category_id, 0)
+                            db.create_channel(voice_channel_id, server_id, 'voice', 'voice', category_id, 1)
                             
                             # Create default Admin role for server owner
                             admin_role_id = get_next_role_id()
@@ -1676,7 +1712,15 @@ async def handler(websocket):
                                     'icon': '🏠',
                                     'icon_type': 'emoji',
                                     'icon_data': None,
-                                    'channels': [{'id': channel_id, 'name': 'general', 'type': 'text'}]
+                                    'categories': [{
+                                        'id': category_id,
+                                        'name': 'General',
+                                        'position': 0
+                                    }],
+                                    'channels': [
+                                        {'id': text_channel_id, 'name': 'general', 'type': 'text', 'category_id': category_id, 'position': 0},
+                                        {'id': voice_channel_id, 'name': 'voice', 'type': 'voice', 'category_id': category_id, 'position': 1}
+                                    ]
                                 }
                             }))
                             print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} created server: {server_name} with Admin role")
@@ -3172,13 +3216,22 @@ async def handler(websocket):
                                         continue
                                 
                                 channel_id = get_next_channel_id()
-                                db.create_channel(channel_id, server_id, channel_name, channel_type)
+                                category_id = data.get('category_id')  # Optional category assignment
+                                position = data.get('position', 0)
+                                
+                                db.create_channel(channel_id, server_id, channel_name, channel_type, category_id, position)
                                 
                                 # Notify all server members
                                 channel_info = json.dumps({
                                     'type': 'channel_created',
                                     'server_id': server_id,
-                                    'channel': {'id': channel_id, 'name': channel_name, 'type': channel_type}
+                                    'channel': {
+                                        'id': channel_id,
+                                        'name': channel_name,
+                                        'type': channel_type,
+                                        'category_id': category_id,
+                                        'position': position
+                                    }
                                 })
                                 await broadcast_to_server(server_id, channel_info)
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} created {channel_type} channel: {channel_name}")
@@ -3187,6 +3240,186 @@ async def handler(websocket):
                                     'type': 'error',
                                     'message': 'You do not have permission to create channels'
                                 }))
+                    
+                    # Category management handlers
+                    elif data.get('type') == 'create_category':
+                        server_id = data.get('server_id', '')
+                        category_name = data.get('name', '').strip()
+                        
+                        if db.get_server(server_id) and category_name:
+                            if has_permission(server_id, username, 'manage_categories'):
+                                category_id = get_next_category_id()
+                                # Get next position (append to end)
+                                categories = db.get_server_categories(server_id)
+                                position = len(categories)
+                                
+                                db.create_category(category_id, server_id, category_name, position)
+                                
+                                # Notify all server members
+                                category_info = json.dumps({
+                                    'type': 'category_created',
+                                    'server_id': server_id,
+                                    'category': {
+                                        'id': category_id,
+                                        'name': category_name,
+                                        'position': position
+                                    }
+                                })
+                                await broadcast_to_server(server_id, category_info)
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} created category: {category_name}")
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'You do not have permission to create categories'
+                                }))
+                    
+                    elif data.get('type') == 'update_category':
+                        category_id = data.get('category_id', '')
+                        category_name = data.get('name', '').strip()
+                        
+                        if category_name:
+                            # Get server_id for the category
+                            categories = []
+                            with db.get_connection() as conn:
+                                cursor = conn.cursor()
+                                cursor.execute('SELECT server_id FROM categories WHERE category_id = %s', (category_id,))
+                                row = cursor.fetchone()
+                                if row:
+                                    server_id = row['server_id']
+                                    if has_permission(server_id, username, 'manage_categories'):
+                                        db.update_category(category_id, category_name)
+                                        
+                                        # Notify all server members
+                                        await broadcast_to_server(server_id, json.dumps({
+                                            'type': 'category_updated',
+                                            'server_id': server_id,
+                                            'category_id': category_id,
+                                            'name': category_name
+                                        }))
+                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} updated category: {category_name}")
+                                    else:
+                                        await websocket.send_str(json.dumps({
+                                            'type': 'error',
+                                            'message': 'You do not have permission to manage categories'
+                                        }))
+                    
+                    elif data.get('type') == 'delete_category':
+                        category_id = data.get('category_id', '')
+                        
+                        # Get server_id for the category
+                        with db.get_connection() as conn:
+                            cursor = conn.cursor()
+                            cursor.execute('SELECT server_id FROM categories WHERE category_id = %s', (category_id,))
+                            row = cursor.fetchone()
+                            if row:
+                                server_id = row['server_id']
+                                if has_permission(server_id, username, 'manage_categories'):
+                                    db.delete_category(category_id)
+                                    
+                                    # Notify all server members
+                                    await broadcast_to_server(server_id, json.dumps({
+                                        'type': 'category_deleted',
+                                        'server_id': server_id,
+                                        'category_id': category_id
+                                    }))
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} deleted category: {category_id}")
+                                else:
+                                    await websocket.send_str(json.dumps({
+                                        'type': 'error',
+                                        'message': 'You do not have permission to manage categories'
+                                    }))
+                    
+                    elif data.get('type') == 'update_category_positions':
+                        server_id = data.get('server_id', '')
+                        positions = data.get('positions', [])  # List of {category_id, position}
+                        
+                        if db.get_server(server_id) and has_permission(server_id, username, 'manage_categories'):
+                            # Convert to list of tuples
+                            position_tuples = [(p['category_id'], p['position']) for p in positions]
+                            db.update_category_positions(position_tuples)
+                            
+                            # Notify all server members
+                            await broadcast_to_server(server_id, json.dumps({
+                                'type': 'category_positions_updated',
+                                'server_id': server_id,
+                                'positions': positions
+                            }))
+                    
+                    elif data.get('type') == 'update_channel_positions':
+                        server_id = data.get('server_id', '')
+                        positions = data.get('positions', [])  # List of {channel_id, position, category_id}
+                        
+                        if db.get_server(server_id) and has_permission(server_id, username, 'manage_channels'):
+                            # Update positions
+                            position_tuples = [(p['channel_id'], p['position']) for p in positions]
+                            db.update_channel_positions(position_tuples)
+                            
+                            # Update category assignments if needed
+                            for p in positions:
+                                if 'category_id' in p:
+                                    db.update_channel_category(p['channel_id'], p.get('category_id'))
+                            
+                            # Notify all server members
+                            await broadcast_to_server(server_id, json.dumps({
+                                'type': 'channel_positions_updated',
+                                'server_id': server_id,
+                                'positions': positions
+                            }))
+                    
+                    elif data.get('type') == 'update_channel_category':
+                        channel_id = data.get('channel_id', '')
+                        category_id = data.get('category_id')  # Can be None to remove from category
+                        
+                        # Get server_id and current channel info
+                        with db.get_connection() as conn:
+                            cursor = conn.cursor()
+                            cursor.execute('SELECT server_id, name, type FROM channels WHERE channel_id = %s', (channel_id,))
+                            row = cursor.fetchone()
+                            if row:
+                                server_id = row['server_id']
+                                if has_permission(server_id, username, 'manage_channels'):
+                                    db.update_channel_category(channel_id, category_id)
+                                    
+                                    # Notify all server members
+                                    await broadcast_to_server(server_id, json.dumps({
+                                        'type': 'channel_category_updated',
+                                        'server_id': server_id,
+                                        'channel_id': channel_id,
+                                        'category_id': category_id
+                                    }))
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} moved channel {channel_id} to category {category_id}")
+                                else:
+                                    await websocket.send_str(json.dumps({
+                                        'type': 'error',
+                                        'message': 'You do not have permission to manage channels'
+                                    }))
+                    
+                    elif data.get('type') == 'delete_channel':
+                        channel_id = data.get('channel_id', '')
+                        
+                        # Get server_id for the channel
+                        with db.get_connection() as conn:
+                            cursor = conn.cursor()
+                            cursor.execute('SELECT server_id, name FROM channels WHERE channel_id = %s', (channel_id,))
+                            row = cursor.fetchone()
+                            if row:
+                                server_id = row['server_id']
+                                channel_name = row['name']
+                                if has_permission(server_id, username, 'manage_channels') or has_permission(server_id, username, 'delete_channel'):
+                                    db.delete_channel(channel_id)
+                                    
+                                    # Notify all server members
+                                    await broadcast_to_server(server_id, json.dumps({
+                                        'type': 'channel_deleted',
+                                        'server_id': server_id,
+                                        'channel_id': channel_id
+                                    }))
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} deleted channel: {channel_name}")
+                                else:
+                                    await websocket.send_str(json.dumps({
+                                        'type': 'error',
+                                        'message': 'You do not have permission to delete channels'
+                                    }))
                     
                     # Voice chat handlers (legacy endpoint for backward compatibility)
                     elif data.get('type') == 'create_voice_channel':

@@ -20,6 +20,14 @@ export type ServerChannel = {
   id: string
   name: string
   type?: 'text' | 'voice' | string
+  category_id?: string | null
+  position?: number
+}
+
+export type ServerCategory = {
+  id: string
+  name: string
+  position: number
 }
 
 export type ServerPermissions = {
@@ -38,6 +46,7 @@ export type Server = {
   icon_type?: 'emoji' | 'image' | string
   icon_data?: string | null
   channels: ServerChannel[]
+  categories?: ServerCategory[]
   permissions?: ServerPermissions
 }
 
@@ -205,6 +214,19 @@ export type WsChannelCreated = {
   channel: ServerChannel
 }
 
+export type WsChannelCategoryUpdated = {
+  type: 'channel_category_updated'
+  server_id: string
+  channel_id: string
+  category_id: string | null
+}
+
+export type WsChannelDeleted = {
+  type: 'channel_deleted'
+  server_id: string
+  channel_id: string
+}
+
 export type WsDmStarted = {
   type: 'dm_started'
   dm: Dm & Profile
@@ -345,6 +367,8 @@ export type WsMessage =
   | WsServerCreated
   | WsServerJoined
   | WsChannelCreated
+  | WsChannelCategoryUpdated
+  | WsChannelDeleted
   | WsDmStarted
   | WsServerMembers
   | WsInviteCode
@@ -449,6 +473,8 @@ export type WsOutboundCreateChannel = {
   server_id: string
   name: string
   channel_type?: 'text' | 'voice'
+  category_id?: string
+  position?: number
 }
 
 export type WsOutboundCreateVoiceChannel = {
