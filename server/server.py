@@ -1384,6 +1384,26 @@ async def handler(websocket):
             friend_requests_sent = friend_requests_sent or []
             friend_requests_received = friend_requests_received or []
             
+            # Get unread counts for the user
+            unread_data = db.get_unread_counts(username)
+            
+            # Enrich servers with unread data
+            for server in user_servers:
+                server_id = server['id']
+                if server_id in unread_data['server_counts']:
+                    server_unread = unread_data['server_counts'][server_id]
+                    server['unread_count'] = server_unread['unread_count']
+                    server['has_mention'] = server_unread['has_mention']
+                    server['channel_unreads'] = server_unread.get('channels', {})
+            
+            # Enrich DMs with unread data
+            for dm in user_dms:
+                dm_id = dm['id']
+                if dm_id in unread_data['dm_counts']:
+                    dm_unread = unread_data['dm_counts'][dm_id]
+                    dm['unread_count'] = dm_unread['unread_count']
+                    dm['has_mention'] = dm_unread['has_mention']
+            
             current_avatar = get_avatar_data(username)
             current_profile = get_profile_data(username)
             user = db.get_user(username)
@@ -2265,6 +2285,18 @@ async def handler(websocket):
                                     **user_profile
                                 }
                             }))
+                    
+                    elif data.get('type') == 'mark_as_read':
+                        # Mark messages as read in a specific context
+                        context_type = data.get('context_type')
+                        context_id = data.get('context_id')
+                        
+                        if context_type and context_id:
+                            # Mark messages as read
+                            success = db.mark_messages_as_read(username, context_type, context_id)
+                            
+                            if success:
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} marked messages as read in {context_type}:{context_id}")
                     
                     elif data.get('type') == 'generate_invite':
                         # Generate a new invite code

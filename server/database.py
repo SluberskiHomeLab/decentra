@@ -405,6 +405,27 @@ class Database:
                         ON message_mentions(message_id)
                     ''')
                     
+                    # Message read status table
+                    # Tracks which messages have been read by each user
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS message_read_status (
+                            username VARCHAR(255) NOT NULL,
+                            context_type VARCHAR(50) NOT NULL,
+                            context_id VARCHAR(255) NOT NULL,
+                            last_read_message_id INTEGER,
+                            last_read_at TIMESTAMP,
+                            PRIMARY KEY (username, context_type, context_id),
+                            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE,
+                            FOREIGN KEY (last_read_message_id) REFERENCES messages(id) ON DELETE SET NULL
+                        )
+                    ''')
+                    
+                    # Create index for faster read status retrieval
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_read_status_user 
+                        ON message_read_status(username)
+                    ''')
+                    
                     # Add notification_mode column if it doesn't exist (migration)
                     cursor.execute('''
                         DO $$ 
@@ -2569,6 +2590,180 @@ class Database:
                 mentions_by_message[msg_id].append(row['mentioned_username'])
             
             return mentions_by_message
+
+    # Read status operations
+    def mark_messages_as_read(self, username: str, context_type: str, context_id: str, last_message_id: int = None) -> bool:
+        """Mark messages as read for a user in a specific context."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Get the latest message ID if not provided
+                if last_message_id is None:
+                    cursor.execute('''
+                        SELECT id FROM messages
+                        WHERE context_type = %s AND context_id = %s
+                        ORDER BY timestamp DESC
+                        LIMIT 1
+                    ''', (context_type, context_id))
+                    result = cursor.fetchone()
+                    if result:
+                        last_message_id = result['id']
+                    else:
+                        return False
+                
+                # Upsert read status
+                cursor.execute('''
+                    INSERT INTO message_read_status (username, context_type, context_id, last_read_message_id, last_read_at)
+                    VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (username, context_type, context_id)
+                    DO UPDATE SET last_read_message_id = EXCLUDED.last_read_message_id,
+                                  last_read_at = EXCLUDED.last_read_at
+                ''', (username, context_type, context_id, last_message_id))
+                return True
+        except Exception as e:
+            print(f"Error marking messages as read: {e}")
+            return False
+    
+    def get_unread_counts(self, username: str) -> Dict:
+        """
+        Get unread message counts for a user across all contexts.
+        Returns a dict with:
+        - dm_counts: {dm_id: {unread_count: int, has_mention: bool}}
+        - server_counts: {server_id: {unread_count: int, has_mention: bool, channels: {channel_id: {unread_count: int, has_mention: bool}}}}
+        """
+        unread_data = {
+            'dm_counts': {},
+            'server_counts': {}
+        }
+        
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Get all DMs for the user
+                cursor.execute('''
+                    SELECT dm_id, user1, user2
+                    FROM direct_messages
+                    WHERE user1 = %s OR user2 = %s
+                ''', (username, username))
+                dms = cursor.fetchall()
+                
+                for dm in dms:
+                    dm_id = dm['dm_id']
+                    context_id = dm_id
+                    
+                    # Get last read message ID for this DM
+                    cursor.execute('''
+                        SELECT last_read_message_id
+                        FROM message_read_status
+                        WHERE username = %s AND context_type = 'dm' AND context_id = %s
+                    ''', (username, context_id))
+                    read_status = cursor.fetchone()
+                    last_read_id = read_status['last_read_message_id'] if read_status else 0
+                    
+                    # Count unread messages
+                    cursor.execute('''
+                        SELECT COUNT(*) as count
+                        FROM messages
+                        WHERE context_type = 'dm' AND context_id = %s
+                        AND id > %s
+                        AND username != %s
+                    ''', (context_id, last_read_id, username))
+                    unread_count = cursor.fetchone()['count']
+                    
+                    # Check for mentions
+                    cursor.execute('''
+                        SELECT COUNT(*) as count
+                        FROM messages m
+                        JOIN message_mentions mm ON m.id = mm.message_id
+                        WHERE m.context_type = 'dm' AND m.context_id = %s
+                        AND m.id > %s
+                        AND mm.mentioned_username = %s
+                    ''', (context_id, last_read_id, username))
+                    has_mention = cursor.fetchone()['count'] > 0
+                    
+                    unread_data['dm_counts'][dm_id] = {
+                        'unread_count': unread_count,
+                        'has_mention': has_mention
+                    }
+                
+                # Get all servers the user is a member of
+                cursor.execute('''
+                    SELECT server_id
+                    FROM server_members
+                    WHERE username = %s
+                ''', (username,))
+                servers = cursor.fetchall()
+                
+                for server in servers:
+                    server_id = server['server_id']
+                    server_unread = 0
+                    server_has_mention = False
+                    channel_data = {}
+                    
+                    # Get all channels in this server
+                    cursor.execute('''
+                        SELECT channel_id
+                        FROM channels
+                        WHERE server_id = %s
+                    ''', (server_id,))
+                    channels = cursor.fetchall()
+                    
+                    for channel in channels:
+                        channel_id = channel['channel_id']
+                        context_id = f"{server_id}/{channel_id}"
+                        
+                        # Get last read message ID for this channel
+                        cursor.execute('''
+                            SELECT last_read_message_id
+                            FROM message_read_status
+                            WHERE username = %s AND context_type = 'server' AND context_id = %s
+                        ''', (username, context_id))
+                        read_status = cursor.fetchone()
+                        last_read_id = read_status['last_read_message_id'] if read_status else 0
+                        
+                        # Count unread messages in this channel
+                        cursor.execute('''
+                            SELECT COUNT(*) as count
+                            FROM messages
+                            WHERE context_type = 'server' AND context_id = %s
+                            AND id > %s
+                            AND username != %s
+                        ''', (context_id, last_read_id, username))
+                        channel_unread = cursor.fetchone()['count']
+                        
+                        # Check for mentions in this channel
+                        cursor.execute('''
+                            SELECT COUNT(*) as count
+                            FROM messages m
+                            JOIN message_mentions mm ON m.id = mm.message_id
+                            WHERE m.context_type = 'server' AND m.context_id = %s
+                            AND m.id > %s
+                            AND mm.mentioned_username = %s
+                        ''', (context_id, last_read_id, username))
+                        channel_has_mention = cursor.fetchone()['count'] > 0
+                        
+                        if channel_unread > 0 or channel_has_mention:
+                            channel_data[channel_id] = {
+                                'unread_count': channel_unread,
+                                'has_mention': channel_has_mention
+                            }
+                            server_unread += channel_unread
+                            if channel_has_mention:
+                                server_has_mention = True
+                    
+                    if server_unread > 0 or server_has_mention:
+                        unread_data['server_counts'][server_id] = {
+                            'unread_count': server_unread,
+                            'has_mention': server_has_mention,
+                            'channels': channel_data
+                        }
+                
+                return unread_data
+        except Exception as e:
+            print(f"Error getting unread counts: {e}")
+            return unread_data
 
     # License operations
     def save_license_key(self, license_key: str, tier: str = 'community', expires_at=None, customer_name: str = '', customer_email: str = '') -> bool:

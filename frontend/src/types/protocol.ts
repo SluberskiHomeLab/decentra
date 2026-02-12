@@ -38,6 +38,11 @@ export type ServerPermissions = {
   can_delete_messages?: boolean
 }
 
+export type UnreadChannelInfo = {
+  unread_count: number
+  has_mention: boolean
+}
+
 export type Server = {
   id: string
   name: string
@@ -48,12 +53,17 @@ export type Server = {
   channels: ServerChannel[]
   categories?: ServerCategory[]
   permissions?: ServerPermissions
+  unread_count?: number
+  has_mention?: boolean
+  channel_unreads?: Record<string, UnreadChannelInfo>
 }
 
 export type Dm = {
   id: string
   username: string
   user_status?: 'online' | 'away' | 'busy' | 'offline'
+  unread_count?: number
+  has_mention?: boolean
 } & Avatar
 
 export type Friend = {
@@ -775,6 +785,35 @@ export interface WsOutboundUpdateLicense {
 
 export interface WsOutboundRemoveLicense {
   type: 'remove_license'
+}
+
+// ── Read Status System ──────────────────────────────────────
+
+export type WsMarkAsRead = {
+  type: 'mark_as_read'
+  context_type: 'server' | 'dm' | 'global'
+  context_id: string
+}
+
+export type WsUnreadCounts = {
+  type: 'unread_counts'
+  dm_counts: Record<string, { unread_count: number; has_mention: boolean }>
+  server_counts: Record<string, { 
+    unread_count: number
+    has_mention: boolean
+    channels: Record<string, { unread_count: number; has_mention: boolean }>
+  }>
+}
+
+export type WsUnreadUpdate = {
+  type: 'unread_update'
+  context_type: 'server' | 'dm'
+  context_id: string
+  dm_id?: string
+  server_id?: string
+  channel_id?: string
+  unread_count: number
+  has_mention: boolean
 }
 
 export interface WsInboundLicenseInfo {

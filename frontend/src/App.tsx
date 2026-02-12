@@ -1361,6 +1361,54 @@ function ChatPage() {
     }
   }
 
+  const clearUnreadForContext = (ctx: ChatContext) => {
+    const prev = useAppStore.getState().init
+    if (!prev) return
+
+    if (ctx.kind === 'dm') {
+      // Clear DM unread count
+      const updatedDms = prev.dms?.map((dm) => {
+        if (dm.id === ctx.dmId) {
+          return {
+            ...dm,
+            unread_count: 0,
+            has_mention: false
+          }
+        }
+        return dm
+      })
+      setInit({ ...prev, dms: updatedDms })
+    } else if (ctx.kind === 'server') {
+      // Clear channel unread count
+      const updatedServers = prev.servers?.map((server) => {
+        if (server.id === ctx.serverId) {
+          const channelUnreads = { ...(server.channel_unreads ?? {}) }
+          channelUnreads[ctx.channelId] = {
+            unread_count: 0,
+            has_mention: false
+          }
+          
+          // Recalculate total server unreads
+          let totalUnread = 0
+          let hasAnyMention = false
+          Object.values(channelUnreads).forEach((ch: any) => {
+            totalUnread += ch.unread_count ?? 0
+            if (ch.has_mention) hasAnyMention = true
+          })
+          
+          return {
+            ...server,
+            unread_count: totalUnread,
+            has_mention: hasAnyMention,
+            channel_unreads: channelUnreads
+          }
+        }
+        return server
+      })
+      setInit({ ...prev, servers: updatedServers })
+    }
+  }
+
   const setDefaultContextFromServers = (servers: Server[] | undefined) => {
     if (!servers?.length) return
     const firstServer = servers[0]
@@ -1807,6 +1855,74 @@ function ChatPage() {
       if (isWsChatMessage(msg)) {
         appendMessage(msg)
         
+        // Update unread counts if message is not from current user and not in selected context
+        const currentUsername = useAppStore.getState().init?.username
+        const currentContext = useAppStore.getState().selectedContext
+        const isOwnMessage = msg.username === currentUsername
+        
+        if (!isOwnMessage) {
+          const prev = useAppStore.getState().init
+          if (prev) {
+            // Check if message is in current context
+            let isInCurrentContext = false
+            if (msg.context === 'dm' && currentContext.kind === 'dm') {
+              isInCurrentContext = msg.context_id === currentContext.dmId
+            } else if (msg.context === 'server' && currentContext.kind === 'server') {
+              const contextId = `${currentContext.serverId}/${currentContext.channelId}`
+              isInCurrentContext = msg.context_id === contextId
+            }
+            
+            // Only increment unread if not in current context
+            if (!isInCurrentContext) {
+              const isMention = msg.mentions?.includes(currentUsername ?? '') ?? false
+              
+              if (msg.context === 'dm' && msg.context_id) {
+                // Update DM unread count
+                const updatedDms = prev.dms?.map((dm) => {
+                  if (dm.id === msg.context_id) {
+                    return {
+                      ...dm,
+                      unread_count: (dm.unread_count ?? 0) + 1,
+                      has_mention: dm.has_mention || isMention
+                    }
+                  }
+                  return dm
+                })
+                setInit({ ...prev, dms: updatedDms })
+              } else if (msg.context === 'server' && msg.context_id) {
+                // Update server/channel unread count
+                const [serverId, channelId] = msg.context_id.split('/')
+                const updatedServers = prev.servers?.map((server) => {
+                  if (server.id === serverId) {
+                    const channelUnreads = { ...(server.channel_unreads ?? {}) }
+                    channelUnreads[channelId] = {
+                      unread_count: ((channelUnreads[channelId]?.unread_count ?? 0) + 1),
+                      has_mention: (channelUnreads[channelId]?.has_mention || isMention)
+                    }
+                    
+                    // Calculate total server unreads
+                    let totalUnread = 0
+                    let hasAnyMention = false
+                    Object.values(channelUnreads).forEach((ch: any) => {
+                      totalUnread += ch.unread_count ?? 0
+                      if (ch.has_mention) hasAnyMention = true
+                    })
+                    
+                    return {
+                      ...server,
+                      unread_count: totalUnread,
+                      has_mention: hasAnyMention,
+                      channel_unreads: channelUnreads
+                    }
+                  }
+                  return server
+                })
+                setInit({ ...prev, servers: updatedServers })
+              }
+            }
+          }
+        }
+        
         // Load emojis for the server this message is from
         if (msg.context === 'server' && msg.context_id) {
           const serverId = msg.context_id.split('/')[0]
@@ -1816,7 +1932,6 @@ function ChatPage() {
         }
         
         // Show browser notification for new messages based on notification mode
-        const currentUsername = useAppStore.getState().init?.username
         const shouldNotify = currentUsername && msg.username !== currentUsername
         
         if (shouldNotify && notificationMode === 'all') {
@@ -3614,12 +3729,16 @@ function ChatPage() {
             <button
               type="button"
               onClick={() => setIsDmSidebarOpen(!isDmSidebarOpen)}
-              className={`flex h-12 w-12 items-center justify-center rounded-2xl text-2xl transition ${
+              className={`relative flex h-12 w-12 items-center justify-center rounded-2xl text-2xl transition ${
                 isDmSidebarOpen ? 'bg-sky-500 text-white' : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 hover:rounded-xl'
               }`}
               title="Direct Messages"
             >
               #
+              {/* Unread indicator dot */}
+              {(init?.dms ?? []).some((dm) => (dm.unread_count ?? 0) > 0) && (
+                <span className="absolute -top-1 -right-1 h-3 w-3 rounded-full bg-red-500" />
+              )}
             </button>
           </div>
 
@@ -3628,38 +3747,49 @@ function ChatPage() {
 
           {/* Server icons */}
           <div className="flex-1 overflow-auto p-3 space-y-2 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-            {(init?.servers ?? []).map((server) => (
-              <button
-                key={server.id}
-                type="button"
-                onClick={() => {
-                  if (selectedServerId === server.id) {
-                    setSelectedServerId(null)
-                    selectContext({ kind: 'global' })
-                  } else {
-                    setSelectedServerId(server.id)
-                    setIsDmSidebarOpen(false)
-                    const firstChannel = server.channels?.[0]
-                    if (firstChannel) {
-                      selectContext({ kind: 'server', serverId: server.id, channelId: firstChannel.id })
-                      requestHistoryFor({ kind: 'server', serverId: server.id, channelId: firstChannel.id })
+            {(init?.servers ?? []).map((server) => {
+              const hasUnread = (server.unread_count ?? 0) > 0
+              const hasMention = server.has_mention ?? false
+              
+              return (
+                <button
+                  key={server.id}
+                  type="button"
+                  onClick={() => {
+                    if (selectedServerId === server.id) {
+                      setSelectedServerId(null)
+                      selectContext({ kind: 'global' })
+                    } else {
+                      setSelectedServerId(server.id)
+                      setIsDmSidebarOpen(false)
+                      const firstChannel = server.channels?.[0]
+                      if (firstChannel) {
+                        selectContext({ kind: 'server', serverId: server.id, channelId: firstChannel.id })
+                        requestHistoryFor({ kind: 'server', serverId: server.id, channelId: firstChannel.id })
+                      }
+                      // Request server members
+                      wsClient.getServerMembers({ type: 'get_server_members', server_id: server.id })
                     }
-                    // Request server members
-                    wsClient.getServerMembers({ type: 'get_server_members', server_id: server.id })
-                  }
-                }}
-                className={`flex h-12 w-12 items-center justify-center rounded-2xl text-xl transition overflow-hidden ${
-                  selectedServerId === server.id ? 'bg-sky-500 text-white' : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 hover:rounded-xl'
-                }`}
-                title={server.name}
-              >
-                {server.icon_type === 'image' && server.icon_data ? (
-                  <img src={server.icon_data} alt={server.name} className="h-full w-full object-cover" />
-                ) : (
-                  <>{server.icon ?? '🏠'}</>
-                )}
-              </button>
-            ))}
+                  }}
+                  className={`relative flex h-12 w-12 items-center justify-center rounded-2xl text-xl transition overflow-hidden ${
+                    selectedServerId === server.id ? 'bg-sky-500 text-white' : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 hover:rounded-xl'
+                  }`}
+                  title={server.name}
+                >
+                  {server.icon_type === 'image' && server.icon_data ? (
+                    <img src={server.icon_data} alt={server.name} className="h-full w-full object-cover" />
+                  ) : (
+                    <>{server.icon ?? '🏠'}</>
+                  )}
+                  {/* Unread indicator dot */}
+                  {hasMention ? (
+                    <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-red-500 border-2 border-slate-900" />
+                  ) : hasUnread ? (
+                    <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-slate-400 border-2 border-slate-900" />
+                  ) : null}
+                </button>
+              )
+            })}
           </div>
 
           {/* Profile section at bottom */}
@@ -3696,6 +3826,9 @@ function ChatPage() {
                   <div className="space-y-1">
                     {(init?.dms ?? []).map((dm) => {
                       const isSelected = selectedContext.kind === 'dm' && selectedContext.dmId === dm.id
+                      const hasUnread = (dm.unread_count ?? 0) > 0
+                      const hasMention = dm.has_mention ?? false
+                      
                       return (
                         <button
                           key={dm.id}
@@ -3705,6 +3838,18 @@ function ChatPage() {
                             selectContext(next)
                             requestHistoryFor(next)
                             setSelectedServerId(null)
+                            
+                            // Clear unread count immediately in UI
+                            clearUnreadForContext(next)
+                            
+                            // Mark messages as read on server
+                            if (wsClient.readyState === WebSocket.OPEN) {
+                              wsClient.send({
+                                type: 'mark_as_read',
+                                context_type: 'dm',
+                                context_id: dm.id
+                              })
+                            }
                           }}
                           className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition ${
                             isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
@@ -3717,7 +3862,17 @@ function ChatPage() {
                             user_status={dm.user_status}
                             size="md"
                           />
-                          <span className="text-sm font-medium truncate">{dm.username}</span>
+                          <span 
+                            className={`text-sm truncate ${
+                              hasMention 
+                                ? 'font-bold italic text-red-400' 
+                                : hasUnread 
+                                  ? 'font-bold italic' 
+                                  : 'font-medium'
+                            }`}
+                          >
+                            {dm.username}
+                          </span>
                         </button>
                       )
                     })}
@@ -3789,6 +3944,10 @@ function ChatPage() {
                               selectedContext.kind === 'server' &&
                               selectedContext.serverId === selectedServerId &&
                               selectedContext.channelId === ch.id
+                            const channelUnread = selectedServerObj.channel_unreads?.[ch.id]
+                            const hasUnread = (channelUnread?.unread_count ?? 0) > 0
+                            const hasMention = channelUnread?.has_mention ?? false
+                            
                             return (
                               <button
                                 key={ch.id}
@@ -3802,6 +3961,18 @@ function ChatPage() {
                                   } else {
                                     selectContext(next)
                                     requestHistoryFor(next)
+                                    
+                                    // Clear unread count immediately in UI
+                                    clearUnreadForContext(next)
+                                    
+                                    // Mark messages as read on server
+                                    if (wsClient.readyState === WebSocket.OPEN) {
+                                      wsClient.send({
+                                        type: 'mark_as_read',
+                                        context_type: 'server',
+                                        context_id: `${selectedServerId}/${ch.id}`
+                                      })
+                                    }
                                   }
                                 }}
                                 className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
@@ -3809,7 +3980,13 @@ function ChatPage() {
                                 }`}
                               >
                                 <span className="text-slate-400">{ch.type === 'voice' ? '🔊' : '#'}</span>
-                                <span className="text-sm font-medium">{ch.name}</span>
+                                <span className={`text-sm ${
+                                  hasMention 
+                                    ? 'font-bold italic text-red-400' 
+                                    : hasUnread 
+                                      ? 'font-bold italic' 
+                                      : 'font-medium'
+                                }`}>{ch.name}</span>
                               </button>
                             )
                           })}
@@ -3835,6 +4012,10 @@ function ChatPage() {
                             selectedContext.kind === 'server' &&
                             selectedContext.serverId === selectedServerId &&
                             selectedContext.channelId === ch.id
+                          const channelUnread = selectedServerObj.channel_unreads?.[ch.id]
+                          const hasUnread = (channelUnread?.unread_count ?? 0) > 0
+                          const hasMention = channelUnread?.has_mention ?? false
+                          
                           return (
                             <button
                               key={ch.id}
@@ -3847,6 +4028,18 @@ function ChatPage() {
                                 } else {
                                   selectContext(next)
                                   requestHistoryFor(next)
+                                  
+                                  // Clear unread count immediately in UI
+                                  clearUnreadForContext(next)
+                                  
+                                  // Mark messages as read on server
+                                  if (wsClient.readyState === WebSocket.OPEN) {
+                                    wsClient.send({
+                                      type: 'mark_as_read',
+                                      context_type: 'server',
+                                      context_id: `${selectedServerId}/${ch.id}`
+                                    })
+                                  }
                                 }
                               }}
                               className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
@@ -3854,7 +4047,13 @@ function ChatPage() {
                               }`}
                             >
                               <span className="text-slate-400">{ch.type === 'voice' ? '🔊' : '#'}</span>
-                              <span className="text-sm font-medium">{ch.name}</span>
+                              <span className={`text-sm ${
+                                hasMention 
+                                  ? 'font-bold italic text-red-400' 
+                                  : hasUnread 
+                                    ? 'font-bold italic' 
+                                    : 'font-medium'
+                              }`}>{ch.name}</span>
                             </button>
                           )
                         })}
