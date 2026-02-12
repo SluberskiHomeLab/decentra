@@ -410,20 +410,22 @@ async def api_upload_attachment(request):
                 'error': f'File size exceeds maximum of {max_size_mb}MB'
             }, status=413)
         
-        # Get message by ID
-        message = db.get_message(message_id)
-        
-        if not message:
-            return web.json_response({
-                'success': False,
-                'error': 'Message not found'
-            }, status=404)
-        
-        if message['username'] != username:
-            return web.json_response({
-                'success': False,
-                'error': 'You can only attach files to your own messages'
-            }, status=403)
+        # Get message by ID (allow 0 for embedding without message association)
+        message = None
+        if message_id != 0:
+            message = db.get_message(message_id)
+            
+            if not message:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Message not found'
+                }, status=404)
+            
+            if message['username'] != username:
+                return web.json_response({
+                    'success': False,
+                    'error': 'You can only attach files to your own messages'
+                }, status=403)
         
         # Generate attachment ID
         attachment_id = f"att_{uuid.uuid4().hex[:16]}"
@@ -461,8 +463,10 @@ async def api_upload_attachment(request):
 
 async def api_download_attachment(request):
     """
-    GET /api/download-attachment/<attachment_id>
+    GET /api/download-attachment/<attachment_id>[/<filename>]
     Download a file attachment
+    
+    Optional filename parameter for URL clarity and extension-based embed detection
     
     Response: Binary file data with appropriate content-type
     """
@@ -648,4 +652,5 @@ def setup_api_routes(app, database, jwt_verify_func):
     app.router.add_get('/api/dms', api_dms)
     app.router.add_post('/api/upload-attachment', api_upload_attachment)
     app.router.add_get('/api/download-attachment/{attachment_id}', api_download_attachment)
+    app.router.add_get('/api/download-attachment/{attachment_id}/{filename}', api_download_attachment)
     app.router.add_get('/api/message-attachments/{message_id}', api_get_message_attachments)

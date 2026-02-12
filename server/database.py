@@ -352,7 +352,7 @@ class Database:
                     cursor.execute('''
                         CREATE TABLE IF NOT EXISTS message_attachments (
                             attachment_id VARCHAR(255) PRIMARY KEY,
-                            message_id INTEGER NOT NULL,
+                            message_id INTEGER,
                             filename VARCHAR(255) NOT NULL,
                             content_type VARCHAR(100) NOT NULL,
                             file_size INTEGER NOT NULL,
@@ -623,6 +623,22 @@ class Database:
                                 WHERE table_name = 'admin_settings' AND column_name = 'attachment_retention_days'
                             ) THEN
                                 ALTER TABLE admin_settings ADD COLUMN attachment_retention_days INTEGER DEFAULT 0;
+                            END IF;
+                        END $$;
+                    ''')
+                    
+                    # Alter message_attachments to allow NULL message_id for embedding (migration)
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            -- Check if the column has NOT NULL constraint
+                            IF EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'message_attachments' 
+                                AND column_name = 'message_id' 
+                                AND is_nullable = 'NO'
+                            ) THEN
+                                ALTER TABLE message_attachments ALTER COLUMN message_id DROP NOT NULL;
                             END IF;
                         END $$;
                     ''')
@@ -1894,11 +1910,13 @@ class Database:
         """Save a file attachment for a message."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            # Allow None/NULL for message_id to support embedding without message association
+            msg_id = message_id if message_id != 0 else None
             cursor.execute('''
                 INSERT INTO message_attachments 
                 (attachment_id, message_id, filename, content_type, file_size, file_data, uploaded_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ''', (attachment_id, message_id, filename, content_type, file_size, file_data, datetime.now()))
+            ''', (attachment_id, msg_id, filename, content_type, file_size, file_data, datetime.now()))
             return cursor.rowcount > 0
     
     def get_attachment(self, attachment_id: str) -> Optional[Dict]:

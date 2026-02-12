@@ -13,7 +13,7 @@ import { notificationManager } from './utils/notifications'
 import './App.css'
 
 // URL processing utilities
-const URL_REGEX = /(https?:\/\/[^\s]+)/gi
+const URL_REGEX = /(https?:\/\/[^\s]+|\/api\/download-attachment\/[^\s]+)/gi
 const IMAGE_EXTENSIONS = /\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?[^\s]*)?$/i
 const VIDEO_EXTENSIONS = /\.(mp4|webm|ogg|mov)(\?[^\s]*)?$/i
 const YOUTUBE_REGEX = /https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/i
@@ -33,6 +33,11 @@ function getYouTubeVideoId(url: string): string | null {
 
 function sanitizeUrl(url: string): string | null {
   try {
+    // Allow relative URLs (like /api/download-attachment/...)
+    if (url.startsWith('/')) {
+      return url
+    }
+    // For absolute URLs, validate protocol
     const urlObj = new URL(url)
     if (urlObj.protocol === 'http:' || urlObj.protocol === 'https:') {
       return urlObj.toString()
@@ -2495,13 +2500,112 @@ function ChatPage() {
     setIsDragging(false)
   }
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
     setIsDragging(false)
     
     if (e.dataTransfer.files) {
-      handleFileSelect(e.dataTransfer.files)
+      await handleDroppedFiles(e.dataTransfer.files)
+    }
+  }
+
+  const handleDroppedFiles = async (files: FileList) => {
+    if (!files || files.length === 0) return
+
+    const executableExtensions = ['.exe', '.sh', '.bat', '.ps1', '.cmd', '.com', '.msi', '.scr', '.vbs', '.js', '.jar']
+    const maxSize = (adminSettings.max_attachment_size_mb || 10) * 1024 * 1024
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg']
+    const videoExtensions = ['.mp4', '.webm', '.ogg', '.mov']
+    
+    const filesToEmbed: File[] = []
+    const filesToAttach: File[] = []
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      const ext = file.name.toLowerCase().substring(file.name.lastIndexOf('.'))
+
+      // Check if executable
+      if (executableExtensions.includes(ext)) {
+        pushToast({ kind: 'error', message: `${file.name}: Executable files are not allowed` })
+        continue
+      }
+
+      // Check file size
+      if (file.size > maxSize) {
+        pushToast({ kind: 'error', message: `${file.name}: File exceeds maximum size of ${adminSettings.max_attachment_size_mb || 10}MB` })
+        continue
+      }
+
+      // Categorize file for embedding or attaching
+      if (imageExtensions.includes(ext) || videoExtensions.includes(ext)) {
+        filesToEmbed.push(file)
+      } else {
+        filesToAttach.push(file)
+      }
+    }
+
+    // Add non-media files as attachments
+    if (filesToAttach.length > 0) {
+      setSelectedFiles(prev => [...prev, ...filesToAttach])
+    }
+
+    // Upload and embed media files
+    if (filesToEmbed.length > 0) {
+      await uploadAndEmbedFiles(filesToEmbed)
+    }
+  }
+
+  const uploadAndEmbedFiles = async (files: File[]) => {
+    const token = authToken || getStoredAuth().token
+    if (!token) {
+      pushToast({ kind: 'error', message: 'Authentication required' })
+      return
+    }
+
+    setIsUploading(true)
+
+    try {
+      // Use a placeholder message_id of 0 for these uploads
+      // The files will be uploaded and we'll get URLs back
+      const uploadedUrls: string[] = []
+
+      for (const file of files) {
+        const formData = new FormData()
+        formData.append('file', file)
+        formData.append('token', token)
+        formData.append('message_id', '0') // Placeholder ID
+
+        try {
+          const response = await fetch('/api/upload-attachment', {
+            method: 'POST',
+            body: formData,
+          })
+
+          if (!response.ok) {
+            const data = await response.json()
+            pushToast({ kind: 'error', message: data.error || `Failed to upload ${file.name}` })
+          } else {
+            const data = await response.json()
+            if (data.success && data.attachment) {
+              // Create a URL that can be embedded - include filename for extension detection
+              const url = `/api/download-attachment/${data.attachment.attachment_id}/${encodeURIComponent(data.attachment.filename)}`
+              uploadedUrls.push(url)
+            }
+          }
+        } catch (error) {
+          pushToast({ kind: 'error', message: `Failed to upload ${file.name}` })
+        }
+      }
+
+      // Add URLs to draft
+      if (uploadedUrls.length > 0) {
+        const urlText = uploadedUrls.join('\n')
+        setDraft(prev => prev ? `${prev}\n${urlText}` : urlText)
+        pushToast({ kind: 'success', message: `${uploadedUrls.length} file(s) ready to embed` })
+      }
+    } finally {
+      setIsUploading(false)
     }
   }
 
