@@ -297,6 +297,66 @@ async def api_dms(request):
         }, status=500)
 
 
+async def api_search_messages(request):
+    """
+    GET /api/search-messages?username=<username>&query=<query>&limit=<limit>
+    Search messages for a user across all their accessible chats
+    
+    Parameters:
+    - username: username of the user performing the search
+    - query: search query string
+    - limit: number of results to return (default: 50, max: 100)
+    
+    Response: {
+        "success": true,
+        "results": [
+            {
+                "id": number,
+                "username": "string",
+                "content": "string",
+                "timestamp": "ISO 8601 string",
+                "context_type": "server|dm",
+                "context_id": "string",
+                "avatar": "string",
+                "avatar_type": "emoji|image",
+                "avatar_data": "string|null"
+            }
+        ]
+    }
+    """
+    try:
+        username = request.query.get('username')
+        query = request.query.get('query', '').strip()
+        limit = int(request.query.get('limit', 50))
+        
+        if not username:
+            return web.json_response({
+                'success': False,
+                'error': 'Username parameter is required'
+            }, status=400)
+        
+        if not query:
+            return web.json_response({
+                'success': True,
+                'results': []
+            })
+        
+        # Limit to max 100 results
+        limit = min(limit, 100)
+        
+        results = db.search_messages(username, query, limit)
+        
+        return web.json_response({
+            'success': True,
+            'results': results
+        })
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
 async def api_upload_attachment(request):
     """
     POST /api/upload-attachment
@@ -648,6 +708,7 @@ def setup_api_routes(app, database, jwt_verify_func):
     app.router.add_post('/api/reset-password', api_reset_password)
     app.router.add_get('/api/servers', api_servers)
     app.router.add_get('/api/messages', api_messages)
+    app.router.add_get('/api/search-messages', api_search_messages)
     app.router.add_get('/api/friends', api_friends)
     app.router.add_get('/api/dms', api_dms)
     app.router.add_post('/api/upload-attachment', api_upload_attachment)

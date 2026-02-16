@@ -10,6 +10,7 @@ import type { Attachment, CustomEmoji, Reaction, Server, ServerInviteUsageLog, S
 import { LicensePanel } from './components/admin/LicensePanel'
 import { useLicenseStore } from './store/licenseStore'
 import { notificationManager } from './utils/notifications'
+import { SearchBar, type SearchResult } from './components/SearchBar'
 import './App.css'
 
 // URL processing utilities
@@ -1406,6 +1407,65 @@ function ChatPage() {
         return server
       })
       setInit({ ...prev, servers: updatedServers })
+    }
+  }
+
+  const handleSearchResultClick = (result: SearchResult) => {
+    // Navigate to the context where the message is
+    if (result.context_type === 'dm') {
+      const dm = init?.dms?.find(d => d.id === result.context_id)
+      if (dm) {
+        const next: ChatContext = { kind: 'dm', dmId: dm.id, username: dm.username }
+        selectContext(next)
+        requestHistoryFor(next)
+        setSelectedServerId(null)
+        setIsDmSidebarOpen(true)
+        
+        // Scroll to message after a short delay to allow messages to load
+        setTimeout(() => {
+          const messageElement = document.getElementById(`message-${result.id}`)
+          if (messageElement) {
+            messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            // Highlight the message briefly
+            messageElement.classList.add('bg-sky-500/20')
+            setTimeout(() => {
+              messageElement.classList.remove('bg-sky-500/20')
+            }, 2000)
+          }
+        }, 500)
+      }
+    } else if (result.context_type === 'server' && result.context_id) {
+      const [serverId, channelId] = result.context_id.split('/')
+      const server = init?.servers?.find(s => s.id === serverId)
+      
+      if (server) {
+        const channel = server.channels?.find(c => c.id === channelId)
+        if (channel) {
+          setSelectedServerId(serverId)
+          setIsDmSidebarOpen(false)
+          const next: ChatContext = { kind: 'server', serverId, channelId }
+          selectContext(next)
+          requestHistoryFor(next)
+          
+          // Request server members if not already loaded
+          if (!serverMembers[serverId]) {
+            wsClient.getServerMembers({ type: 'get_server_members', server_id: serverId })
+          }
+          
+          // Scroll to message after a short delay to allow messages to load
+          setTimeout(() => {
+            const messageElement = document.getElementById(`message-${result.id}`)
+            if (messageElement) {
+              messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              // Highlight the message briefly
+              messageElement.classList.add('bg-sky-500/20')
+              setTimeout(() => {
+                messageElement.classList.remove('bg-sky-500/20')
+              }, 2000)
+            }
+          }, 500)
+        }
+      }
     }
   }
 
@@ -4070,17 +4130,25 @@ function ChatPage() {
         <main className="flex min-w-0 flex-1 flex-col">
           <header className="border-b border-white/10 bg-slate-950/60 px-6 py-4">
             <div className="flex items-center justify-between gap-4">
-              <div>
-                <div className="text-xs font-medium text-slate-400">
-                  {selectedContext.kind === 'global'
-                    ? 'Global Chat'
-                    : selectedContext.kind === 'dm'
-                      ? 'Direct Message'
-                      : isVoiceChannel
-                        ? 'Voice Channel'
-                        : 'Channel'}
+              <div className="flex items-center gap-4 min-w-0 flex-1">
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-slate-400">
+                    {selectedContext.kind === 'global'
+                      ? 'Global Chat'
+                      : selectedContext.kind === 'dm'
+                        ? 'Direct Message'
+                        : isVoiceChannel
+                          ? 'Voice Channel'
+                          : 'Channel'}
+                  </div>
+                  <div className="mt-1 text-lg font-semibold text-white truncate">{selectedTitle}</div>
                 </div>
-                <div className="mt-1 text-lg font-semibold text-white">{selectedTitle}</div>
+                <div className="hidden md:block">
+                  <SearchBar 
+                    currentUsername={init?.username ?? null} 
+                    onResultClick={handleSearchResultClick}
+                  />
+                </div>
               </div>
               <div className="flex items-center gap-3">
                 {selectedServerId && !isVoiceChannel && (

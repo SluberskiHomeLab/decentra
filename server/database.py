@@ -2014,6 +2014,80 @@ class Database:
                 messages.append(msg)
             return messages
     
+    def search_messages(self, username: str, query: str, limit: int = 50) -> List[Dict]:
+        """Search messages for a user. Searches across all DMs and server messages they have access to."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get all DMs the user is part of
+            user_dms = self.get_user_dms(username)
+            dm_ids = [dm['dm_id'] for dm in user_dms]
+            
+            # Get all servers the user is a member of
+            server_ids = self.get_user_servers(username)
+            server_channel_ids = []
+            for server_id in server_ids:
+                channels = self.get_server_channels(server_id)
+                for channel in channels:
+                    server_channel_ids.append(f"{server_id}/{channel['channel_id']}")
+            
+            # Build query to search messages
+            # We'll fetch all messages from contexts the user has access to, then filter by content after decryption
+            dm_conditions = ' OR '.join(['(m.context_type = %s AND m.context_id = %s)'] * len(dm_ids))
+            server_conditions = ' OR '.join(['(m.context_type = %s AND m.context_id = %s)'] * len(server_channel_ids))
+            
+            conditions = []
+            params = []
+            
+            if dm_ids:
+                conditions.append(f'({dm_conditions})')
+                for dm_id in dm_ids:
+                    params.extend(['dm', dm_id])
+            
+            if server_channel_ids:
+                conditions.append(f'({server_conditions})')
+                for context_id in server_channel_ids:
+                    params.extend(['server', context_id])
+            
+            if not conditions:
+                return []
+            
+            where_clause = ' OR '.join(conditions)
+            
+            cursor.execute(f'''
+                SELECT m.id, m.username, m.content, 
+                       m.timestamp::text as timestamp,
+                       m.context_type, m.context_id,
+                       m.edited_at::text as edited_at,
+                       m.deleted,
+                       u.avatar, u.avatar_type, u.avatar_data
+                FROM messages m
+                LEFT JOIN users u ON m.username = u.username
+                WHERE ({where_clause}) AND m.deleted = FALSE
+                ORDER BY m.timestamp DESC
+                LIMIT %s
+            ''', tuple(params) + (limit * 10,))  # Fetch more to filter by content
+            
+            # Decrypt and filter messages by query
+            messages = []
+            query_lower = query.lower()
+            for row in cursor.fetchall():
+                msg = dict(row)
+                try:
+                    decrypted_content = self.encryption_manager.decrypt(msg['content'])
+                    msg['content'] = decrypted_content
+                    
+                    # Check if query matches in content or username
+                    if query_lower in decrypted_content.lower() or query_lower in msg['username'].lower():
+                        messages.append(msg)
+                        if len(messages) >= limit:
+                            break
+                except Exception:
+                    # Skip messages that can't be decrypted
+                    continue
+            
+            return messages
+    
     def edit_message(self, message_id: int, new_content: str) -> bool:
         """Edit a message. Returns True if successful, False otherwise."""
         try:
