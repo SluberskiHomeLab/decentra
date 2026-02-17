@@ -1198,7 +1198,6 @@ function ResetPasswordPage() {
 
 function ChatPage() {
   const connectionStatus = useAppStore((s) => s.connectionStatus)
-  const setConnectionStatus = useAppStore((s) => s.setConnectionStatus)
   const authToken = useAppStore((s) => s.authToken)
   const authUsername = useAppStore((s) => s.authUsername)
   const init = useAppStore((s) => s.init)
@@ -1221,9 +1220,9 @@ function ChatPage() {
   const [editingCategoryName, setEditingCategoryName] = useState('')
   const [dmUsername, setDmUsername] = useState('')
   const [joinInviteCode, setJoinInviteCode] = useState('')
-  const [lastInviteCode, setLastInviteCode] = useState<string | null>(null)
+  const [lastInviteCode] = useState<string | null>(null)
   const [inviteUsageServerId, setInviteUsageServerId] = useState<string | null>(null)
-  const [inviteUsageLogs, setInviteUsageLogs] = useState<ServerInviteUsageLog[] | null>(null)
+  const [inviteUsageLogs] = useState<ServerInviteUsageLog[] | null>(null)
   const [isLoadingInviteUsage, setIsLoadingInviteUsage] = useState(false)
   
   // File upload state
@@ -1344,26 +1343,6 @@ function ChatPage() {
 
   const selectedKey = contextKey(selectedContext)
   const messages = messagesByContext[selectedKey] ?? []
-
-  const reconnectRef = useRef<{ attempt: number; timer: number | null; stopped: boolean }>({
-    attempt: 0,
-    timer: null,
-    stopped: false,
-  })
-
-  const clearReconnectTimer = () => {
-    if (reconnectRef.current.timer != null) {
-      window.clearTimeout(reconnectRef.current.timer)
-      reconnectRef.current.timer = null
-    }
-  }
-
-  const backoffMs = (attempt: number) => {
-    // Exponential backoff with jitter; caps at 30s.
-    const base = Math.min(30_000, 500 * Math.pow(2, attempt))
-    const jitter = base * (0.2 * (Math.random() - 0.5) * 2) // +/-20%
-    return Math.max(250, Math.floor(base + jitter))
-  }
 
   const requestHistoryFor = (ctx: ChatContext) => {
     if (wsClient.readyState !== WebSocket.OPEN) return
@@ -1494,14 +1473,6 @@ function ChatPage() {
     requestHistoryFor(next)
   }
 
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [email, setEmail] = useState('')
-  const [inviteCode, setInviteCode] = useState('')
-  const [verificationCode, setVerificationCode] = useState('')
-  const [needsVerification, setNeedsVerification] = useState(false)
-  const [isSubmitting, setIsSubmitting] = useState(false)
-
   // Check notification permission on mount
   useEffect(() => {
     if (notificationManager.isSupported()) {
@@ -1512,26 +1483,13 @@ function ChatPage() {
   useEffect(() => {
     const unsubscribe = wsClient.onMessage((msg: WsMessage) => {
       if (msg.type === 'auth_error') {
-        setIsSubmitting(false)
-        setNeedsVerification(false)
         const message = typeof msg.message === 'string' ? msg.message : 'Authentication failed'
         setLastAuthError(message)
       }
       if (msg.type === 'verification_required') {
-        setIsSubmitting(false)
-        setNeedsVerification(true)
         setLastAuthError(null)
       }
       if (msg.type === 'auth_success') {
-        setIsSubmitting(false)
-        const u = username.trim()
-        if (!u) return
-        const token = typeof msg.token === 'string' ? msg.token : ''
-        if (!token) {
-          setLastAuthError('Signup succeeded but no token was returned')
-          return
-        }
-
         // Request admin settings (includes announcement info for all users)
         try {
           wsClient.send({ type: 'get_admin_settings' })
@@ -1550,7 +1508,7 @@ function ChatPage() {
         requestHistoryFor(useAppStore.getState().selectedContext)
       }
       if (msg.type === 'init') {
-        const initUsername = typeof msg.username === 'string' ? msg.username : username.trim()
+        const initUsername = typeof msg.username === 'string' ? msg.username : (init?.username || authUsername || '')
         if (!initUsername) return
         console.log('Init message full:', JSON.stringify(msg, null, 2))
         setInit({
@@ -1569,8 +1527,6 @@ function ChatPage() {
           friend_requests_sent: msg.friend_requests_sent,
           friend_requests_received: msg.friend_requests_received,
         })
-      }
-    })
 
         // Sync user status
         console.log('Init message received, user_status:', msg.user_status)
@@ -1627,14 +1583,6 @@ function ChatPage() {
         }
       }
 
-      const ws = wsClient.connect()
-      const sendVerify = () => {
-        wsClient.verifyEmail({
-          type: 'verify_email',
-          username: u,
-          code,
-        })
-      }
       if (msg.type === 'auth_error') {
         const message = typeof msg.message === 'string' ? msg.message : 'Authentication failed'
         setLastAuthError(message)
@@ -1659,17 +1607,6 @@ function ChatPage() {
         if (lowerMsg.includes('username')) {
           setUsernameChangeStatus({ type: 'error', message })
         }
-      }
-
-      ws.onopen = () => {
-        sendVerify()
-      }
-    } else {
-      // Signup step
-      if (!u || !password || !email) {
-        setIsSubmitting(false)
-        setLastAuthError('Username, password, and email are required')
-        return
       }
 
       if (msg.type === 'category_created') {
@@ -1829,33 +1766,6 @@ function ChatPage() {
         requestHistoryFor(next)
       }
 
-      if (ws.readyState === WebSocket.OPEN) {
-        sendSignup()
-        return
-      }
-
-      ws.onopen = () => {
-        sendSignup()
-      }
-    }
-  }
-
-  return (
-    <div className="min-h-screen bg-slate-950">
-      <div className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4 py-10">
-        <div className="w-full max-w-md">
-          <div className="mb-6">
-            <div className="text-xs font-medium text-sky-200/70">Decentra</div>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">
-              {needsVerification ? 'Verify Email' : 'Sign Up'}
-            </h1>
-            <p className="mt-2 text-sm text-slate-300">
-              {needsVerification
-                ? 'Enter the verification code sent to your email.'
-                : 'Create a new account to get started.'}
-            </p>
-          </div>
-
       if (msg.type === 'server_members') {
         setServerMembers((prev) => ({
           ...prev,
@@ -1871,50 +1781,7 @@ function ChatPage() {
           setInit({ ...prev, servers: exists ? servers : [...servers, msg.server] })
         }
         pushToast({ kind: 'success', message: `Joined server: ${msg.server.name}` })
-
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="mt-1 inline-flex items-center justify-center rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isSubmitting ? 'Processing…' : needsVerification ? 'Verify Email' : 'Create Account'}
-              </button>
-            </form>
-
-            <div className="mt-4 flex flex-wrap gap-3 text-sm">
-              <Link className="text-sky-300 hover:text-sky-200" to="/login">
-                Already have an account? Sign In
-              </Link>
-              {needsVerification && (
-                <button
-                  type="button"
-                  className="text-slate-300 hover:text-slate-200"
-                  onClick={() => {
-                    setNeedsVerification(false)
-                    setVerificationCode('')
-                    setLastAuthError(null)
-                  }}
-                >
-                  Change Username/Email
-                </button>
-              )}
-            </div>
-
-            {lastAuthError ? (
-              <div className="mt-4 rounded-xl border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-sm text-rose-50">
-                {lastAuthError}
-              </div>
-            ) : null}
-          </div>
-
-          <div className="mt-6 text-xs text-slate-400">
-            Backend via nginx proxy: <span className="text-slate-300">/api</span> and <span className="text-slate-300">/ws</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
+      }
 
       if (isWsChatMessage(msg)) {
         appendMessage(msg)
@@ -2519,31 +2386,8 @@ function ChatPage() {
       }
     })
 
-  useEffect(() => {
-    if (!token) {
-      setErrorMessage('Invalid or missing reset token')
-    }
-  }, [token])
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setErrorMessage(null)
-    setSuccessMessage(null)
-
-    if (!token) {
-      setErrorMessage('Invalid or missing reset token')
-      return
-    }
-
-    if (newPassword.length < 8) {
-      setErrorMessage('Password must be at least 8 characters long')
-      return
-    }
-
-    if (newPassword !== confirmPassword) {
-      setErrorMessage('Passwords do not match')
-      return
-    }
+    return () => unsubscribe()
+  }, [])
 
   // Populate account settings when init data is available
   useEffect(() => {
@@ -3030,6 +2874,12 @@ function ChatPage() {
     setIsLoadingInviteUsage(true)
     setInviteUsageServerId(serverId)
     wsClient.getServerInviteUsage({ type: 'get_server_invite_usage', server_id: serverId })
+  }
+
+  const copyLastInvite = () => {
+    if (!lastInviteCode) return
+    navigator.clipboard.writeText(lastInviteCode)
+    pushToast({ kind: 'success', message: 'Invite code copied to clipboard' })
   }
 
                         <label className="block">
