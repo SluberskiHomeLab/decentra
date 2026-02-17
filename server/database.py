@@ -998,6 +998,55 @@ class Database:
                         END $$;
                     ''')
 
+                    # Webhooks table (server-level webhooks)
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS webhooks (
+                            webhook_id VARCHAR(255) PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            channel_id VARCHAR(255) NOT NULL,
+                            name VARCHAR(255) NOT NULL,
+                            token VARCHAR(255) NOT NULL,
+                            avatar VARCHAR(255) DEFAULT '🔗',
+                            created_by VARCHAR(255) NOT NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (channel_id) REFERENCES channels(channel_id) ON DELETE CASCADE,
+                            FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Create index for faster webhook retrieval
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_webhooks_server 
+                        ON webhooks(server_id)
+                    ''')
+                    
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_webhooks_channel 
+                        ON webhooks(channel_id)
+                    ''')
+                    
+                    # Instance-level webhooks table (admin webhooks)
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS instance_webhooks (
+                            webhook_id VARCHAR(255) PRIMARY KEY,
+                            name VARCHAR(255) NOT NULL,
+                            token VARCHAR(255) NOT NULL,
+                            event_type VARCHAR(50) NOT NULL,
+                            target_url TEXT NOT NULL,
+                            created_by VARCHAR(255) NOT NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            enabled BOOLEAN DEFAULT TRUE,
+                            FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Create index for faster instance webhook retrieval
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_instance_webhooks_event 
+                        ON instance_webhooks(event_type, enabled)
+                    ''')
+
                     conn.commit()
 
                 # If we get here, connection was successful
@@ -3191,6 +3240,208 @@ class Database:
         except Exception as e:
             print(f"Error deleting welcome message: {e}")
             return False
+    
+    # Webhook operations
+    def create_webhook(self, webhook_id: str, server_id: str, channel_id: str, name: str, token: str, created_by: str, avatar: str = '🔗') -> bool:
+        """Create a new webhook for a server channel."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO webhooks (webhook_id, server_id, channel_id, name, token, avatar, created_by, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (webhook_id, server_id, channel_id, name, token, avatar, created_by, datetime.now()))
+                return True
+        except Exception as e:
+            print(f"Error creating webhook: {e}")
+            return False
+    
+    def get_webhook(self, webhook_id: str) -> Optional[Dict]:
+        """Get webhook by ID."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM webhooks WHERE webhook_id = %s', (webhook_id,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            print(f"Error getting webhook: {e}")
+            return None
+    
+    def get_webhook_by_token(self, token: str) -> Optional[Dict]:
+        """Get webhook by token."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM webhooks WHERE token = %s', (token,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            print(f"Error getting webhook by token: {e}")
+            return None
+    
+    def get_server_webhooks(self, server_id: str) -> List[Dict]:
+        """Get all webhooks for a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM webhooks WHERE server_id = %s ORDER BY created_at DESC', (server_id,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting server webhooks: {e}")
+            return []
+    
+    def get_channel_webhooks(self, channel_id: str) -> List[Dict]:
+        """Get all webhooks for a channel."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM webhooks WHERE channel_id = %s ORDER BY created_at DESC', (channel_id,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting channel webhooks: {e}")
+            return []
+    
+    def update_webhook(self, webhook_id: str, name: str = None, channel_id: str = None, avatar: str = None) -> bool:
+        """Update webhook properties."""
+        try:
+            updates = []
+            params = []
+            
+            if name is not None:
+                updates.append("name = %s")
+                params.append(name)
+            if channel_id is not None:
+                updates.append("channel_id = %s")
+                params.append(channel_id)
+            if avatar is not None:
+                updates.append("avatar = %s")
+                params.append(avatar)
+            
+            if not updates:
+                return True
+            
+            params.append(webhook_id)
+            
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(f'''
+                    UPDATE webhooks SET {", ".join(updates)}
+                    WHERE webhook_id = %s
+                ''', params)
+                return True
+        except Exception as e:
+            print(f"Error updating webhook: {e}")
+            return False
+    
+    def delete_webhook(self, webhook_id: str) -> bool:
+        """Delete a webhook."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM webhooks WHERE webhook_id = %s', (webhook_id,))
+                return True
+        except Exception as e:
+            print(f"Error deleting webhook: {e}")
+            return False
+    
+    # Instance webhook operations
+    def create_instance_webhook(self, webhook_id: str, name: str, token: str, event_type: str, target_url: str, created_by: str, enabled: bool = True) -> bool:
+        """Create a new instance-level webhook."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO instance_webhooks (webhook_id, name, token, event_type, target_url, created_by, enabled, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (webhook_id, name, token, event_type, target_url, created_by, enabled, datetime.now()))
+                return True
+        except Exception as e:
+            print(f"Error creating instance webhook: {e}")
+            return False
+    
+    def get_instance_webhook(self, webhook_id: str) -> Optional[Dict]:
+        """Get instance webhook by ID."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM instance_webhooks WHERE webhook_id = %s', (webhook_id,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            print(f"Error getting instance webhook: {e}")
+            return None
+    
+    def get_all_instance_webhooks(self) -> List[Dict]:
+        """Get all instance webhooks."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM instance_webhooks ORDER BY created_at DESC')
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting instance webhooks: {e}")
+            return []
+    
+    def get_instance_webhooks_by_event(self, event_type: str, enabled_only: bool = True) -> List[Dict]:
+        """Get instance webhooks for a specific event type."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                if enabled_only:
+                    cursor.execute('SELECT * FROM instance_webhooks WHERE event_type = %s AND enabled = TRUE', (event_type,))
+                else:
+                    cursor.execute('SELECT * FROM instance_webhooks WHERE event_type = %s', (event_type,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting instance webhooks by event: {e}")
+            return []
+    
+    def update_instance_webhook(self, webhook_id: str, name: str = None, target_url: str = None, enabled: bool = None) -> bool:
+        """Update instance webhook properties."""
+        try:
+            updates = []
+            params = []
+            
+            if name is not None:
+                updates.append("name = %s")
+                params.append(name)
+            if target_url is not None:
+                updates.append("target_url = %s")
+                params.append(target_url)
+            if enabled is not None:
+                updates.append("enabled = %s")
+                params.append(enabled)
+            
+            if not updates:
+                return True
+            
+            params.append(webhook_id)
+            
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(f'''
+                    UPDATE instance_webhooks SET {", ".join(updates)}
+                    WHERE webhook_id = %s
+                ''', params)
+                return True
+        except Exception as e:
+            print(f"Error updating instance webhook: {e}")
+            return False
+    
+    def delete_instance_webhook(self, webhook_id: str) -> bool:
+        """Delete an instance webhook."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM instance_webhooks WHERE webhook_id = %s', (webhook_id,))
+                return True
+        except Exception as e:
+            print(f"Error deleting instance webhook: {e}")
+            return False
+    
+    def save_license_key(self, license_key: str, tier: str, expires_at, customer_name: str, customer_email: str) -> bool:
+        """Save license key information."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()

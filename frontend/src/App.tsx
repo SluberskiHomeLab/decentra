@@ -8,6 +8,7 @@ import { VoiceChat } from './lib/VoiceChat'
 import type { ChatContext } from './store/appStore'
 import type { Attachment, CustomEmoji, Reaction, Server, ServerInviteUsageLog, ServerMember, WsChatMessage, WsMessage } from './types/protocol'
 import { LicensePanel } from './components/admin/LicensePanel'
+import { WebhookPanel } from './components/admin/WebhookPanel'
 import { useLicenseStore } from './store/licenseStore'
 import { notificationManager } from './utils/notifications'
 import { SearchBar, type SearchResult } from './components/SearchBar'
@@ -5287,6 +5288,12 @@ function ChatPage() {
                       <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">License Management</h3>
                       <LicensePanel />
                     </section>
+
+                    {/* Instance Webhooks */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Instance Webhooks</h3>
+                      <WebhookPanel isAdmin={true} />
+                    </section>
                   </div>
                 )}
               </div>
@@ -6883,6 +6890,12 @@ function ChatPage() {
                         </div>
                       )}
                     </div>
+                  </section>
+
+                  {/* Webhooks Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">🔗 Webhooks</h3>
+                    <WebhookPanel serverId={selectedServerId || undefined} />
                   </section>
                 </div>
               </div>

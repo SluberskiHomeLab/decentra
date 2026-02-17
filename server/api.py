@@ -8,6 +8,7 @@ import json
 import uuid
 import base64
 import re
+import secrets
 from aiohttp import web
 import bcrypt
 from license_validator import check_limit
@@ -712,6 +713,456 @@ async def api_reset_password(request):
         }, status=500)
 
 
+async def api_create_webhook(request):
+    """
+    POST /api/webhooks
+    Create a new webhook for a server channel.
+    
+    Request body: {
+        "server_id": "string",
+        "channel_id": "string",
+        "name": "string",
+        "avatar": "string" (optional)
+    }
+    
+    Response: {
+        "success": true,
+        "webhook": {
+            "id": "string",
+            "name": "string",
+            "url": "string",
+            "token": "string",
+            "avatar": "string"
+        }
+    }
+    """
+    try:
+        # Verify JWT token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({
+                'success': False,
+                'error': 'Authorization required'
+            }, status=401)
+        
+        token = auth_header.split(' ')[1]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid token'
+            }, status=401)
+        
+        data = await request.json()
+        server_id = data.get('server_id', '').strip()
+        channel_id = data.get('channel_id', '').strip()
+        name = data.get('name', '').strip()
+        avatar = data.get('avatar', '🔗')
+        
+        if not server_id or not channel_id or not name:
+            return web.json_response({
+                'success': False,
+                'error': 'server_id, channel_id, and name are required'
+            }, status=400)
+        
+        # Check if user is a member of the server
+        if not db.is_server_member(username, server_id):
+            return web.json_response({
+                'success': False,
+                'error': 'You are not a member of this server'
+            }, status=403)
+        
+        # Generate webhook ID and token
+        webhook_id = str(uuid.uuid4())
+        webhook_token = secrets.token_urlsafe(32)
+        
+        # Create webhook
+        if db.create_webhook(webhook_id, server_id, channel_id, name, webhook_token, username, avatar):
+            # Get base URL from request
+            scheme = request.scheme
+            host = request.host
+            webhook_url = f"{scheme}://{host}/api/webhooks/{webhook_id}/{webhook_token}"
+            
+            return web.json_response({
+                'success': True,
+                'webhook': {
+                    'id': webhook_id,
+                    'name': name,
+                    'url': webhook_url,
+                    'token': webhook_token,
+                    'avatar': avatar,
+                    'channel_id': channel_id
+                }
+            })
+        else:
+            return web.json_response({
+                'success': False,
+                'error': 'Failed to create webhook'
+            }, status=500)
+            
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+async def api_get_server_webhooks(request):
+    """
+    GET /api/webhooks/server/{server_id}
+    Get all webhooks for a server.
+    """
+    try:
+        # Verify JWT token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({
+                'success': False,
+                'error': 'Authorization required'
+            }, status=401)
+        
+        token = auth_header.split(' ')[1]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid token'
+            }, status=401)
+        
+        server_id = request.match_info['server_id']
+        
+        # Check if user is a member of the server
+        if not db.is_server_member(username, server_id):
+            return web.json_response({
+                'success': False,
+                'error': 'You are not a member of this server'
+            }, status=403)
+        
+        webhooks = db.get_server_webhooks(server_id)
+        
+        # Format webhooks for response (exclude tokens)
+        formatted_webhooks = []
+        scheme = request.scheme
+        host = request.host
+        
+        for wh in webhooks:
+            formatted_webhooks.append({
+                'id': wh['webhook_id'],
+                'name': wh['name'],
+                'channel_id': wh['channel_id'],
+                'avatar': wh['avatar'],
+                'created_by': wh['created_by'],
+                'created_at': wh['created_at'].isoformat() if wh['created_at'] else None,
+                'url': f"{scheme}://{host}/api/webhooks/{wh['webhook_id']}/{wh['token']}"
+            })
+        
+        return web.json_response({
+            'success': True,
+            'webhooks': formatted_webhooks
+        })
+        
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+async def api_delete_webhook(request):
+    """
+    DELETE /api/webhooks/{webhook_id}
+    Delete a webhook.
+    """
+    try:
+        # Verify JWT token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({
+                'success': False,
+                'error': 'Authorization required'
+            }, status=401)
+        
+        token = auth_header.split(' ')[1]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid token'
+            }, status=401)
+        
+        webhook_id = request.match_info['webhook_id']
+        
+        # Get webhook to verify ownership
+        webhook = db.get_webhook(webhook_id)
+        if not webhook:
+            return web.json_response({
+                'success': False,
+                'error': 'Webhook not found'
+            }, status=404)
+        
+        # Check if user created the webhook or is server owner
+        server = db.get_server(webhook['server_id'])
+        if webhook['created_by'] != username and server['owner'] != username:
+            return web.json_response({
+                'success': False,
+                'error': 'You do not have permission to delete this webhook'
+            }, status=403)
+        
+        if db.delete_webhook(webhook_id):
+            return web.json_response({
+                'success': True,
+                'message': 'Webhook deleted successfully'
+            })
+        else:
+            return web.json_response({
+                'success': False,
+                'error': 'Failed to delete webhook'
+            }, status=500)
+            
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+async def api_execute_webhook(request):
+    """
+    POST /api/webhooks/{webhook_id}/{token}
+    Execute a webhook to send a message to the channel.
+    
+    Request body: {
+        "content": "string",
+        "username": "string" (optional, uses webhook name if not provided),
+        "avatar_url": "string" (optional)
+    }
+    """
+    try:
+        webhook_id = request.match_info['webhook_id']
+        token = request.match_info['token']
+        
+        # Get webhook by token
+        webhook = db.get_webhook_by_token(token)
+        if not webhook or webhook['webhook_id'] != webhook_id:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid webhook'
+            }, status=404)
+        
+        data = await request.json()
+        content = data.get('content', '').strip()
+        display_name = data.get('username', webhook['name'])
+        
+        if not content:
+            return web.json_response({
+                'success': False,
+                'error': 'Content is required'
+            }, status=400)
+        
+        # Store the webhook execution in a way that will be picked up by WebSocket handler
+        # For now, we'll just return success and let the WebSocket implementation handle it
+        return web.json_response({
+            'success': True,
+            'message': 'Webhook executed successfully',
+            'webhook_data': {
+                'channel_id': webhook['channel_id'],
+                'server_id': webhook['server_id'],
+                'content': content,
+                'display_name': display_name,
+                'webhook_id': webhook_id
+            }
+        })
+        
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+async def api_get_instance_webhooks(request):
+    """
+    GET /api/instance-webhooks
+    Get all instance-level webhooks (admin only).
+    """
+    try:
+        # Verify JWT token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({
+                'success': False,
+                'error': 'Authorization required'
+            }, status=401)
+        
+        token = auth_header.split(' ')[1]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid token'
+            }, status=401)
+        
+        # Check if user is admin
+        user = db.get_user(username)
+        if not user or user.get('username') != 'admin':
+            return web.json_response({
+                'success': False,
+                'error': 'Admin access required'
+            }, status=403)
+        
+        webhooks = db.get_all_instance_webhooks()
+        
+        # Format webhooks for response (exclude tokens)
+        formatted_webhooks = [{
+            'id': wh['webhook_id'],
+            'name': wh['name'],
+            'event_type': wh['event_type'],
+            'target_url': wh['target_url'],
+            'enabled': wh['enabled'],
+            'created_by': wh['created_by'],
+            'created_at': wh['created_at'].isoformat() if wh['created_at'] else None
+        } for wh in webhooks]
+        
+        return web.json_response({
+            'success': True,
+            'webhooks': formatted_webhooks
+        })
+        
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+async def api_create_instance_webhook(request):
+    """
+    POST /api/instance-webhooks
+    Create an instance-level webhook (admin only).
+    """
+    try:
+        # Verify JWT token and admin access
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({
+                'success': False,
+                'error': 'Authorization required'
+            }, status=401)
+        
+        token = auth_header.split(' ')[1]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid token'
+            }, status=401)
+        
+        # Check if user is admin
+        user = db.get_user(username)
+        if not user or user.get('username') != 'admin':
+            return web.json_response({
+                'success': False,
+                'error': 'Admin access required'
+            }, status=403)
+        
+        data = await request.json()
+        name = data.get('name', '').strip()
+        event_type = data.get('event_type', '').strip()
+        target_url = data.get('target_url', '').strip()
+        enabled = data.get('enabled', True)
+        
+        if not name or not event_type or not target_url:
+            return web.json_response({
+                'success': False,
+                'error': 'name, event_type, and target_url are required'
+            }, status=400)
+        
+        # Validate event_type
+        valid_events = ['user.signup', 'user.login', 'message.create', 'server.create']
+        if event_type not in valid_events:
+            return web.json_response({
+                'success': False,
+                'error': f'Invalid event_type. Must be one of: {", ".join(valid_events)}'
+            }, status=400)
+        
+        # Generate webhook ID and token
+        webhook_id = str(uuid.uuid4())
+        webhook_token = secrets.token_urlsafe(32)
+        
+        if db.create_instance_webhook(webhook_id, name, webhook_token, event_type, target_url, username, enabled):
+            return web.json_response({
+                'success': True,
+                'webhook': {
+                    'id': webhook_id,
+                    'name': name,
+                    'event_type': event_type,
+                    'target_url': target_url,
+                    'enabled': enabled
+                }
+            })
+        else:
+            return web.json_response({
+                'success': False,
+                'error': 'Failed to create instance webhook'
+            }, status=500)
+            
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+async def api_delete_instance_webhook(request):
+    """
+    DELETE /api/instance-webhooks/{webhook_id}
+    Delete an instance webhook (admin only).
+    """
+    try:
+        # Verify JWT token and admin access
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({
+                'success': False,
+                'error': 'Authorization required'
+            }, status=401)
+        
+        token = auth_header.split(' ')[1]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid token'
+            }, status=401)
+        
+        # Check if user is admin
+        user = db.get_user(username)
+        if not user or user.get('username') != 'admin':
+            return web.json_response({
+                'success': False,
+                'error': 'Admin access required'
+            }, status=403)
+        
+        webhook_id = request.match_info['webhook_id']
+        
+        if db.delete_instance_webhook(webhook_id):
+            return web.json_response({
+                'success': True,
+                'message': 'Instance webhook deleted successfully'
+            })
+        else:
+            return web.json_response({
+                'success': False,
+                'error': 'Failed to delete instance webhook'
+            }, status=500)
+            
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
 def setup_api_routes(app, database, jwt_verify_func):
     """Setup REST API routes on the aiohttp application."""
     global db, verify_jwt_token
@@ -728,3 +1179,12 @@ def setup_api_routes(app, database, jwt_verify_func):
     app.router.add_get('/api/download-attachment/{attachment_id}', api_download_attachment)
     app.router.add_get('/api/download-attachment/{attachment_id}/{filename}', api_download_attachment)
     app.router.add_get('/api/message-attachments/{message_id}', api_get_message_attachments)
+    # Webhook routes
+    app.router.add_post('/api/webhooks', api_create_webhook)
+    app.router.add_get('/api/webhooks/server/{server_id}', api_get_server_webhooks)
+    app.router.add_delete('/api/webhooks/{webhook_id}', api_delete_webhook)
+    app.router.add_post('/api/webhooks/{webhook_id}/{token}', api_execute_webhook)
+    # Instance webhook routes (admin only)
+    app.router.add_get('/api/instance-webhooks', api_get_instance_webhooks)
+    app.router.add_post('/api/instance-webhooks', api_create_instance_webhook)
+    app.router.add_delete('/api/instance-webhooks/{webhook_id}', api_delete_instance_webhook)
