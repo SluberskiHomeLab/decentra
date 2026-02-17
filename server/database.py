@@ -913,6 +913,33 @@ class Database:
                         END $$;
                     ''')
 
+                    # Drop CASCADE constraints on direct_messages table (migration)
+                    # This allows DM channels to remain when users are deleted
+                    # The user1/user2 fields will be updated to '[Deleted User]' instead
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            -- Drop user1 cascade constraint if it exists
+                            IF EXISTS (
+                                SELECT 1 FROM pg_constraint
+                                WHERE conname = 'direct_messages_user1_fkey'
+                            ) THEN
+                                ALTER TABLE direct_messages DROP CONSTRAINT direct_messages_user1_fkey;
+                            END IF;
+                            
+                            -- Drop user2 cascade constraint if it exists
+                            IF EXISTS (
+                                SELECT 1 FROM pg_constraint
+                                WHERE conname = 'direct_messages_user2_fkey'
+                            ) THEN
+                                ALTER TABLE direct_messages DROP CONSTRAINT direct_messages_user2_fkey;
+                            END IF;
+                            
+                            -- Add back foreign keys without CASCADE (SET NULL would require columns to be nullable)
+                            -- We'll handle user deletion manually instead
+                        END $$;
+                    ''')
+
                     # Scheduled messages table
                     cursor.execute('''
                         CREATE TABLE IF NOT EXISTS scheduled_messages (
@@ -1174,8 +1201,9 @@ class Database:
     
     def delete_user_keep_messages(self, username: str) -> bool:
         """
-        Delete a user account but keep their messages.
+        Delete a user account but keep their messages and DM channels.
         Updates all messages from this user to show '[Deleted User]' instead.
+        Updates DM channel participants to show '[Deleted User]' for this user.
         
         Returns True if successful, False otherwise.
         """
@@ -1184,20 +1212,30 @@ class Database:
                 cursor = conn.cursor()
                 
                 # First, update all messages to use the deleted user placeholder
-                # For regular messages
                 cursor.execute('''
                     UPDATE messages 
                     SET username = '[Deleted User]'
                     WHERE username = %s
                 ''', (username,))
                 
-                # For direct messages (though they reference users differently)
-                # We still need to update the username field if it exists
+                # Update direct_messages table to replace the deleted user's username
+                # This keeps the DM channels accessible to the other participant
+                cursor.execute('''
+                    UPDATE direct_messages 
+                    SET user1 = '[Deleted User]'
+                    WHERE user1 = %s
+                ''', (username,))
+                
+                cursor.execute('''
+                    UPDATE direct_messages 
+                    SET user2 = '[Deleted User]'
+                    WHERE user2 = %s
+                ''', (username,))
                 
                 # Now delete the user
-                # The ON DELETE CASCADE constraints will handle cleanup of:
+                # Note: We've removed CASCADE from direct_messages table
+                # Other CASCADE constraints will still handle cleanup of:
                 # - friendships
-                # - direct_messages
                 # - server_members
                 # - etc.
                 cursor.execute('''
