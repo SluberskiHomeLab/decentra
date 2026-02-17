@@ -9,6 +9,7 @@ import type { ChatContext } from './store/appStore'
 import type { Attachment, CustomEmoji, Reaction, Server, ServerInviteUsageLog, ServerMember, WsChatMessage, WsMessage } from './types/protocol'
 import { LicensePanel } from './components/admin/LicensePanel'
 import { WebhookPanel } from './components/admin/WebhookPanel'
+import { UsersPanel } from './components/admin/UsersPanel'
 import { useLicenseStore } from './store/licenseStore'
 import { notificationManager } from './utils/notifications'
 import { SearchBar, type SearchResult } from './components/SearchBar'
@@ -5293,6 +5294,12 @@ function ChatPage() {
                     <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                       <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Instance Webhooks</h3>
                       <WebhookPanel isAdmin={true} />
+                    </section>
+
+                    {/* Registered Users */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">👥 Registered Users</h3>
+                      <UsersPanel />
                     </section>
                   </div>
                 )}

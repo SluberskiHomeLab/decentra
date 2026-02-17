@@ -898,6 +898,21 @@ class Database:
                         END $$;
                     ''')
 
+                    # Drop foreign key constraint on messages.username (migration)
+                    # This allows messages to remain when users are deleted
+                    # The username will be updated to '[Deleted User]' instead
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF EXISTS (
+                                SELECT 1 FROM pg_constraint
+                                WHERE conname = 'messages_username_fkey'
+                            ) THEN
+                                ALTER TABLE messages DROP CONSTRAINT messages_username_fkey;
+                            END IF;
+                        END $$;
+                    ''')
+
                     # Scheduled messages table
                     cursor.execute('''
                         CREATE TABLE IF NOT EXISTS scheduled_messages (
@@ -1145,6 +1160,54 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('SELECT username FROM users')
             return [row['username'] for row in cursor.fetchall()]
+    
+    def get_all_users_detailed(self) -> List[Dict]:
+        """Get all users with detailed information (username, email, created_at)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT username, email, created_at 
+                FROM users 
+                ORDER BY created_at ASC
+            ''')
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def delete_user_keep_messages(self, username: str) -> bool:
+        """
+        Delete a user account but keep their messages.
+        Updates all messages from this user to show '[Deleted User]' instead.
+        
+        Returns True if successful, False otherwise.
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # First, update all messages to use the deleted user placeholder
+                # For regular messages
+                cursor.execute('''
+                    UPDATE messages 
+                    SET username = '[Deleted User]'
+                    WHERE username = %s
+                ''', (username,))
+                
+                # For direct messages (though they reference users differently)
+                # We still need to update the username field if it exists
+                
+                # Now delete the user
+                # The ON DELETE CASCADE constraints will handle cleanup of:
+                # - friendships
+                # - direct_messages
+                # - server_members
+                # - etc.
+                cursor.execute('''
+                    DELETE FROM users WHERE username = %s
+                ''', (username,))
+                
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error deleting user {username}: {e}")
+            return False
     
     def update_user_avatar(self, username: str, avatar: str, avatar_type: str, avatar_data: Optional[str] = None):
         """Update user avatar."""

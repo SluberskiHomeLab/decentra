@@ -2634,6 +2634,85 @@ async def handler(websocket):
                                 'message': message
                             }))
                     
+                    elif data.get('type') == 'get_registered_users':
+                        # Verify user is admin
+                        first_user = db.get_first_user()
+                        if username != first_user:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Access denied. Admin only.'
+                            }))
+                        else:
+                            # Get all users with detailed information
+                            users = db.get_all_users_detailed()
+                            
+                            # Convert datetime objects to ISO format strings
+                            for user in users:
+                                if user.get('created_at') and hasattr(user['created_at'], 'isoformat'):
+                                    user['created_at'] = user['created_at'].isoformat()
+                            
+                            await websocket.send_str(json.dumps({
+                                'type': 'registered_users',
+                                'users': users
+                            }))
+                    
+                    elif data.get('type') == 'delete_registered_user':
+                        # Verify user is admin
+                        first_user = db.get_first_user()
+                        if username != first_user:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Access denied. Admin only.'
+                            }))
+                        else:
+                            target_username = data.get('username', '').strip()
+                            
+                            # Validate username
+                            if not target_username:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Username is required'
+                                }))
+                                continue
+                            
+                            # Prevent admin from deleting themselves
+                            if target_username == username:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Cannot delete your own account'
+                                }))
+                                continue
+                            
+                            # Delete the user
+                            success = db.delete_user_keep_messages(target_username)
+                            
+                            if success:
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] Admin {username} deleted user: {target_username}")
+                                
+                                # Close the deleted user's websocket connection if they're online
+                                for client_ws, client_user in list(clients.items()):
+                                    if client_user == target_username:
+                                        try:
+                                            await client_ws.send_str(json.dumps({
+                                                'type': 'account_deleted',
+                                                'message': 'Your account has been deleted by an administrator'
+                                            }))
+                                            await client_ws.close()
+                                        except Exception:
+                                            pass
+                                        break
+                                
+                                await websocket.send_str(json.dumps({
+                                    'type': 'user_deleted',
+                                    'message': f'User {target_username} has been deleted',
+                                    'username': target_username
+                                }))
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': f'Failed to delete user {target_username}'
+                                }))
+                    
                     elif data.get('type') == 'sync_data':
                         # Handle request to sync/refresh user data (servers, DMs, friends)
                         # Use helper functions to build data consistently with init message
