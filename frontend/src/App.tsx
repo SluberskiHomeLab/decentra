@@ -1493,12 +1493,13 @@ function ChatPage() {
     requestHistoryFor(next)
   }
 
-  useEffect(() => {
-    const stored = getStoredAuth()
-    if (stored.token && stored.username && !authToken) {
-      setAuth({ token: stored.token, username: stored.username })
-    }
-  }, [authToken, setAuth])
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [email, setEmail] = useState('')
+  const [inviteCode, setInviteCode] = useState('')
+  const [verificationCode, setVerificationCode] = useState('')
+  const [needsVerification, setNeedsVerification] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
   // Check notification permission on mount
   useEffect(() => {
@@ -1508,59 +1509,26 @@ function ChatPage() {
   }, [])
 
   useEffect(() => {
-    reconnectRef.current.stopped = false
-
-    const scheduleReconnect = () => {
-      if (reconnectRef.current.stopped) return
-      clearReconnectTimer()
-
-      const delay = backoffMs(reconnectRef.current.attempt)
-      reconnectRef.current.attempt += 1
-      setConnectionStatus('connecting')
-      reconnectRef.current.timer = window.setTimeout(() => {
-        connectAndAuth()
-      }, delay)
-    }
-
-    const connectAndAuth = () => {
-      if (reconnectRef.current.stopped) return
-
-      clearReconnectTimer()
-      setConnectionStatus('connecting')
-
-      const ws = wsClient.connect()
-
-      const doAuth = () => {
-        if (reconnectRef.current.stopped) return
-        setConnectionStatus('connected')
-        reconnectRef.current.attempt = 0
-        const token = useAppStore.getState().authToken ?? getStoredAuth().token
-        if (token) {
-          wsClient.authenticateWithToken({ type: 'token', token })
-        }
+    const unsubscribe = wsClient.onMessage((msg: WsMessage) => {
+      if (msg.type === 'auth_error') {
+        setIsSubmitting(false)
+        setNeedsVerification(false)
+        const message = typeof msg.message === 'string' ? msg.message : 'Authentication failed'
+        setLastAuthError(message)
       }
-
-      if (ws.readyState === WebSocket.OPEN) {
-        doAuth()
-      } else {
-        ws.onopen = () => doAuth()
+      if (msg.type === 'verification_required') {
+        setIsSubmitting(false)
+        setNeedsVerification(true)
+        setLastAuthError(null)
       }
-    }
-
-    const unsubMsg = wsClient.onMessage((msg: WsMessage) => {
       if (msg.type === 'auth_success') {
+        setIsSubmitting(false)
+        const u = username.trim()
+        if (!u) return
         const token = typeof msg.token === 'string' ? msg.token : ''
-        const u = authUsername ?? getStoredAuth().username
-        if (token && u) {
-          setStoredAuth({ token, username: u })
-          setAuth({ token, username: u })
-        }
-
-        // Legacy client calls sync after auth; do the same.
-        try {
-          wsClient.requestSync()
-        } catch {
-          // ignore
+        if (!token) {
+          setLastAuthError('Signup succeeded but no token was returned')
+          return
         }
 
         // Request admin settings (includes announcement info for all users)
@@ -1581,7 +1549,7 @@ function ChatPage() {
         requestHistoryFor(useAppStore.getState().selectedContext)
       }
       if (msg.type === 'init') {
-        const initUsername = typeof msg.username === 'string' ? msg.username : authUsername ?? ''
+        const initUsername = typeof msg.username === 'string' ? msg.username : username.trim()
         if (!initUsername) return
         console.log('Init message full:', JSON.stringify(msg, null, 2))
         setInit({
@@ -1600,6 +1568,8 @@ function ChatPage() {
           friend_requests_sent: msg.friend_requests_sent,
           friend_requests_received: msg.friend_requests_received,
         })
+      }
+    })
 
         // Sync user status
         console.log('Init message received, user_status:', msg.user_status)
@@ -1654,16 +1624,13 @@ function ChatPage() {
           setScreenShareFramerate(devices.screenShareFramerate)
         }
       }
-      if (msg.type === 'data_synced') {
-        const prev = useAppStore.getState().init
-        if (!prev) return
-        setInit({
-          ...prev,
-          servers: msg.servers ?? prev.servers,
-          dms: msg.dms ?? prev.dms,
-          friends: msg.friends ?? prev.friends,
-          friend_requests_sent: msg.friend_requests_sent ?? prev.friend_requests_sent,
-          friend_requests_received: msg.friend_requests_received ?? prev.friend_requests_received,
+
+      const ws = wsClient.connect()
+      const sendVerify = () => {
+        wsClient.verifyEmail({
+          type: 'verify_email',
+          username: u,
+          code,
         })
       }
       if (msg.type === 'auth_error') {
@@ -1692,28 +1659,15 @@ function ChatPage() {
         }
       }
 
-      if (msg.type === 'server_created') {
-        const prev = useAppStore.getState().init
-        if (prev) {
-          setInit({ ...prev, servers: [...(prev.servers ?? []), msg.server] })
-        }
-        // Select the new server's first channel if present
-        const firstChannel = msg.server.channels?.[0]
-        if (firstChannel) {
-          const next: ChatContext = { kind: 'server', serverId: msg.server.id, channelId: firstChannel.id }
-          selectContext(next)
-          requestHistoryFor(next)
-        }
+      ws.onopen = () => {
+        sendVerify()
       }
-
-      if (msg.type === 'channel_created') {
-        const prev = useAppStore.getState().init
-        if (prev?.servers) {
-          const nextServers = prev.servers.map((s) =>
-            s.id === msg.server_id ? { ...s, channels: [...(s.channels ?? []), msg.channel] } : s,
-          )
-          setInit({ ...prev, servers: nextServers })
-        }
+    } else {
+      // Signup step
+      if (!u || !password || !email) {
+        setIsSubmitting(false)
+        setLastAuthError('Username, password, and email are required')
+        return
       }
 
       if (msg.type === 'category_created') {
@@ -1873,22 +1827,32 @@ function ChatPage() {
         requestHistoryFor(next)
       }
 
-      if (msg.type === 'invite_code') {
-        setLastInviteCode(msg.code)
-        pushToast({ kind: 'success', message: msg.message ?? `Invite code: ${msg.code}` })
+      if (ws.readyState === WebSocket.OPEN) {
+        sendSignup()
+        return
       }
 
-      if (msg.type === 'server_invite_code') {
-        setLastInviteCode(msg.code)
-        pushToast({ kind: 'success', message: msg.message ?? `Server invite: ${msg.code}` })
+      ws.onopen = () => {
+        sendSignup()
       }
+    }
+  }
 
-      if (msg.type === 'server_invite_usage') {
-        setInviteUsageServerId(msg.server_id)
-        setInviteUsageLogs(msg.usage_logs ?? [])
-        setIsLoadingInviteUsage(false)
-        pushToast({ kind: 'info', message: `Invite usage loaded (${(msg.usage_logs ?? []).length})` })
-      }
+  return (
+    <div className="min-h-screen bg-slate-950">
+      <div className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4 py-10">
+        <div className="w-full max-w-md">
+          <div className="mb-6">
+            <div className="text-xs font-medium text-sky-200/70">Decentra</div>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">
+              {needsVerification ? 'Verify Email' : 'Sign Up'}
+            </h1>
+            <p className="mt-2 text-sm text-slate-300">
+              {needsVerification
+                ? 'Enter the verification code sent to your email.'
+                : 'Create a new account to get started.'}
+            </p>
+          </div>
 
       if (msg.type === 'server_members') {
         setServerMembers((prev) => ({
@@ -1906,25 +1870,49 @@ function ChatPage() {
         }
         pushToast({ kind: 'success', message: `Joined server: ${msg.server.name}` })
 
-        const firstChannel = msg.server.channels?.[0]
-        if (firstChannel) {
-          const next: ChatContext = { kind: 'server', serverId: msg.server.id, channelId: firstChannel.id }
-          selectContext(next)
-          requestHistoryFor(next)
-        }
-      }
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="mt-1 inline-flex items-center justify-center rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isSubmitting ? 'Processing…' : needsVerification ? 'Verify Email' : 'Create Account'}
+              </button>
+            </form>
 
-      if (msg.type === 'history') {
-        setMessagesForContext({ kind: 'global' }, msg.messages ?? [])
-      }
+            <div className="mt-4 flex flex-wrap gap-3 text-sm">
+              <Link className="text-sky-300 hover:text-sky-200" to="/login">
+                Already have an account? Sign In
+              </Link>
+              {needsVerification && (
+                <button
+                  type="button"
+                  className="text-slate-300 hover:text-slate-200"
+                  onClick={() => {
+                    setNeedsVerification(false)
+                    setVerificationCode('')
+                    setLastAuthError(null)
+                  }}
+                >
+                  Change Username/Email
+                </button>
+              )}
+            </div>
 
-      if (msg.type === 'channel_history') {
-        setMessagesForContext({ kind: 'server', serverId: msg.server_id, channelId: msg.channel_id }, msg.messages ?? [])
-      }
+            {lastAuthError ? (
+              <div className="mt-4 rounded-xl border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-sm text-rose-50">
+                {lastAuthError}
+              </div>
+            ) : null}
+          </div>
 
-      if (msg.type === 'dm_history') {
-        setMessagesForContext({ kind: 'dm', dmId: msg.dm_id }, msg.messages ?? [])
-      }
+          <div className="mt-6 text-xs text-slate-400">
+            Backend via nginx proxy: <span className="text-slate-300">/api</span> and <span className="text-slate-300">/ws</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
 
       if (isWsChatMessage(msg)) {
         appendMessage(msg)
@@ -2520,34 +2508,31 @@ function ChatPage() {
       }
     })
 
-    const unsubClose = wsClient.onClose(() => {
-      setConnectionStatus('disconnected')
-      scheduleReconnect()
-    })
-
-    const unsubErr = wsClient.onError(() => {
-      setConnectionStatus('disconnected')
-      scheduleReconnect()
-    })
-
-    connectAndAuth()
-
-    return () => {
-      reconnectRef.current.stopped = true
-      clearReconnectTimer()
-      unsubMsg()
-      unsubClose()
-      unsubErr()
-      wsClient.close()
-    }
-    // Intentionally mount-only: handlers pull latest state from the store.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
   useEffect(() => {
-    requestHistoryFor(selectedContext)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedKey])
+    if (!token) {
+      setErrorMessage('Invalid or missing reset token')
+    }
+  }, [token])
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setErrorMessage(null)
+    setSuccessMessage(null)
+
+    if (!token) {
+      setErrorMessage('Invalid or missing reset token')
+      return
+    }
+
+    if (newPassword.length < 8) {
+      setErrorMessage('Password must be at least 8 characters long')
+      return
+    }
+
+    if (newPassword !== confirmPassword) {
+      setErrorMessage('Passwords do not match')
+      return
+    }
 
   // Populate account settings when init data is available
   useEffect(() => {
@@ -3036,15 +3021,17 @@ function ChatPage() {
     wsClient.getServerInviteUsage({ type: 'get_server_invite_usage', server_id: serverId })
   }
 
-  const copyLastInvite = async () => {
-    if (!lastInviteCode) return
-    try {
-      await navigator.clipboard.writeText(lastInviteCode)
-      pushToast({ kind: 'info', message: 'Copied invite code to clipboard' })
-    } catch {
-      pushToast({ kind: 'error', message: 'Failed to copy invite code' })
-    }
-  }
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Announcement Message</div>
+                          <input
+                            type="text"
+                            maxLength={500}
+                            value={adminSettings.announcement_message || ''}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, announcement_message: e.target.value })}
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="Enter announcement message"
+                          />
+                        </label>
 
   const loadAdminSettings = () => {
     if (wsClient.readyState !== WebSocket.OPEN) return
