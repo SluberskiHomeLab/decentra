@@ -1267,6 +1267,7 @@ function ChatPage() {
   // Voice/Video chat state
   const [voiceChat, setVoiceChat] = useState<any>(null)
   const [isInVoice, setIsInVoice] = useState(false)
+  const [isVoiceConnecting, setIsVoiceConnecting] = useState(false)
   const [voiceParticipants, setVoiceParticipants] = useState<string[]>([])
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map())
   const [isVoiceMuted, setIsVoiceMuted] = useState(false)
@@ -1594,6 +1595,7 @@ function ChatPage() {
             setIsVideoEnabled(vc.getIsVideoEnabled())
             setIsScreenSharing(vc.getIsScreenSharing())
             setIsInVoice(vc.getIsInVoice())
+            setIsVoiceConnecting(vc.getIsConnecting())
           })
           vc.setOnRemoteStreamChange((peer, stream) => {
             setRemoteStreams((prev) => {
@@ -2453,22 +2455,31 @@ function ChatPage() {
       if (msg.type === 'voice_state_update') {
         console.log('Received voice_state_update:', msg)
         // Update voice participants when someone joins/leaves
-        if (msg.voice_members && Array.isArray(msg.voice_members)) {
+        if (msg.voice_members && Array.isArray(msg.voice_members) && voiceChat) {
           const participantUsernames = msg.voice_members.map((m: any) => m.username)
-          const currentChannel = voiceChat?.getCurrentChannel()
+          const currentChannel = voiceChat.getCurrentChannel()
+          
+          // Check if message matches current or pending channel
           const matchesCurrentChannel =
             !!currentChannel?.server &&
             !!currentChannel?.channel &&
             msg.server_id === currentChannel.server &&
             msg.channel_id === currentChannel.channel
+          
+          // Also check pending channel (when first joining)
+          const pendingChannel = voiceChat.getPendingChannel?.()
+          const matchesPendingChannel = 
+            pendingChannel &&
+            !!pendingChannel?.server &&
+            !!pendingChannel?.channel &&
+            msg.server_id === pendingChannel.server &&
+            msg.channel_id === pendingChannel.channel
 
-          if (matchesCurrentChannel) {
+          if (matchesCurrentChannel || matchesPendingChannel) {
             setVoiceParticipants(participantUsernames)
             const isUserInVoice = participantUsernames.includes(init?.username)
             setIsInVoice(isUserInVoice)
-            if (voiceChat) {
-              voiceChat.handleVoiceJoined(participantUsernames)
-            }
+            voiceChat.handleVoiceJoined(participantUsernames)
             console.log('Updated voice participants:', participantUsernames)
           }
         }
@@ -4279,7 +4290,9 @@ function ChatPage() {
                       <div className="text-center">
                         <div className="text-6xl mb-4">🔊</div>
                         <h2 className="text-2xl font-semibold text-white mb-2">{selectedTitle}</h2>
-                        <p className="text-slate-400 mb-6">Click join to enter this voice channel</p>
+                        <p className="text-slate-400 mb-6">
+                          {isVoiceConnecting ? 'Connecting to voice channel...' : 'Click join to enter this voice channel'}
+                        </p>
                         <button
                           type="button"
                           onClick={() => {
@@ -4287,9 +4300,14 @@ function ChatPage() {
                               joinVoiceChannel(selectedServerId, selectedContext.channelId)
                             }
                           }}
-                          className="rounded-xl bg-emerald-500 px-6 py-3 text-lg font-semibold text-white hover:bg-emerald-600 transition"
+                          disabled={isVoiceConnecting}
+                          className={`rounded-xl px-6 py-3 text-lg font-semibold text-white transition ${
+                            isVoiceConnecting 
+                              ? 'bg-slate-600 cursor-not-allowed' 
+                              : 'bg-emerald-500 hover:bg-emerald-600'
+                          }`}
                         >
-                          Join Voice Channel
+                          {isVoiceConnecting ? 'Connecting...' : 'Join Voice Channel'}
                         </button>
                       </div>
                     </div>
@@ -4313,19 +4331,38 @@ function ChatPage() {
                             key={participantUsername}
                             className="relative rounded-2xl border border-white/10 bg-slate-900/40 overflow-hidden flex items-center justify-center min-h-[200px]"
                           >
-                            {stream ? (
-                              <video
-                                ref={(video) => {
-                                  if (video && stream) {
-                                    video.srcObject = stream
-                                    video.play().catch(console.error)
-                                  }
-                                }}
-                                autoPlay
-                                playsInline
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
+                            {stream && (
+                              <>
+                                {/* Audio element for remote audio stream - always rendered when stream exists */}
+                                <audio
+                                  ref={(audio) => {
+                                    if (audio && stream && !isCurrentUser) {
+                                      audio.srcObject = stream
+                                      audio.play().catch(console.error)
+                                    }
+                                  }}
+                                  autoPlay
+                                  playsInline
+                                />
+                                {/* Video element for remote video/screen share */}
+                                {stream.getVideoTracks().length > 0 ? (
+                                  <video
+                                    ref={(video) => {
+                                      if (video && stream) {
+                                        video.srcObject = stream
+                                        video.play().catch(console.error)
+                                      }
+                                    }}
+                                    autoPlay
+                                    playsInline
+                                    muted={isCurrentUser}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : null}
+                              </>
+                            )}
+                            {/* Show avatar when no stream or no video track */}
+                            {(!stream || stream.getVideoTracks().length === 0) && (
                               <div className="flex flex-col items-center justify-center p-8">
                                 <AvatarWithStatus
                                   avatar={participant?.avatar ?? init?.avatar}
