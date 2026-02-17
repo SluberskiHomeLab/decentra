@@ -3,9 +3,28 @@
 
 import base64
 import json
+import os
+import sys
 
-# The license key from the user
-license_key = "eyJsaWNlbnNlX2lkIjoiTElDLTIwMjYwMjEwLTA4MlUzIiwiY3VzdG9tZXIiOnsibmFtZSI6IkRlY2VudHJhIFNURyIsImVtYWlsIjoibWF0dGhld0BkZWNlbnRyYWNoYXQuY2MiLCJjb21wYW55IjoiRGVjZW50cmEifSwidGllciI6Im9mZl90aGVfd2FsbHMiLCJmZWF0dXJlcyI6eyJ2b2ljZV9jaGF0Ijp0cnVlLCJmaWxlX3VwbG9hZHMiOnRydWUsIndlYmhvb2tzIjp0cnVlLCJjdXN0b21fZW1vamlzIjp0cnVlLCJhdWRpdF9sb2dzIjp0cnVlLCJzc28iOnRydWV9LCJsaW1pdHMiOnsibWF4X3VzZXJzIjotMSwibWF4X3NlcnZlcnMiOi0xLCJtYXhfY2hhbm5lbHNfcGVyX3NlcnZlciI6LTEsIm1heF9maWxlX3NpemVfbWIiOi0xLCJtYXhfbWVzc2FnZXNfaGlzdG9yeSI6LTEsInZpZGVvX3F1YWxpdHkiOiI0ayIsInNjcmVlbnNoYXJpbmdfcXVhbGl0eSI6IjRrIn0sImlzc3VlZF9hdCI6IjIwMjYtMDItMTBUMjI6NDE6NTcuNjkyMDkxKzAwOjAwIiwiZXhwaXJlc19hdCI6bnVsbH0=.h5agvATOBz5DAEb3VWR+PagP0UhEPmGp873Yc+DMYcTvOQHCW7Fp91+07MgoPG7lGCOTe3SEmKiAf+/cxzB9NLf1H6zh/c5AZPjwvRQcYpBzZ1dFh0qK7G+2s/esGKvlYuVqjbiPfTSEw6PRAeIhOZNqYUokcVu8DwqiesDOVCGrQW+t+oN1+YfmrombQtoink4UFqBgS9LLGFX+bVi4XfQ68iiiEuN4PFK+C1g/acLJUhpF4QEo+VoPD6gmQ2fwDfiOcs6uASVsMnY1lsGrxNzCN6cJv9Mxh3wrnXBzhmns2HcopxfB0HcxOdTw4jrhG3fy0hg+z2K0AhtvHrCywQ=="
+# Read license key from environment variable or stdin
+license_key = os.environ.get('LICENSE_KEY')
+if not license_key:
+    if sys.stdin.isatty():
+        print("Please provide a license key:")
+        print("  Option 1: Set LICENSE_KEY environment variable")
+        print("  Option 2: Pipe the key via stdin: echo 'key' | python test_license_key.py")
+        print("  Option 3: Pass as command line argument")
+        print()
+        if len(sys.argv) > 1:
+            license_key = sys.argv[1]
+        else:
+            sys.exit(1)
+    else:
+        license_key = sys.stdin.read().strip()
+
+if not license_key:
+    print("Error: No license key provided")
+    sys.exit(1)
 
 print("="*70)
 print("Testing License Key Format")
