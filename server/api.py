@@ -19,6 +19,12 @@ db = None
 verify_jwt_token = None
 # WebSocket broadcast function will be set by setup_api_routes
 broadcast_to_server_func = None
+# send_to_user function will be set by setup_api_routes
+send_to_user_func = None
+# get_or_create_dm function will be set by setup_api_routes
+get_or_create_dm_func = None
+# get_avatar_data function will be set by setup_api_routes
+get_avatar_data_func = None
 
 
 def sanitize_filename(filename):
@@ -1063,12 +1069,18 @@ async def api_get_instance_webhooks(request):
         
         webhooks = db.get_all_instance_webhooks()
         
-        # Format webhooks for response (exclude tokens)
+        # Get request host to build webhook URLs
+        scheme = 'https' if request.secure else 'http'
+        host = request.host
+        
+        # Format webhooks for response
         formatted_webhooks = [{
             'id': wh['webhook_id'],
             'name': wh['name'],
-            'event_type': wh['event_type'],
-            'target_url': wh['target_url'],
+            'avatar': wh.get('avatar', '📢'),
+            'url': f"{scheme}://{host}/api/instance-webhooks/{wh['webhook_id']}/{wh['token']}",
+            'event_type': wh.get('event_type'),
+            'target_url': wh.get('target_url'),
             'enabled': wh['enabled'],
             'created_by': wh['created_by'],
             'created_at': wh['created_at'].isoformat() if wh['created_at'] else None
@@ -1118,36 +1130,46 @@ async def api_create_instance_webhook(request):
         
         data = await request.json()
         name = data.get('name', '').strip()
-        event_type = data.get('event_type', '').strip()
-        target_url = data.get('target_url', '').strip()
+        avatar = data.get('avatar', '📢')  # Default to megaphone emoji
         enabled = data.get('enabled', True)
         
-        if not name or not event_type or not target_url:
+        # event_type and target_url are optional (for future outgoing webhook support)
+        event_type = data.get('event_type', None)
+        target_url = data.get('target_url', None)
+        
+        if not name:
             return web.json_response({
                 'success': False,
-                'error': 'name, event_type, and target_url are required'
+                'error': 'name is required'
             }, status=400)
         
-        # Validate event_type
-        valid_events = ['user.signup', 'user.login', 'message.create', 'server.create']
-        if event_type not in valid_events:
-            return web.json_response({
-                'success': False,
-                'error': f'Invalid event_type. Must be one of: {", ".join(valid_events)}'
-            }, status=400)
+        # Validate event_type if provided
+        if event_type:
+            valid_events = ['user.signup', 'user.login', 'message.create', 'server.create']
+            if event_type not in valid_events:
+                return web.json_response({
+                    'success': False,
+                    'error': f'Invalid event_type. Must be one of: {", ".join(valid_events)}'
+                }, status=400)
         
         # Generate webhook ID and token
         webhook_id = str(uuid.uuid4())
         webhook_token = secrets.token_urlsafe(32)
         
-        if db.create_instance_webhook(webhook_id, name, webhook_token, event_type, target_url, username, enabled):
+        # Get the request host to build webhook URL
+        scheme = 'https' if request.secure else 'http'
+        host = request.host
+        webhook_url = f"{scheme}://{host}/api/instance-webhooks/{webhook_id}/{webhook_token}"
+        
+        if db.create_instance_webhook(webhook_id, name, webhook_token, username, avatar, event_type, target_url, enabled):
             return web.json_response({
                 'success': True,
                 'webhook': {
                     'id': webhook_id,
                     'name': name,
-                    'event_type': event_type,
-                    'target_url': target_url,
+                    'avatar': avatar,
+                    'url': webhook_url,
+                    'token': webhook_token,
                     'enabled': enabled
                 }
             })
@@ -1214,12 +1236,139 @@ async def api_delete_instance_webhook(request):
         }, status=500)
 
 
-def setup_api_routes(app, database, jwt_verify_func, broadcast_func):
+async def api_execute_instance_webhook(request):
+    """
+    POST /api/instance-webhooks/{webhook_id}/{token}
+    Execute an instance webhook to send a DM to all users.
+    
+    Request body: {
+        "content": "string",
+        "username": "string" (optional, uses webhook name if not provided)
+    }
+    """
+    try:
+        webhook_id = request.match_info['webhook_id']
+        token = request.match_info['token']
+        
+        # Get webhook by token
+        webhook = db.get_instance_webhook_by_token(token)
+        if not webhook or webhook['webhook_id'] != webhook_id:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid webhook'
+            }, status=404)
+        
+        if not webhook.get('enabled', True):
+            return web.json_response({
+                'success': False,
+                'error': 'Webhook is disabled'
+            }, status=403)
+        
+        data = await request.json()
+        content = data.get('content', '').strip()
+        display_name = data.get('username', webhook['name'])
+        
+        if not content:
+            return web.json_response({
+                'success': False,
+                'error': 'Content is required'
+            }, status=400)
+        
+        # Ensure webhook system user exists
+        db.ensure_webhook_system_user()
+        
+        # Get all users except the webhook system user
+        all_users = db.get_all_users()
+        real_users = [u for u in all_users if u != '__webhook__']
+        
+        # Create message object
+        from datetime import datetime, timezone
+        timestamp = datetime.now(timezone.utc).isoformat()
+        
+        # Track DMs created and messages sent
+        dms_created = 0
+        messages_sent = 0
+        
+        # For each user, create or get a DM with the webhook system user
+        for user in real_users:
+            # Get or create DM between webhook user and this user
+            dm_id = get_or_create_dm_func('__webhook__', user)
+            
+            # Save message to this DM
+            message_id = db.save_message(
+                username='__webhook__',
+                content=content,
+                context_type='dm',
+                context_id=dm_id
+            )
+            
+            if message_id:
+                messages_sent += 1
+                
+                # Create message object for this user
+                msg_obj = {
+                    'type': 'message',
+                    'username': display_name,
+                    'content': content,
+                    'timestamp': timestamp,
+                    'context': 'dm',
+                    'context_id': dm_id,
+                    'avatar': webhook.get('avatar', '📢'),
+                    'avatar_type': 'emoji',
+                    'avatar_data': None,
+                    'user_status': 'offline',
+                    'id': message_id,
+                    'attachments': [],
+                    'reactions': [],
+                    'mentions': [],
+                    'is_webhook': True,
+                    'is_instance_webhook': True
+                }
+                
+                # Send DM message to this user
+                await send_to_user_func(user, json.dumps(msg_obj))
+                
+                # Also notify the user about the new DM if they don't have it yet
+                user_avatar = get_avatar_data_func('__webhook__')
+                dm_notification = {
+                    'type': 'dm_started',
+                    'dm': {
+                        'id': dm_id,
+                        'username': '__webhook__',
+                        **user_avatar
+                    }
+                }
+                await send_to_user_func(user, json.dumps(dm_notification))
+        
+        return web.json_response({
+            'success': True,
+            'message': 'Instance webhook executed successfully',
+            'webhook_data': {
+                'content': content,
+                'display_name': display_name,
+                'webhook_id': webhook_id,
+                'users_notified': len(real_users),
+                'messages_sent': messages_sent,
+                'broadcast_type': 'direct_messages'
+            }
+        })
+        
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+def setup_api_routes(app, database, jwt_verify_func, broadcast_func, send_user_func, create_dm_func, avatar_func):
     """Setup REST API routes on the aiohttp application."""
-    global db, verify_jwt_token, broadcast_to_server_func
+    global db, verify_jwt_token, broadcast_to_server_func, send_to_user_func, get_or_create_dm_func, get_avatar_data_func
     db = database
     verify_jwt_token = jwt_verify_func
     broadcast_to_server_func = broadcast_func
+    send_to_user_func = send_user_func
+    get_or_create_dm_func = create_dm_func
+    get_avatar_data_func = avatar_func
     app.router.add_post('/api/auth', api_auth)
     app.router.add_post('/api/reset-password', api_reset_password)
     app.router.add_get('/api/servers', api_servers)
@@ -1240,3 +1389,4 @@ def setup_api_routes(app, database, jwt_verify_func, broadcast_func):
     app.router.add_get('/api/instance-webhooks', api_get_instance_webhooks)
     app.router.add_post('/api/instance-webhooks', api_create_instance_webhook)
     app.router.add_delete('/api/instance-webhooks/{webhook_id}', api_delete_instance_webhook)
+    app.router.add_post('/api/instance-webhooks/{webhook_id}/{token}', api_execute_instance_webhook)

@@ -24,7 +24,7 @@ export function WebhookPanel({ serverId, isAdmin = false }: WebhookPanelProps) {
   const [newWebhook, setNewWebhook] = useState({
     name: '',
     channel_id: '',
-    avatar: '🔗',
+    avatar: isAdmin ? '📢' : '🔗',
   })
   const [channels, setChannels] = useState<Array<{ id: string; name: string }>>([])
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; message: string } | null>(null)
@@ -90,8 +90,7 @@ export function WebhookPanel({ serverId, isAdmin = false }: WebhookPanelProps) {
       const body = isAdmin
         ? {
             name: newWebhook.name,
-            event_type: 'message.create', // Default event type
-            target_url: 'https://example.com/webhook', // User should update this
+            avatar: newWebhook.avatar || '📢',
           }
         : {
             server_id: serverId,
@@ -113,7 +112,7 @@ export function WebhookPanel({ serverId, isAdmin = false }: WebhookPanelProps) {
       if (data.success) {
         setFeedback({ kind: 'success', message: 'Webhook created successfully' })
         setShowCreateForm(false)
-        setNewWebhook({ name: '', channel_id: '', avatar: '🔗' })
+        setNewWebhook({ name: '', channel_id: '', avatar: isAdmin ? '📢' : '🔗' })
         await loadWebhooks()
       } else {
         setFeedback({ kind: 'error', message: data.error || 'Failed to create webhook' })
@@ -180,7 +179,7 @@ export function WebhookPanel({ serverId, isAdmin = false }: WebhookPanelProps) {
           </h2>
           <p className="text-sm text-[#b9bbbe] mt-1">
             {isAdmin
-              ? 'Create webhooks for instance-wide events'
+              ? 'Create incoming webhooks that broadcast messages to all instance users'
               : 'Create webhooks to send messages from external applications'}
           </p>
         </div>
@@ -244,21 +243,26 @@ export function WebhookPanel({ serverId, isAdmin = false }: WebhookPanelProps) {
                   ))}
                 </select>
               </div>
-
-              <div>
-                <label className="block text-sm font-medium text-[#b9bbbe] mb-2">
-                  Avatar
-                </label>
-                <input
-                  type="text"
-                  value={newWebhook.avatar}
-                  onChange={(e) => setNewWebhook({ ...newWebhook, avatar: e.target.value })}
-                  placeholder="🔗"
-                  className="w-full rounded bg-[#40444b] px-3 py-2 text-white placeholder-[#72767d] focus:outline-none focus:ring-2 focus:ring-[#5865f2]"
-                />
-              </div>
             </>
           )}
+
+          <div>
+            <label className="block text-sm font-medium text-[#b9bbbe] mb-2">
+              Avatar {isAdmin && <span className="text-xs text-[#72767d]">(emoji)</span>}
+            </label>
+            <input
+              type="text"
+              value={newWebhook.avatar}
+              onChange={(e) => setNewWebhook({ ...newWebhook, avatar: e.target.value })}
+              placeholder={isAdmin ? "📢" : "🔗"}
+              className="w-full rounded bg-[#40444b] px-3 py-2 text-white placeholder-[#72767d] focus:outline-none focus:ring-2 focus:ring-[#5865f2]"
+            />
+            {isAdmin && (
+              <p className="text-xs text-[#72767d] mt-1">
+                This webhook can be POSTed to from external applications and will broadcast to all users
+              </p>
+            )}
+          </div>
 
           <div className="flex gap-3">
             <button
@@ -271,7 +275,7 @@ export function WebhookPanel({ serverId, isAdmin = false }: WebhookPanelProps) {
             <button
               onClick={() => {
                 setShowCreateForm(false)
-                setNewWebhook({ name: '', channel_id: '', avatar: '🔗' })
+                setNewWebhook({ name: '', channel_id: '', avatar: isAdmin ? '📢' : '🔗' })
               }}
               className="rounded bg-[#4f545c] px-4 py-2 text-sm font-medium text-white hover:bg-[#5d6268] transition-colors"
             >

@@ -708,16 +708,26 @@ async def broadcast(message, exclude=None):
 
 
 async def broadcast_to_server(server_id, message, exclude=None):
-    """Broadcast a message to all members of a server."""
-    server_members_data = db.get_server_members(server_id)
-    server_members = {m['username'] for m in server_members_data}
-    
-    tasks = []
-    for client_ws, client_username in clients.items():
-        if client_username in server_members and client_ws != exclude:
-            tasks.append(client_ws.send_str(message))
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+    """Broadcast a message to all members of a server, or to all users if server_id is None."""
+    if server_id is None:
+        # Broadcast to all connected users (for instance webhooks)
+        tasks = []
+        for client_ws, client_username in clients.items():
+            if client_ws != exclude:
+                tasks.append(client_ws.send_str(message))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+    else:
+        # Broadcast to specific server members
+        server_members_data = db.get_server_members(server_id)
+        server_members = {m['username'] for m in server_members_data}
+        
+        tasks = []
+        for client_ws, client_username in clients.items():
+            if client_username in server_members and client_ws != exclude:
+                tasks.append(client_ws.send_str(message))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 
@@ -5540,7 +5550,7 @@ async def main():
     app.router.add_get('/ws', websocket_handler)
     
     # Setup REST API routes
-    setup_api_routes(app, db, verify_jwt_token, broadcast_to_server)
+    setup_api_routes(app, db, verify_jwt_token, broadcast_to_server, send_to_user, get_or_create_dm, get_avatar_data)
     
     # Run the server with SSL
     runner = web.AppRunner(app)

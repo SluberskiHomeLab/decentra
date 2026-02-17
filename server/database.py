@@ -1032,8 +1032,9 @@ class Database:
                             webhook_id VARCHAR(255) PRIMARY KEY,
                             name VARCHAR(255) NOT NULL,
                             token VARCHAR(255) NOT NULL,
-                            event_type VARCHAR(50) NOT NULL,
-                            target_url TEXT NOT NULL,
+                            avatar TEXT,
+                            event_type VARCHAR(50),
+                            target_url TEXT,
                             created_by VARCHAR(255) NOT NULL,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             enabled BOOLEAN DEFAULT TRUE,
@@ -1045,6 +1046,33 @@ class Database:
                     cursor.execute('''
                         CREATE INDEX IF NOT EXISTS idx_instance_webhooks_event 
                         ON instance_webhooks(event_type, enabled)
+                    ''')
+                    
+                    # Migrate existing instance_webhooks table to support avatar and nullable fields
+                    # Check if avatar column exists, if not add it
+                    cursor.execute('''
+                        DO $$ 
+                        BEGIN
+                            -- Add avatar column if it doesn't exist
+                            IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                         WHERE table_name='instance_webhooks' AND column_name='avatar') THEN
+                                ALTER TABLE instance_webhooks ADD COLUMN avatar TEXT;
+                            END IF;
+                            
+                            -- Make event_type nullable if it's not already
+                            BEGIN
+                                ALTER TABLE instance_webhooks ALTER COLUMN event_type DROP NOT NULL;
+                            EXCEPTION
+                                WHEN others THEN NULL;
+                            END;
+                            
+                            -- Make target_url nullable if it's not already
+                            BEGIN
+                                ALTER TABLE instance_webhooks ALTER COLUMN target_url DROP NOT NULL;
+                            EXCEPTION
+                                WHEN others THEN NULL;
+                            END;
+                        END $$;
                     ''')
 
                     conn.commit()
@@ -1075,6 +1103,8 @@ class Database:
             import bcrypt
             password_hash = bcrypt.hashpw(secrets.token_hex(32).encode(), bcrypt.gensalt()).decode()
             self.create_user('__webhook__', password_hash, email='webhook@system.local', email_verified=True)
+            # Set a default avatar for the webhook user
+            self.update_user_avatar('__webhook__', '📢', 'emoji', None)
     
     def create_user(self, username: str, password_hash: str, email: str = None, email_verified: bool = False) -> bool:
         """Create a new user."""
@@ -3364,15 +3394,15 @@ class Database:
             return False
     
     # Instance webhook operations
-    def create_instance_webhook(self, webhook_id: str, name: str, token: str, event_type: str, target_url: str, created_by: str, enabled: bool = True) -> bool:
+    def create_instance_webhook(self, webhook_id: str, name: str, token: str, created_by: str, avatar: str = None, event_type: str = None, target_url: str = None, enabled: bool = True) -> bool:
         """Create a new instance-level webhook."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT INTO instance_webhooks (webhook_id, name, token, event_type, target_url, created_by, enabled, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ''', (webhook_id, name, token, event_type, target_url, created_by, enabled, datetime.now()))
+                    INSERT INTO instance_webhooks (webhook_id, name, token, avatar, event_type, target_url, created_by, enabled, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (webhook_id, name, token, avatar, event_type, target_url, created_by, enabled, datetime.now()))
                 return True
         except Exception as e:
             print(f"Error creating instance webhook: {e}")
@@ -3388,6 +3418,18 @@ class Database:
                 return dict(result) if result else None
         except Exception as e:
             print(f"Error getting instance webhook: {e}")
+            return None
+    
+    def get_instance_webhook_by_token(self, token: str) -> Optional[Dict]:
+        """Get instance webhook by token."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM instance_webhooks WHERE token = %s', (token,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            print(f"Error getting instance webhook by token: {e}")
             return None
     
     def get_all_instance_webhooks(self) -> List[Dict]:

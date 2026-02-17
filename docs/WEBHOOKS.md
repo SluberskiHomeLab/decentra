@@ -18,13 +18,22 @@ Server webhooks allow you to send messages to specific channels within a server.
 
 ### Instance Webhooks (Admin Only)
 
-Instance webhooks are system-wide webhooks that can respond to specific events across the entire Decentra instance. These are only available to administrators.
+Instance webhooks are system-wide webhooks that send direct messages to **all registered users** on the Decentra instance. These are only available to administrators and work similarly to server webhooks, but instead of sending to a specific channel, they create a DM with each user.
 
-**Supported Events:**
-- `user.signup` - Triggered when a new user signs up
-- `user.login` - Triggered when a user logs in
-- `message.create` - Triggered when a message is created
-- `server.create` - Triggered when a new server is created
+**Features:**
+- Send direct messages to all users simultaneously
+- Messages appear in users' DM list from a system webhook user
+- Customize webhook name and avatar
+- Each webhook has a unique URL and token
+- Perfect for system-wide announcements, maintenance notices, or important updates
+
+**Use Cases:**
+- System maintenance announcements
+- Security alerts
+- Platform-wide updates
+- Emergency notifications
+
+**Note:** Instance webhook messages appear as direct messages in each user's DM list. Users will see a DM from `__webhook__` with the custom name and avatar you configure.
 
 ## Creating a Server Webhook
 
@@ -494,16 +503,82 @@ curl -X DELETE https://your-decentra-instance.com/api/webhooks/WEBHOOK_ID \
 
 ### Creating an Instance Webhook
 
+Via Web Interface:
+1. Click on your profile → Admin Settings
+2. Scroll to "Instance Webhooks" section
+3. Click "Create Webhook"
+4. Enter a webhook name
+5. (Optional) Choose an emoji avatar (defaults to 📢)
+6. Click "Create"
+7. Copy the generated webhook URL
+
+Via API:
 ```bash
 curl -X POST https://your-decentra-instance.com/api/instance-webhooks \
   -H "Authorization: Bearer ADMIN_JWT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "New User Notifications",
-    "event_type": "user.signup",
-    "target_url": "https://my-external-service.com/webhook",
-    "enabled": true
+    "name": "System Announcements",
+    "avatar": "📢"
   }'
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "webhook": {
+    "id": "webhook-abc123",
+    "name": "System Announcements",
+    "avatar": "📢",
+    "url": "https://your-decentra-instance.com/api/instance-webhooks/webhook-abc123/TOKEN",
+    "token": "SECRET_TOKEN_HERE",
+    "enabled": true
+  }
+}
+```
+
+### Using an Instance Webhook
+
+Instance webhooks work exactly like server webhooks, but send a DM to all users:
+
+```bash
+curl -X POST "https://your-decentra-instance.com/api/instance-webhooks/WEBHOOK_ID/TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "🚨 **System Maintenance**: The server will be restarted in 10 minutes. Please save your work.",
+    "username": "System Admin"
+  }'
+```
+
+**Example Use Cases:**
+
+1. **Maintenance Announcements:**
+```bash
+curl -X POST "https://your-decentra-instance.com/api/instance-webhooks/WEBHOOK_ID/TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "⚙️ **Scheduled Maintenance**\n\nThe system will be offline from 2:00 AM to 4:00 AM UTC for upgrades.\n\nThank you for your patience!",
+    "username": "System Administrator"
+  }'
+```
+
+2. **Security Alerts:**
+```python
+import requests
+
+def send_security_alert(message):
+    webhook_url = "https://your-decentra-instance.com/api/instance-webhooks/WEBHOOK_ID/TOKEN"
+    
+    payload = {
+        "content": f"🔒 **Security Alert**: {message}",
+        "username": "Security System"
+    }
+    
+    requests.post(webhook_url, json=payload)
+
+# Usage
+send_security_alert("Multiple failed login attempts detected. Please review your password.")
 ```
 
 ### Managing Instance Webhooks
@@ -512,7 +587,9 @@ Instance webhooks can be managed from the Admin Settings panel:
 
 1. Click on your profile → Admin Settings
 2. Scroll to "Instance Webhooks" section
-3. Create, view, or delete instance webhooks
+3. View all instance webhooks with their URLs
+4. Copy webhook URLs
+5. Delete webhooks you no longer need
 
 ## Security Best Practices
 
@@ -614,6 +691,81 @@ To prevent abuse, webhook endpoints may be rate-limited:
 
 **Headers:**
 - `Authorization: Bearer {jwt_token}`
+
+## Instance Webhook API Reference
+
+### Create Instance Webhook
+
+**Endpoint:** `POST /api/instance-webhooks`
+
+**Headers:**
+- `Authorization: Bearer {admin_jwt_token}`
+- `Content-Type: application/json`
+
+**Request Body:**
+```json
+{
+  "name": "System Announcements",
+  "avatar": "📢"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "webhook": {
+    "id": "webhook-abc123",
+    "name": "System Announcements",
+    "avatar": "📢",
+    "url": "https://your-decentra-instance.com/api/instance-webhooks/webhook-abc123/TOKEN",
+    "token": "SECRET_TOKEN_HERE",
+    "enabled": true
+  }
+}
+```
+
+### Execute Instance Webhook
+
+**Endpoint:** `POST /api/instance-webhooks/{webhook_id}/{token}`
+
+**Request Body:**
+```json
+{
+  "content": "Message content (required)",
+  "username": "Display name (optional)"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Instance webhook executed successfully",
+  "webhook_data": {
+    "content": "Message content",
+    "display_name": "System Announcements",
+    "webhook_id": "webhook-abc123",
+    "users_notified": 42,
+    "messages_sent": 42,
+    "broadcast_type": "direct_messages"
+  }
+}
+```
+
+### Get Instance Webhooks
+
+**Endpoint:** `GET /api/instance-webhooks`
+
+**Headers:**
+- `Authorization: Bearer {admin_jwt_token}`
+
+### Delete Instance Webhook
+
+**Endpoint:** `DELETE /api/instance-webhooks/{webhook_id}`
+
+**Headers:**
+- `Authorization: Bearer {admin_jwt_token}`
 
 ## Support
 
