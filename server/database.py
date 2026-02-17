@@ -898,6 +898,106 @@ class Database:
                         END $$;
                     ''')
 
+                    # Scheduled messages table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS scheduled_messages (
+                            id SERIAL PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            channel_id VARCHAR(255) NOT NULL,
+                            username VARCHAR(255) NOT NULL,
+                            content TEXT NOT NULL,
+                            scheduled_for TIMESTAMP NOT NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            sent BOOLEAN DEFAULT FALSE,
+                            sent_at TIMESTAMP,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (channel_id) REFERENCES channels(channel_id) ON DELETE CASCADE,
+                            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Create index for faster scheduled message retrieval
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_scheduled_messages_server 
+                        ON scheduled_messages(server_id, sent)
+                    ''')
+                    
+                    # Polls table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS polls (
+                            poll_id VARCHAR(255) PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            channel_id VARCHAR(255) NOT NULL,
+                            creator VARCHAR(255) NOT NULL,
+                            question TEXT NOT NULL,
+                            allow_multiple BOOLEAN DEFAULT FALSE,
+                            expires_at TIMESTAMP,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            closed BOOLEAN DEFAULT FALSE,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (channel_id) REFERENCES channels(channel_id) ON DELETE CASCADE,
+                            FOREIGN KEY (creator) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Poll options table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS poll_options (
+                            option_id VARCHAR(255) PRIMARY KEY,
+                            poll_id VARCHAR(255) NOT NULL,
+                            option_text TEXT NOT NULL,
+                            position INTEGER DEFAULT 0,
+                            FOREIGN KEY (poll_id) REFERENCES polls(poll_id) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Poll votes table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS poll_votes (
+                            poll_id VARCHAR(255) NOT NULL,
+                            option_id VARCHAR(255) NOT NULL,
+                            username VARCHAR(255) NOT NULL,
+                            voted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            PRIMARY KEY (poll_id, option_id, username),
+                            FOREIGN KEY (poll_id) REFERENCES polls(poll_id) ON DELETE CASCADE,
+                            FOREIGN KEY (option_id) REFERENCES poll_options(option_id) ON DELETE CASCADE,
+                            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Create index for faster poll vote retrieval
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_poll_votes_poll 
+                        ON poll_votes(poll_id)
+                    ''')
+                    
+                    # Welcome messages table (automation per server)
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS welcome_messages (
+                            server_id VARCHAR(255) PRIMARY KEY,
+                            enabled BOOLEAN DEFAULT FALSE,
+                            message TEXT NOT NULL,
+                            channel_id VARCHAR(255),
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (channel_id) REFERENCES channels(channel_id) ON DELETE SET NULL
+                        )
+                    ''')
+                    
+                    # Add signup notification settings to admin_settings if it doesn't exist (migration)
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'notify_admin_on_signup'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN notify_admin_on_signup BOOLEAN DEFAULT TRUE;
+                            END IF;
+                        END $$;
+                    ''')
+
                     conn.commit()
 
                 # If we get here, connection was successful
@@ -2838,10 +2938,259 @@ class Database:
         except Exception as e:
             print(f"Error getting unread counts: {e}")
             return unread_data
-
-    # License operations
-    def save_license_key(self, license_key: str, tier: str = 'community', expires_at=None, customer_name: str = '', customer_email: str = '') -> bool:
-        """Save license key and associated metadata to admin settings."""
+    
+    # Scheduled messages operations
+    def create_scheduled_message(self, server_id: str, channel_id: str, username: str, content: str, scheduled_for: datetime) -> int:
+        """Create a scheduled message."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO scheduled_messages (server_id, channel_id, username, content, scheduled_for)
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING id
+                ''', (server_id, channel_id, username, content, scheduled_for))
+                result = cursor.fetchone()
+                return result['id'] if result else None
+        except Exception as e:
+            print(f"Error creating scheduled message: {e}")
+            return None
+    
+    def get_scheduled_messages(self, server_id: str) -> List[Dict]:
+        """Get all scheduled messages for a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT * FROM scheduled_messages
+                    WHERE server_id = %s AND sent = FALSE
+                    ORDER BY scheduled_for ASC
+                ''', (server_id,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting scheduled messages: {e}")
+            return []
+    
+    def get_pending_scheduled_messages(self) -> List[Dict]:
+        """Get all pending scheduled messages that are due to be sent."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT * FROM scheduled_messages
+                    WHERE sent = FALSE AND scheduled_for <= %s
+                    ORDER BY scheduled_for ASC
+                ''', (datetime.now(),))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting pending scheduled messages: {e}")
+            return []
+    
+    def mark_scheduled_message_sent(self, message_id: int):
+        """Mark a scheduled message as sent."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE scheduled_messages
+                    SET sent = TRUE, sent_at = %s
+                    WHERE id = %s
+                ''', (datetime.now(), message_id))
+        except Exception as e:
+            print(f"Error marking scheduled message as sent: {e}")
+    
+    def delete_scheduled_message(self, message_id: int, username: str) -> bool:
+        """Delete a scheduled message (only if created by username or server owner)."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # Check if user is the creator or server owner
+                cursor.execute('''
+                    SELECT sm.username, s.owner
+                    FROM scheduled_messages sm
+                    JOIN servers s ON sm.server_id = s.server_id
+                    WHERE sm.id = %s
+                ''', (message_id,))
+                result = cursor.fetchone()
+                if result and (result['username'] == username or result['owner'] == username):
+                    cursor.execute('DELETE FROM scheduled_messages WHERE id = %s', (message_id,))
+                    return True
+                return False
+        except Exception as e:
+            print(f"Error deleting scheduled message: {e}")
+            return False
+    
+    # Polls operations
+    def create_poll(self, poll_id: str, server_id: str, channel_id: str, creator: str, question: str, 
+                   options: List[str], allow_multiple: bool = False, expires_at: datetime = None) -> bool:
+        """Create a poll with options."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # Insert poll
+                cursor.execute('''
+                    INSERT INTO polls (poll_id, server_id, channel_id, creator, question, allow_multiple, expires_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ''', (poll_id, server_id, channel_id, creator, question, allow_multiple, expires_at))
+                
+                # Insert options
+                for i, option_text in enumerate(options):
+                    option_id = f"{poll_id}_opt{i}"
+                    cursor.execute('''
+                        INSERT INTO poll_options (option_id, poll_id, option_text, position)
+                        VALUES (%s, %s, %s, %s)
+                    ''', (option_id, poll_id, option_text, i))
+                
+                return True
+        except Exception as e:
+            print(f"Error creating poll: {e}")
+            return False
+    
+    def get_poll(self, poll_id: str) -> Optional[Dict]:
+        """Get a poll with its options and vote counts."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # Get poll data
+                cursor.execute('SELECT * FROM polls WHERE poll_id = %s', (poll_id,))
+                poll = cursor.fetchone()
+                if not poll:
+                    return None
+                
+                poll_dict = dict(poll)
+                
+                # Get options with vote counts
+                cursor.execute('''
+                    SELECT po.option_id, po.option_text, po.position,
+                           COUNT(pv.username) as vote_count
+                    FROM poll_options po
+                    LEFT JOIN poll_votes pv ON po.option_id = pv.option_id
+                    WHERE po.poll_id = %s
+                    GROUP BY po.option_id, po.option_text, po.position
+                    ORDER BY po.position
+                ''', (poll_id,))
+                
+                poll_dict['options'] = [dict(row) for row in cursor.fetchall()]
+                
+                # Get total vote count
+                cursor.execute('''
+                    SELECT COUNT(DISTINCT username) as voter_count
+                    FROM poll_votes
+                    WHERE poll_id = %s
+                ''', (poll_id,))
+                poll_dict['voter_count'] = cursor.fetchone()['voter_count']
+                
+                return poll_dict
+        except Exception as e:
+            print(f"Error getting poll: {e}")
+            return None
+    
+    def vote_poll(self, poll_id: str, option_id: str, username: str) -> bool:
+        """Vote on a poll option."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # Check if poll allows multiple votes
+                cursor.execute('SELECT allow_multiple, closed FROM polls WHERE poll_id = %s', (poll_id,))
+                poll = cursor.fetchone()
+                if not poll or poll['closed']:
+                    return False
+                
+                # If single choice, remove previous votes
+                if not poll['allow_multiple']:
+                    cursor.execute('''
+                        DELETE FROM poll_votes
+                        WHERE poll_id = %s AND username = %s
+                    ''', (poll_id, username))
+                
+                # Add vote
+                cursor.execute('''
+                    INSERT INTO poll_votes (poll_id, option_id, username)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                ''', (poll_id, option_id, username))
+                
+                return True
+        except Exception as e:
+            print(f"Error voting on poll: {e}")
+            return False
+    
+    def get_user_poll_votes(self, poll_id: str, username: str) -> List[str]:
+        """Get the option IDs a user has voted for in a poll."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT option_id FROM poll_votes
+                    WHERE poll_id = %s AND username = %s
+                ''', (poll_id, username))
+                return [row['option_id'] for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting user poll votes: {e}")
+            return []
+    
+    def close_poll(self, poll_id: str, username: str) -> bool:
+        """Close a poll (only creator or server owner can close)."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT p.creator, s.owner
+                    FROM polls p
+                    JOIN servers s ON p.server_id = s.server_id
+                    WHERE p.poll_id = %s
+                ''', (poll_id,))
+                result = cursor.fetchone()
+                if result and (result['creator'] == username or result['owner'] == username):
+                    cursor.execute('UPDATE polls SET closed = TRUE WHERE poll_id = %s', (poll_id,))
+                    return True
+                return False
+        except Exception as e:
+            print(f"Error closing poll: {e}")
+            return False
+    
+    # Welcome messages operations
+    def set_welcome_message(self, server_id: str, enabled: bool, message: str, channel_id: str = None) -> bool:
+        """Set or update welcome message for a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO welcome_messages (server_id, enabled, message, channel_id, updated_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (server_id) DO UPDATE
+                    SET enabled = EXCLUDED.enabled,
+                        message = EXCLUDED.message,
+                        channel_id = EXCLUDED.channel_id,
+                        updated_at = EXCLUDED.updated_at
+                ''', (server_id, enabled, message, channel_id, datetime.now()))
+                return True
+        except Exception as e:
+            print(f"Error setting welcome message: {e}")
+            return False
+    
+    def get_welcome_message(self, server_id: str) -> Optional[Dict]:
+        """Get welcome message settings for a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM welcome_messages WHERE server_id = %s', (server_id,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            print(f"Error getting welcome message: {e}")
+            return None
+    
+    def delete_welcome_message(self, server_id: str) -> bool:
+        """Delete welcome message for a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM welcome_messages WHERE server_id = %s', (server_id,))
+                return True
+        except Exception as e:
+            print(f"Error deleting welcome message: {e}")
+            return False
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()

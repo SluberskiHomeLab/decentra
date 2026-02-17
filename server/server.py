@@ -991,6 +991,18 @@ async def handler(websocket):
                     clients[websocket] = username
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] New user registered: {username}")
                     
+                    # Notify instance admin of new signup if enabled
+                    admin_settings = db.get_admin_settings()
+                    if admin_settings.get('notify_admin_on_signup', True):
+                        first_user = db.get_first_user()
+                        if first_user and first_user != username:
+                            await send_to_user(first_user, json.dumps({
+                                'type': 'admin_signup_notification',
+                                'username': username,
+                                'email': email if email else None,
+                                'timestamp': datetime.now().isoformat()
+                            }))
+                    
                     # Notify inviter that they are now friends
                     if inviter_username:
                         new_user_avatar = get_avatar_data(username)
@@ -1073,6 +1085,18 @@ async def handler(websocket):
                 authenticated = True
                 clients[websocket] = username
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] New user registered: {username}")
+                
+                # Notify instance admin of new signup if enabled
+                admin_settings = db.get_admin_settings()
+                if admin_settings.get('notify_admin_on_signup', True):
+                    first_user = db.get_first_user()
+                    if first_user and first_user != username:
+                        await send_to_user(first_user, json.dumps({
+                            'type': 'admin_signup_notification',
+                            'username': username,
+                            'email': email if email else None,
+                            'timestamp': datetime.now().isoformat()
+                        }))
                 
                 # Notify inviter that they are now friends
                 if inviter_username:
@@ -1374,6 +1398,11 @@ async def handler(websocket):
                     'message': 'Invalid authentication request'
                 }))
         
+        # Check if authentication was successful
+        if not authenticated or not username:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Authentication failed or connection closed before completion")
+            return
+        
         # Send user data to authenticated client using helper functions
         try:
             user_servers = build_user_servers_data(username) or []
@@ -1441,14 +1470,6 @@ async def handler(websocket):
                 'max_message_length': admin_settings.get('max_message_length', 2000)
             }
             await websocket.send_str(json.dumps(announcement_data))
-            
-            # Deprecated: Send old message history for backward compatibility
-            if messages:
-                history_message = json.dumps({
-                    'type': 'history',
-                    'messages': messages[-MAX_HISTORY:]
-                })
-                await websocket.send_str(history_message)
             
             # Notify others about new user joining
             join_message = json.dumps({
@@ -2762,6 +2783,42 @@ async def handler(websocket):
                                     'username': username
                                 }), exclude=websocket)
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} joined server {server_id} via invite")
+                                
+                                # Send welcome message if enabled
+                                welcome = db.get_welcome_message(server_id)
+                                if welcome and welcome['enabled'] and welcome['message']:
+                                    # Get user profile for avatar
+                                    user_profile = db.get_user(username)
+                                    
+                                    # Determine which channel to send welcome message to
+                                    target_channel_id = welcome.get('channel_id')
+                                    if not target_channel_id and channels:
+                                        # Default to first channel if no specific channel set
+                                        target_channel_id = channels[0]['channel_id']
+                                    
+                                    if target_channel_id:
+                                        # Replace {user} placeholder with username
+                                        welcome_text = welcome['message'].replace('{user}', f'@{username}')
+                                        
+                                        # Save welcome message to database
+                                        context_id = f"{server_id}/{target_channel_id}"
+                                        message_id = db.save_message('System', welcome_text, 'server', context_id, None)
+                                        
+                                        # Broadcast welcome message to server
+                                        welcome_msg = {
+                                            'type': 'message',
+                                            'id': message_id,
+                                            'username': 'System',
+                                            'content': welcome_text,
+                                            'timestamp': datetime.now().isoformat(),
+                                            'context': 'server',
+                                            'context_id': context_id,
+                                            'avatar': '🤖',
+                                            'avatar_type': 'emoji',
+                                            'mentions': [username] if '{user}' in welcome['message'] else []
+                                        }
+                                        await broadcast_to_server(server_id, json.dumps(welcome_msg))
+                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Sent welcome message to {username} in server {server_id}")
                             else:
                                 await websocket.send_str(json.dumps({
                                     'type': 'error',
@@ -4679,6 +4736,187 @@ async def handler(websocket):
                                 'from': username
                             }))
 
+                    # Automation handlers
+                    elif data.get('type') == 'create_scheduled_message':
+                        server_id = data.get('server_id', '')
+                        channel_id = data.get('channel_id', '')
+                        content = data.get('content', '').strip()
+                        scheduled_for = data.get('scheduled_for', '')
+                        
+                        if server_id and channel_id and content and scheduled_for:
+                            # Verify user has permission
+                            if has_permission(server_id, username, 'send_messages'):
+                                try:
+                                    # Parse scheduled time
+                                    scheduled_time = datetime.fromisoformat(scheduled_for.replace('Z', '+00:00'))
+                                    
+                                    # Create scheduled message
+                                    msg_id = db.create_scheduled_message(server_id, channel_id, username, content, scheduled_time)
+                                    if msg_id:
+                                        await websocket.send_str(json.dumps({
+                                            'type': 'scheduled_message_created',
+                                            'message_id': msg_id,
+                                            'server_id': server_id,
+                                            'channel_id': channel_id,
+                                            'scheduled_for': scheduled_time.isoformat()
+                                        }))
+                                    else:
+                                        await websocket.send_str(json.dumps({
+                                            'type': 'error',
+                                            'message': 'Failed to create scheduled message'
+                                        }))
+                                except Exception as e:
+                                    await websocket.send_str(json.dumps({
+                                        'type': 'error',
+                                        'message': f'Invalid scheduled time: {str(e)}'
+                                    }))
+                    
+                    elif data.get('type') == 'get_scheduled_messages':
+                        server_id = data.get('server_id', '')
+                        if server_id and has_permission(server_id, username, 'manage_server'):
+                            messages = db.get_scheduled_messages(server_id)
+                            await websocket.send_str(json.dumps({
+                                'type': 'scheduled_messages',
+                                'server_id': server_id,
+                                'messages': [{
+                                    'id': msg['id'],
+                                    'channel_id': msg['channel_id'],
+                                    'username': msg['username'],
+                                    'content': msg['content'],
+                                    'scheduled_for': msg['scheduled_for'].isoformat(),
+                                    'created_at': msg['created_at'].isoformat()
+                                } for msg in messages]
+                            }))
+                    
+                    elif data.get('type') == 'delete_scheduled_message':
+                        message_id = data.get('message_id')
+                        if message_id:
+                            success = db.delete_scheduled_message(message_id, username)
+                            if success:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'scheduled_message_deleted',
+                                    'message_id': message_id
+                                }))
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Failed to delete scheduled message'
+                                }))
+                    
+                    elif data.get('type') == 'create_poll':
+                        server_id = data.get('server_id', '')
+                        channel_id = data.get('channel_id', '')
+                        question = data.get('question', '').strip()
+                        options = data.get('options', [])
+                        allow_multiple = data.get('allow_multiple', False)
+                        expires_hours = data.get('expires_hours')
+                        
+                        if server_id and channel_id and question and len(options) >= 2:
+                            if has_permission(server_id, username, 'send_messages'):
+                                import secrets
+                                poll_id = f"poll_{secrets.token_hex(8)}"
+                                
+                                expires_at = None
+                                if expires_hours:
+                                    expires_at = datetime.now() + timedelta(hours=expires_hours)
+                                
+                                success = db.create_poll(poll_id, server_id, channel_id, username, 
+                                                        question, options, allow_multiple, expires_at)
+                                
+                                if success:
+                                    # Broadcast poll to server
+                                    poll_data = db.get_poll(poll_id)
+                                    if poll_data:
+                                        poll_data['created_at'] = poll_data['created_at'].isoformat()
+                                        if poll_data.get('expires_at'):
+                                            poll_data['expires_at'] = poll_data['expires_at'].isoformat()
+                                        
+                                        await broadcast_to_server(server_id, json.dumps({
+                                            'type': 'poll_created',
+                                            'poll': poll_data,
+                                            'channel_id': channel_id
+                                        }))
+                                else:
+                                    await websocket.send_str(json.dumps({
+                                        'type': 'error',
+                                        'message': 'Failed to create poll'
+                                    }))
+                    
+                    elif data.get('type') == 'vote_poll':
+                        poll_id = data.get('poll_id', '')
+                        option_id = data.get('option_id', '')
+                        
+                        if poll_id and option_id:
+                            success = db.vote_poll(poll_id, option_id, username)
+                            if success:
+                                # Get updated poll and broadcast to server
+                                poll_data = db.get_poll(poll_id)
+                                if poll_data:
+                                    server_id = poll_data['server_id']
+                                    poll_data['created_at'] = poll_data['created_at'].isoformat()
+                                    if poll_data.get('expires_at'):
+                                        poll_data['expires_at'] = poll_data['expires_at'].isoformat()
+                                    
+                                    await broadcast_to_server(server_id, json.dumps({
+                                        'type': 'poll_updated',
+                                        'poll': poll_data
+                                    }))
+                    
+                    elif data.get('type') == 'close_poll':
+                        poll_id = data.get('poll_id', '')
+                        if poll_id:
+                            success = db.close_poll(poll_id, username)
+                            if success:
+                                # Get poll and broadcast to server
+                                poll_data = db.get_poll(poll_id)
+                                if poll_data:
+                                    server_id = poll_data['server_id']
+                                    poll_data['created_at'] = poll_data['created_at'].isoformat()
+                                    if poll_data.get('expires_at'):
+                                        poll_data['expires_at'] = poll_data['expires_at'].isoformat()
+                                    
+                                    await broadcast_to_server(server_id, json.dumps({
+                                        'type': 'poll_updated',
+                                        'poll': poll_data
+                                    }))
+                    
+                    elif data.get('type') == 'set_welcome_message':
+                        server_id = data.get('server_id', '')
+                        enabled = data.get('enabled', False)
+                        message = data.get('message', '').strip()
+                        channel_id = data.get('channel_id')
+                        
+                        if server_id and has_permission(server_id, username, 'manage_server'):
+                            success = db.set_welcome_message(server_id, enabled, message, channel_id)
+                            if success:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'welcome_message_updated',
+                                    'server_id': server_id,
+                                    'enabled': enabled,
+                                    'message': message,
+                                    'channel_id': channel_id
+                                }))
+                    
+                    elif data.get('type') == 'get_welcome_message':
+                        server_id = data.get('server_id', '')
+                        if server_id and has_permission(server_id, username, 'manage_server'):
+                            welcome = db.get_welcome_message(server_id)
+                            await websocket.send_str(json.dumps({
+                                'type': 'welcome_message',
+                                'server_id': server_id,
+                                'welcome': welcome if welcome else {'enabled': False, 'message': '', 'channel_id': None}
+                            }))
+                    
+                    elif data.get('type') == 'delete_welcome_message':
+                        server_id = data.get('server_id', '')
+                        if server_id and has_permission(server_id, username, 'manage_server'):
+                            success = db.delete_welcome_message(server_id)
+                            if success:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'welcome_message_deleted',
+                                    'server_id': server_id
+                                }))
+                    
                     elif data.get('type') == 'get_license_info':
                         first_user = db.get_first_user()
                         is_admin = (username == first_user)
@@ -4990,6 +5228,57 @@ async def cleanup_old_messages_periodically():
             print(f"Error in message purge task: {e}")
 
 
+async def process_scheduled_messages():
+    """Periodic task to process and send scheduled messages."""
+    while True:
+        try:
+            await asyncio.sleep(60)  # Check every minute
+            
+            # Get all pending scheduled messages that are due
+            pending_messages = db.get_pending_scheduled_messages()
+            
+            for msg in pending_messages:
+                try:
+                    server_id = msg['server_id']
+                    channel_id = msg['channel_id']
+                    username = msg['username']
+                    content = msg['content']
+                    context_id = f"{server_id}/{channel_id}"
+                    
+                    # Get user profile for avatar
+                    user_profile = db.get_user(username)
+                    if not user_profile:
+                        # User deleted, skip this message
+                        db.mark_scheduled_message_sent(msg['id'])
+                        continue
+                    
+                    # Save message to database
+                    message_id = db.save_message(username, content, 'server', context_id, None)
+                    
+                    # Create message object
+                    msg_obj = create_message_object(
+                        username=username,
+                        msg_content=content,
+                        context='server',
+                        context_id=context_id,
+                        user_profile=user_profile,
+                        message_id=message_id
+                    )
+                    
+                    # Broadcast to server
+                    await broadcast_to_server(server_id, json.dumps(msg_obj))
+                    
+                    # Mark as sent
+                    db.mark_scheduled_message_sent(msg['id'])
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Sent scheduled message {msg['id']} to {server_id}/{channel_id}")
+                    
+                except Exception as e:
+                    print(f"Error sending scheduled message {msg.get('id')}: {e}")
+                    
+        except Exception as e:
+            print(f"Error in scheduled message processor: {e}")
+
+
 async def load_license():
     """
     Load and validate the Decentra license key at startup.
@@ -5197,6 +5486,7 @@ async def main():
     asyncio.create_task(cleanup_old_attachments_periodically())
     asyncio.create_task(cleanup_reset_tokens_periodically())
     asyncio.create_task(cleanup_old_messages_periodically())
+    asyncio.create_task(process_scheduled_messages())
     
     print("Server started successfully!")
     print("Access the web client at https://localhost:8765")
