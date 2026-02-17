@@ -299,11 +299,12 @@ async def api_dms(request):
 
 async def api_search_messages(request):
     """
-    GET /api/search-messages?username=<username>&query=<query>&limit=<limit>
+    GET /api/search-messages?query=<query>&limit=<limit>
     Search messages for a user across all their accessible chats
     
+    Requires: Authorization header with Bearer token
+    
     Parameters:
-    - username: username of the user performing the search
     - query: search query string
     - limit: number of results to return (default: 50, max: 100)
     
@@ -325,15 +326,25 @@ async def api_search_messages(request):
     }
     """
     try:
-        username = request.query.get('username')
-        query = request.query.get('query', '').strip()
-        limit = int(request.query.get('limit', 50))
+        # Extract and verify JWT token from Authorization header
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({
+                'success': False,
+                'error': 'Missing or invalid Authorization header'
+            }, status=401)
+        
+        token = auth_header[7:]  # Remove 'Bearer ' prefix
+        username = verify_jwt_token(token)
         
         if not username:
             return web.json_response({
                 'success': False,
-                'error': 'Username parameter is required'
-            }, status=400)
+                'error': 'Invalid or expired token'
+            }, status=401)
+        
+        query = request.query.get('query', '').strip()
+        limit = int(request.query.get('limit', 50))
         
         if not query:
             return web.json_response({
@@ -344,6 +355,8 @@ async def api_search_messages(request):
         # Limit to max 100 results
         limit = min(limit, 100)
         
+        # Use the authenticated username from the token
+        # The database function enforces access control for DMs and servers
         results = db.search_messages(username, query, limit)
         
         return web.json_response({

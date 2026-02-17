@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import type { ChangeEvent } from 'react'
+import { getStoredAuth } from '../auth/storage'
 
 export interface SearchResult {
   id: number
@@ -47,8 +48,22 @@ export function SearchBar({ currentUsername, onResultClick }: SearchBarProps) {
 
     setIsSearching(true)
     try {
+      const { token } = getStoredAuth()
+      
+      if (!token) {
+        console.error('No authentication token available')
+        setResults([])
+        setIsSearching(false)
+        return
+      }
+
       const response = await fetch(
-        `/api/search-messages?username=${encodeURIComponent(currentUsername)}&query=${encodeURIComponent(searchQuery)}&limit=50`
+        `/api/search-messages?query=${encodeURIComponent(searchQuery)}&limit=50`,
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        }
       )
       const data = await response.json()
       
