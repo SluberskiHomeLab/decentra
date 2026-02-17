@@ -6,6 +6,7 @@
 export class NotificationManager {
   private static instance: NotificationManager
   private permission: NotificationPermission = 'default'
+  private debug: boolean = import.meta.env.DEV ?? false
 
   private constructor() {
     if ('Notification' in window) {
@@ -18,6 +19,13 @@ export class NotificationManager {
       NotificationManager.instance = new NotificationManager()
     }
     return NotificationManager.instance
+  }
+
+  /**
+   * Enable debug logging (for development/troubleshooting only)
+   */
+  setDebug(enabled: boolean): void {
+    this.debug = enabled
   }
 
   /**
@@ -65,31 +73,30 @@ export class NotificationManager {
    * Notifications will show in system tray on Windows automatically
    */
   showNotification(title: string, options?: NotificationOptions): Notification | null {
-    console.log('[Notifications] Attempting to show notification:', title)
+    if (this.debug) {
+      console.log('[Notifications] Attempting to show notification')
+    }
     
     if (!this.isSupported()) {
-      console.warn('[Notifications] Browser notifications not supported')
       return null
     }
 
     const permission = this.getPermission()
-    console.log('[Notifications] Current permission:', permission)
     
     if (permission !== 'granted') {
-      console.warn('[Notifications] Notification permission not granted, current status:', permission)
+      if (this.debug) {
+        console.warn('[Notifications] Permission not granted:', permission)
+      }
       return null
     }
 
     try {
-      console.log('[Notifications] Creating notification with title:', title, 'options:', options)
       const notification = new Notification(title, {
         icon: '/favicon.ico',
         badge: '/favicon.ico',
         requireInteraction: false,
         ...options,
       })
-
-      console.log('[Notifications] Notification created successfully')
 
       // Auto-close after 8 seconds (longer for readability)
       setTimeout(() => {
@@ -98,17 +105,12 @@ export class NotificationManager {
 
       // Focus window when notification is clicked
       notification.onclick = () => {
-        console.log('[Notifications] Notification clicked, focusing window')
         window.focus()
         notification.close()
       }
 
       notification.onerror = (error) => {
-        console.error('[Notifications] Notification error:', error)
-      }
-
-      notification.onshow = () => {
-        console.log('[Notifications] Notification shown successfully')
+        console.error('[Notifications] Error:', error)
       }
 
       return notification
@@ -122,7 +124,6 @@ export class NotificationManager {
    * Show notification for a mention
    */
   showMentionNotification(mentionedBy: string, content: string, _contextType: string): void {
-    console.log('[Notifications] showMentionNotification called:', { mentionedBy, content })
     const preview = content.length > 100 ? content.substring(0, 100) + '...' : content
     this.showNotification(`${mentionedBy} mentioned you`, {
       body: preview,
@@ -135,7 +136,6 @@ export class NotificationManager {
    * Show notification for a reply
    */
   showReplyNotification(repliedBy: string, content: string): void {
-    console.log('[Notifications] showReplyNotification called:', { repliedBy, content })
     const preview = content.length > 100 ? content.substring(0, 100) + '...' : content
     this.showNotification(`${repliedBy} replied to you`, {
       body: preview,
@@ -148,7 +148,6 @@ export class NotificationManager {
    * Show notification for a new message
    */
   showMessageNotification(from: string, content: string, contextType: string): void {
-    console.log('[Notifications] showMessageNotification called:', { from, content, contextType })
     const preview = content.length > 100 ? content.substring(0, 100) + '...' : content
     const contextLabel = contextType === 'dm' ? 'sent you a message' : 'sent a message'
     this.showNotification(`${from} ${contextLabel}`, {
