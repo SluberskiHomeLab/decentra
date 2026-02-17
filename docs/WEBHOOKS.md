@@ -180,6 +180,293 @@ def post_daily_update():
     requests.post(webhook_url, json=payload)
 ```
 
+## Testing Webhooks
+
+### Using Postman
+
+Postman is a great tool for testing your webhooks before integrating them into your applications.
+
+#### Step 1: Get Your Webhook URL
+
+1. In Decentra, go to Server Settings → Webhooks
+2. Create a new webhook or use an existing one
+3. Copy the webhook URL (it looks like: `https://your-decentra-instance.com/api/webhooks/WEBHOOK_ID/TOKEN`)
+
+**For Local Development:**
+- If you copied the URL from your local Decentra instance, it might show `https://localhost/...`
+- Change it to use `http://` instead of `https://` (unless you have SSL configured)
+- Include the port if your server runs on a non-standard port: `http://localhost:8080/api/webhooks/...`
+- Common local URLs:
+  - `http://localhost:8080/api/webhooks/WEBHOOK_ID/TOKEN`
+  - `http://127.0.0.1:8080/api/webhooks/WEBHOOK_ID/TOKEN`
+
+#### Step 2: Create a New Request in Postman
+
+1. Open Postman
+2. Click **New** → **HTTP Request** (or use the `+` tab)
+3. Set the request method to **POST**
+4. Paste your webhook URL into the URL field
+
+#### Step 3: Configure Headers
+
+1. Click on the **Headers** tab
+2. Add a new header:
+   - **Key**: `Content-Type`
+   - **Value**: `application/json`
+
+#### Step 4: Add Request Body
+
+1. Click on the **Body** tab
+2. Select **raw**
+3. Choose **JSON** from the dropdown (next to the binary/text options)
+4. Enter your JSON payload:
+
+**Basic Message:**
+```json
+{
+  "content": "Hello from Postman! This is a test message."
+}
+```
+
+**Message with Custom Username:**
+```json
+{
+  "content": "🧪 Testing webhook integration",
+  "username": "Postman Tester"
+}
+```
+
+**Rich Formatted Message:**
+```json
+{
+  "content": "**Deployment Status**\n\n✅ Build: Success\n⏱️ Duration: 2m 34s\n🔗 Environment: Production\n\n```\nCommit: abc123\nBranch: main\n```",
+  "username": "CI/CD Pipeline"
+}
+```
+
+#### Step 5: Send the Request
+
+1. Click the blue **Send** button
+2. Check the response in the lower panel
+
+**Expected Response (Success):**
+```json
+{
+  "success": true,
+  "message": "Webhook executed successfully",
+  "webhook_data": {
+    "channel_id": "channel-456",
+    "server_id": "server-123",
+    "content": "Hello from Postman! This is a test message.",
+    "display_name": "Postman Tester",
+    "webhook_id": "webhook-789"
+  }
+}
+```
+
+3. Check your Decentra channel to see the message appear!
+
+#### Step 6: Save Your Request (Optional)
+
+1. Click **Save** in the top right
+2. Name it (e.g., "Decentra Webhook - Test Channel")
+3. Create or select a collection
+4. Save it for future use
+
+### Using Postman Collections
+
+You can create a collection with multiple webhook requests:
+
+1. **Create Collection**
+   - Click **Collections** in the sidebar
+   - Click **+ New Collection**
+   - Name it "Decentra Webhooks"
+
+2. **Add Environment Variables**
+   - Click **Environments** in the sidebar
+   - Click **+ Create Environment**
+   - Add variables:
+     - `webhook_url`: Your full webhook URL
+     - `server_id`: Your server ID
+     - `channel_id`: Your channel ID
+
+3. **Use Variables in Requests**
+   - In your request URL field, use: `{{webhook_url}}`
+   - In your JSON body, use:
+     ```json
+     {
+       "content": "Testing from {{$timestamp}}",
+       "username": "Automated Test"
+     }
+     ```
+
+### Testing Error Scenarios
+
+**Test 1: Missing Content**
+```json
+{
+  "username": "Test User"
+}
+```
+Expected: 400 error - "Content is required"
+
+**Test 2: Invalid Webhook URL**
+- Use a wrong token in the URL
+- Expected: 404 error - "Invalid webhook"
+
+**Test 3: Empty Content**
+```json
+{
+  "content": "",
+  "username": "Test User"
+}
+```
+Expected: 400 error - "Content is required"
+
+### Advanced Testing with Postman Scripts
+
+Add a pre-request script to generate dynamic content:
+
+**Pre-request Script Tab:**
+```javascript
+// Generate timestamp
+pm.environment.set("timestamp", new Date().toISOString());
+
+// Generate random test ID
+pm.environment.set("test_id", Math.random().toString(36).substr(2, 9));
+```
+
+**Request Body:**
+```json
+{
+  "content": "🧪 Test run at {{timestamp}}\nTest ID: {{test_id}}",
+  "username": "Automated Tester"
+}
+```
+
+Add a test script to verify the response:
+
+**Tests Tab:**
+```javascript
+pm.test("Status code is 200", function () {
+    pm.response.to.have.status(200);
+});
+
+pm.test("Response has success field", function () {
+    var jsonData = pm.response.json();
+    pm.expect(jsonData).to.have.property('success');
+    pm.expect(jsonData.success).to.be.true;
+});
+
+pm.test("Webhook data is present", function () {
+    var jsonData = pm.response.json();
+    pm.expect(jsonData).to.have.property('webhook_data');
+    pm.expect(jsonData.webhook_data).to.have.property('channel_id');
+});
+
+console.log("✅ Webhook test completed successfully!");
+```
+
+### Quick Tips
+
+1. **Use Postman Console**: View → Show Postman Console to see detailed request/response logs
+2. **Export for Team**: Export your collection and share with team members
+3. **Automate Tests**: Use Postman's Collection Runner to run multiple tests
+4. **Mock Integrations**: Test your webhook before building the actual integration
+
+### Troubleshooting Local Development
+
+#### Error: connect ECONNREFUSED 127.0.0.1:443
+
+This error means Postman cannot connect to your local server. Here's how to fix it:
+
+**1. Check Your Server is Running**
+```bash
+# Check if the server is running
+docker ps
+# or
+docker compose ps
+```
+
+If the server isn't running, start it:
+```bash
+docker compose up -d
+```
+
+**2. Use the Correct Protocol and Port**
+
+The error shows port 443 (HTTPS), but local servers typically use HTTP:
+
+❌ **Wrong:**
+```
+https://localhost/api/webhooks/WEBHOOK_ID/TOKEN
+```
+
+✅ **Correct:**
+```
+http://localhost:8080/api/webhooks/WEBHOOK_ID/TOKEN
+```
+
+**Common Local Configurations:**
+- If using Docker with default settings: `http://localhost:8080`
+- If running directly: `http://localhost:5000` or `http://localhost:3000`
+- Check your `docker-compose.yml` for the port mapping (e.g., `8080:8080`)
+
+**3. Find Your Server's Port**
+
+Check your docker-compose.yml file:
+```yaml
+services:
+  server:
+    ports:
+      - "8080:8080"  # The first number is your local port
+```
+
+Or check running containers:
+```bash
+docker compose ps
+# Look for the port mapping like 0.0.0.0:8080->8080/tcp
+```
+
+**4. Disable SSL Verification (Local Only)**
+
+If you're using self-signed certificates locally:
+1. In Postman, go to Settings (⚙️)
+2. Turn OFF "SSL certificate verification"
+3. **⚠️ Only do this for local testing, never in production!**
+
+**5. Copy the Correct Webhook URL**
+
+When you create a webhook in your local Decentra:
+1. The UI might show `https://localhost/api/webhooks/...`
+2. Manually change it to match your actual server URL
+3. Example: If your frontend is at `http://localhost:5173` and backend at `http://localhost:8080`:
+   - Change: `https://localhost/api/webhooks/abc123/token456`
+   - To: `http://localhost:8080/api/webhooks/abc123/token456`
+
+**6. Test Server Connectivity**
+
+First verify your server is accessible:
+```bash
+# Test the base URL
+curl http://localhost:8080/
+
+# Or in PowerShell
+Invoke-WebRequest -Uri http://localhost:8080/
+```
+
+If this works, your webhook URL should be:
+```
+http://localhost:8080/api/webhooks/WEBHOOK_ID/TOKEN
+```
+
+**Quick Checklist:**
+- ✅ Server is running (`docker compose ps`)
+- ✅ Using `http://` not `https://`
+- ✅ Correct port number (check docker-compose.yml)
+- ✅ Full URL includes `/api/webhooks/WEBHOOK_ID/TOKEN`
+- ✅ Content-Type header is `application/json`
+
 ## Managing Webhooks
 
 ### Listing Server Webhooks

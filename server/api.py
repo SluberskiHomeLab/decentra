@@ -17,6 +17,8 @@ from license_validator import check_limit
 db = None
 # JWT verification function will be set by setup_api_routes
 verify_jwt_token = None
+# WebSocket broadcast function will be set by setup_api_routes
+broadcast_to_server_func = None
 
 
 def sanitize_filename(filename):
@@ -959,17 +961,66 @@ async def api_execute_webhook(request):
                 'error': 'Content is required'
             }, status=400)
         
-        # Store the webhook execution in a way that will be picked up by WebSocket handler
-        # For now, we'll just return success and let the WebSocket implementation handle it
+        # Save message to database and broadcast to server
+        server_id = webhook['server_id']
+        channel_id = webhook['channel_id']
+        context_id = f"{server_id}/{channel_id}"
+        
+        # Ensure webhook system user exists
+        db.ensure_webhook_system_user()
+        
+        # Save message to database using the system webhook user
+        # The actual webhook identity is preserved in the broadcast message
+        message_id = db.save_message(
+            username='__webhook__',
+            content=content,
+            context_type='server',
+            context_id=context_id
+        )
+        
+        # Create a webhook user profile with the display name and avatar
+        webhook_profile = {
+            'avatar': webhook.get('avatar', '🔗'),
+            'avatar_type': 'emoji',
+            'avatar_data': None,
+            'is_webhook': True,
+            'webhook_name': display_name
+        }
+        
+        # Create message object directly (don't use create_message_object_func 
+        # because it tries to look up user status/roles for non-existent webhook user)
+        from datetime import datetime, timezone
+        msg_obj = {
+            'type': 'message',
+            'username': display_name,
+            'content': content,
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'context': 'server',
+            'context_id': context_id,
+            'avatar': webhook.get('avatar', '🔗'),
+            'avatar_type': 'emoji',
+            'avatar_data': None,
+            'user_status': 'offline',  # Webhooks don't have status
+            'id': message_id,
+            'attachments': [],
+            'reactions': [],
+            'mentions': [],
+            'is_webhook': True
+        }
+        
+        # Broadcast message to all server members
+        await broadcast_to_server_func(server_id, json.dumps(msg_obj))
+        
         return web.json_response({
             'success': True,
             'message': 'Webhook executed successfully',
             'webhook_data': {
-                'channel_id': webhook['channel_id'],
-                'server_id': webhook['server_id'],
+                'channel_id': channel_id,
+                'server_id': server_id,
                 'content': content,
                 'display_name': display_name,
-                'webhook_id': webhook_id
+                'webhook_id': webhook_id,
+                'message_id': message_id
             }
         })
         
@@ -1163,11 +1214,12 @@ async def api_delete_instance_webhook(request):
         }, status=500)
 
 
-def setup_api_routes(app, database, jwt_verify_func):
+def setup_api_routes(app, database, jwt_verify_func, broadcast_func):
     """Setup REST API routes on the aiohttp application."""
-    global db, verify_jwt_token
+    global db, verify_jwt_token, broadcast_to_server_func
     db = database
     verify_jwt_token = jwt_verify_func
+    broadcast_to_server_func = broadcast_func
     app.router.add_post('/api/auth', api_auth)
     app.router.add_post('/api/reset-password', api_reset_password)
     app.router.add_get('/api/servers', api_servers)

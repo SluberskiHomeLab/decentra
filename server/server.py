@@ -5540,7 +5540,7 @@ async def main():
     app.router.add_get('/ws', websocket_handler)
     
     # Setup REST API routes
-    setup_api_routes(app, db, verify_jwt_token)
+    setup_api_routes(app, db, verify_jwt_token, broadcast_to_server)
     
     # Run the server with SSL
     runner = web.AppRunner(app)

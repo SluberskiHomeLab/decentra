@@ -1067,6 +1067,15 @@ class Database:
                 raise
     
     # User operations
+    def ensure_webhook_system_user(self) -> None:
+        """Ensure the webhook system user exists. This user is used for all webhook messages."""
+        webhook_user = self.get_user('__webhook__')
+        if not webhook_user:
+            # Create webhook system user with a random password (never used for login)
+            import bcrypt
+            password_hash = bcrypt.hashpw(secrets.token_hex(32).encode(), bcrypt.gensalt()).decode()
+            self.create_user('__webhook__', password_hash, email='webhook@system.local', email_verified=True)
+    
     def create_user(self, username: str, password_hash: str, email: str = None, email_verified: bool = False) -> bool:
         """Create a new user."""
         try:
@@ -1817,6 +1826,15 @@ class Database:
                 SELECT server_id FROM server_members WHERE username = %s
             ''', (username,))
             return [row['server_id'] for row in cursor.fetchall()]
+    
+    def is_server_member(self, username: str, server_id: str) -> bool:
+        """Check if a user is a member of a server."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT 1 FROM server_members WHERE username = %s AND server_id = %s
+            ''', (username, server_id))
+            return cursor.fetchone() is not None
     
     def update_member_permissions(self, server_id: str, username: str, permissions: Dict[str, bool]):
         """Update member permissions."""
