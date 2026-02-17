@@ -125,7 +125,9 @@ export function SearchBar({ currentUsername, onResultClick }: SearchBarProps) {
   const highlightQuery = (text: string, query: string): React.ReactNode => {
     if (!query.trim()) return text
     
-    const parts = text.split(new RegExp(`(${query})`, 'gi'))
+    // Escape regex metacharacters to prevent errors and incorrect highlighting
+    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const parts = text.split(new RegExp(`(${escapedQuery})`, 'gi'))
     return parts.map((part, i) => 
       part.toLowerCase() === query.toLowerCase() 
         ? <mark key={i} className="bg-yellow-500/30 text-yellow-200">{part}</mark>
