@@ -6,11 +6,15 @@ import { contextKey, useAppStore } from './store/appStore'
 import { useToastStore } from './store/toastStore'
 import { VoiceChat } from './lib/VoiceChat'
 import type { ChatContext } from './store/appStore'
-import type { Attachment, Reaction, Server, ServerInviteUsageLog, ServerMember, WsChatMessage, WsMessage } from './types/protocol'
+import type { Attachment, CustomEmoji, Reaction, Server, ServerInviteUsageLog, ServerMember, WsChatMessage, WsMessage } from './types/protocol'
+import { LicensePanel } from './components/admin/LicensePanel'
+import { useLicenseStore } from './store/licenseStore'
+import { notificationManager } from './utils/notifications'
+import { SearchBar, type SearchResult } from './components/SearchBar'
 import './App.css'
 
 // URL processing utilities
-const URL_REGEX = /(https?:\/\/[^\s]+)/gi
+const URL_REGEX = /(https?:\/\/[^\s]+|\/api\/download-attachment\/[^\s]+)/gi
 const IMAGE_EXTENSIONS = /\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?[^\s]*)?$/i
 const VIDEO_EXTENSIONS = /\.(mp4|webm|ogg|mov)(\?[^\s]*)?$/i
 const YOUTUBE_REGEX = /https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/i
@@ -30,6 +34,11 @@ function getYouTubeVideoId(url: string): string | null {
 
 function sanitizeUrl(url: string): string | null {
   try {
+    // Allow relative URLs (like /api/download-attachment/...)
+    if (url.startsWith('/')) {
+      return url
+    }
+    // For absolute URLs, validate protocol
     const urlObj = new URL(url)
     if (urlObj.protocol === 'http:' || urlObj.protocol === 'https:') {
       return urlObj.toString()
@@ -40,7 +49,35 @@ function sanitizeUrl(url: string): string | null {
   }
 }
 
-function linkifyText(text: string): React.ReactNode[] {
+function linkifyText(text: string, mentionRenderer?: (content: string) => React.ReactNode): React.ReactNode[] {
+  // First, handle mentions if a renderer is provided
+  if (mentionRenderer) {
+    const mentionParts = text.split(/(@\w+)/g)
+    const processedParts: React.ReactNode[] = []
+    
+    mentionParts.forEach((part, mentionIndex) => {
+      if (part.match(/^@\w+$/)) {
+        // This is a mention - render it with the mention renderer
+        processedParts.push(
+          <span key={`mention-${mentionIndex}`}>
+            {mentionRenderer(part)}
+          </span>
+        )
+      } else if (part) {
+        // This is regular text - apply custom renderer to it (for emojis) then linkify URLs
+        const linkified = linkifyTextPartWithRenderer(part, `part-${mentionIndex}`, mentionRenderer)
+        processedParts.push(...linkified)
+      }
+    })
+    
+    return processedParts.length > 0 ? processedParts : [<span key="text-0">{text}</span>]
+  }
+  
+  // No mention renderer - just linkify normally
+  return linkifyTextPart(text, 'text')
+}
+
+function linkifyTextPart(text: string, keyPrefix: string): React.ReactNode[] {
   const parts: React.ReactNode[] = []
   let lastIndex = 0
   const regex = new RegExp(URL_REGEX)
@@ -49,7 +86,7 @@ function linkifyText(text: string): React.ReactNode[] {
   while ((match = regex.exec(text)) !== null) {
     // Add text before the URL
     if (match.index > lastIndex) {
-      parts.push(<span key={`text-${lastIndex}`}>{text.slice(lastIndex, match.index)}</span>)
+      parts.push(<span key={`${keyPrefix}-${lastIndex}`}>{text.slice(lastIndex, match.index)}</span>)
     }
 
     const url = match[0]
@@ -58,7 +95,7 @@ function linkifyText(text: string): React.ReactNode[] {
     if (safeUrl) {
       parts.push(
         <a
-          key={`link-${match.index}`}
+          key={`${keyPrefix}-link-${match.index}`}
           href={safeUrl}
           target="_blank"
           rel="noopener noreferrer"
@@ -68,7 +105,7 @@ function linkifyText(text: string): React.ReactNode[] {
         </a>
       )
     } else {
-      parts.push(<span key={`unsafe-${match.index}`}>{url}</span>)
+      parts.push(<span key={`${keyPrefix}-unsafe-${match.index}`}>{url}</span>)
     }
 
     lastIndex = regex.lastIndex
@@ -76,10 +113,195 @@ function linkifyText(text: string): React.ReactNode[] {
 
   // Add remaining text
   if (lastIndex < text.length) {
-    parts.push(<span key={`text-${lastIndex}`}>{text.slice(lastIndex)}</span>)
+    parts.push(<span key={`${keyPrefix}-${lastIndex}`}>{text.slice(lastIndex)}</span>)
   }
 
-  return parts.length > 0 ? parts : [<span key="text-0">{text}</span>]
+  return parts.length > 0 ? parts : [<span key={`${keyPrefix}-0`}>{text}</span>]
+}
+
+function linkifyTextPartWithRenderer(text: string, keyPrefix: string, renderer: (content: string) => React.ReactNode): React.ReactNode[] {
+  const parts: React.ReactNode[] = []
+  let lastIndex = 0
+  const regex = new RegExp(URL_REGEX)
+  let match: RegExpExecArray | null
+
+  while ((match = regex.exec(text)) !== null) {
+    // Add text before the URL (with emoji rendering)
+    if (match.index > lastIndex) {
+      const textBeforeUrl = text.slice(lastIndex, match.index)
+      parts.push(<span key={`${keyPrefix}-${lastIndex}`}>{renderer(textBeforeUrl)}</span>)
+    }
+
+    const url = match[0]
+    const safeUrl = sanitizeUrl(url)
+    
+    if (safeUrl) {
+      parts.push(
+        <a
+          key={`${keyPrefix}-link-${match.index}`}
+          href={safeUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-sky-400 hover:text-sky-300 underline"
+        >
+          {url}
+        </a>
+      )
+    } else {
+      parts.push(<span key={`${keyPrefix}-unsafe-${match.index}`}>{url}</span>)
+    }
+
+    lastIndex = regex.lastIndex
+  }
+
+  // Add remaining text (with emoji rendering)
+  if (lastIndex < text.length) {
+    const remainingText = text.slice(lastIndex)
+    parts.push(<span key={`${keyPrefix}-${lastIndex}`}>{renderer(remainingText)}</span>)
+  }
+
+  return parts.length > 0 ? parts : [<span key={`${keyPrefix}-0`}>{renderer(text)}</span>]
+}
+
+// Message formatting utilities
+interface FormatToken {
+  type: 'text' | 'bold' | 'italic' | 'boldItalic' | 'code' | 'codeBlock' | 'strikethrough' | 'spoiler' | 'quote'
+  content: string
+  language?: string
+}
+
+function parseMessageFormat(text: string): FormatToken[] {
+  const tokens: FormatToken[] = []
+  let i = 0
+  
+  while (i < text.length) {
+    // Check for code block (```)
+    if (text.slice(i, i + 3) === '```') {
+      let end = text.indexOf('```', i + 3)
+      if (end === -1) {
+        // No closing ```, treat as regular text
+        tokens.push({ type: 'text', content: text.slice(i) })
+        break
+      }
+      const codeContent = text.slice(i + 3, end)
+      // Check for language specification (e.g., ```javascript)
+      const lines = codeContent.split('\n')
+      const firstLine = lines[0].trim()
+      let language = ''
+      let code = codeContent
+      if (firstLine && !firstLine.includes(' ') && lines.length > 1) {
+        language = firstLine
+        code = lines.slice(1).join('\n')
+      }
+      tokens.push({ type: 'codeBlock', content: code, language })
+      i = end + 3
+      continue
+    }
+    
+    // Check for inline code (`)
+    if (text[i] === '`') {
+      const end = text.indexOf('`', i + 1)
+      if (end === -1) {
+        tokens.push({ type: 'text', content: text.slice(i) })
+        break
+      }
+      tokens.push({ type: 'code', content: text.slice(i + 1, end) })
+      i = end + 1
+      continue
+    }
+    
+    // Check for spoiler (||)
+    if (text.slice(i, i + 2) === '||') {
+      const end = text.indexOf('||', i + 2)
+      if (end === -1) {
+        tokens.push({ type: 'text', content: text.slice(i) })
+        break
+      }
+      tokens.push({ type: 'spoiler', content: text.slice(i + 2, end) })
+      i = end + 2
+      continue
+    }
+    
+    // Check for strikethrough (~~)
+    if (text.slice(i, i + 2) === '~~') {
+      const end = text.indexOf('~~', i + 2)
+      if (end === -1) {
+        tokens.push({ type: 'text', content: text.slice(i) })
+        break
+      }
+      tokens.push({ type: 'strikethrough', content: text.slice(i + 2, end) })
+      i = end + 2
+      continue
+    }
+    
+    // Check for bold italic (***)
+    if (text.slice(i, i + 3) === '***') {
+      const end = text.indexOf('***', i + 3)
+      if (end === -1) {
+        tokens.push({ type: 'text', content: text.slice(i) })
+        break
+      }
+      tokens.push({ type: 'boldItalic', content: text.slice(i + 3, end) })
+      i = end + 3
+      continue
+    }
+    
+    // Check for italic (**)
+    if (text.slice(i, i + 2) === '**') {
+      const end = text.indexOf('**', i + 2)
+      if (end === -1) {
+        tokens.push({ type: 'text', content: text.slice(i) })
+        break
+      }
+      tokens.push({ type: 'italic', content: text.slice(i + 2, end) })
+      i = end + 2
+      continue
+    }
+    
+    // Check for bold (*)
+    if (text[i] === '*') {
+      const end = text.indexOf('*', i + 1)
+      if (end === -1) {
+        tokens.push({ type: 'text', content: text.slice(i) })
+        break
+      }
+      tokens.push({ type: 'bold', content: text.slice(i + 1, end) })
+      i = end + 1
+      continue
+    }
+    
+    // Check for quote (> at start of line)
+    if ((i === 0 || text[i - 1] === '\n') && text[i] === '>') {
+      // Find end of line
+      let end = text.indexOf('\n', i)
+      if (end === -1) end = text.length
+      const quoteContent = text.slice(i + 1, end).trim()
+      tokens.push({ type: 'quote', content: quoteContent })
+      i = end
+      continue
+    }
+    
+    // Regular text - collect until next special character
+    let textEnd = i + 1
+    while (textEnd < text.length) {
+      const char = text[textEnd]
+      const twoChar = text.slice(textEnd, textEnd + 2)
+      const threeChar = text.slice(textEnd, textEnd + 3)
+      
+      if (char === '`' || char === '*' || twoChar === '~~' || twoChar === '||' || threeChar === '```') {
+        break
+      }
+      if ((textEnd === 0 || text[textEnd - 1] === '\n') && char === '>') {
+        break
+      }
+      textEnd++
+    }
+    
+    tokens.push({ type: 'text', content: text.slice(i, textEnd) })
+    i = textEnd
+  }
+  
+  return tokens
 }
 
 function MessageEmbeds({ content }: { content: string }): React.ReactElement | null {
@@ -180,6 +402,64 @@ function isWsServerJoined(msg: WsMessage): msg is { type: 'server_joined'; serve
     typeof server.name === 'string' &&
     typeof server.owner === 'string' &&
     Array.isArray(server.channels)
+  )
+}
+
+// Avatar component with status indicator
+function AvatarWithStatus({
+  avatar,
+  avatar_type,
+  avatar_data,
+  user_status,
+  size = 'md',
+  showStatus = true,
+}: {
+  avatar?: string
+  avatar_type?: string
+  avatar_data?: string | null
+  user_status?: 'online' | 'away' | 'busy' | 'offline'
+  size?: 'sm' | 'md' | 'lg' | 'xl'
+  showStatus?: boolean
+}) {
+  const sizeClasses = {
+    sm: 'h-6 w-6 text-sm',
+    md: 'h-8 w-8 text-lg',
+    lg: 'h-12 w-12 text-2xl',
+    xl: 'h-20 w-20 text-4xl',
+  }
+
+  const statusSizeClasses = {
+    sm: 'h-2 w-2',
+    md: 'h-2.5 w-2.5',
+    lg: 'h-3 w-3',
+    xl: 'h-4 w-4',
+  }
+
+  const statusColorClasses = {
+    online: 'bg-green-500',
+    away: 'bg-yellow-500',
+    busy: 'bg-red-500',
+    offline: 'bg-gray-500',
+  }
+
+  console.log('AvatarWithStatus render:', { user_status, showStatus, hasRing: showStatus && user_status })
+
+  return (
+    <div className="relative inline-block">
+      <span className={`flex ${sizeClasses[size]} items-center justify-center overflow-hidden rounded-full bg-slate-700`}>
+        {avatar_type === 'image' && avatar_data ? (
+          <img src={avatar_data} alt="Avatar" className="h-full w-full object-cover" />
+        ) : (
+          <>{avatar ?? '👤'}</>
+        )}
+      </span>
+      {showStatus && user_status && (
+        <span
+          className={`absolute bottom-0 right-0 ${statusSizeClasses[size]} ${statusColorClasses[user_status]} rounded-full border-2 border-slate-950`}
+          title={user_status}
+        />
+      )}
+    </div>
   )
 }
 
@@ -347,8 +627,9 @@ function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950">
-      <div className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4 py-10">
+    <div className="relative min-h-screen bg-slate-950">
+      <div className="absolute inset-0 bg-cover bg-center bg-no-repeat blur-sm" style={{ backgroundImage: 'url(/login-background.png)' }} />
+      <div className="relative mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4 py-10">
         <div className="w-full max-w-md">
           <div className="mb-6">
             <div className="text-xs font-medium text-sky-200/70">Decentra</div>
@@ -410,9 +691,6 @@ function LoginPage() {
               >
                 Forgot Password?
               </button>
-              <a className="text-slate-300 hover:text-slate-200" href="/static/login.html">
-                Legacy Login
-              </a>
               <button
                 type="button"
                 className="text-slate-300 hover:text-slate-200"
@@ -937,6 +1215,10 @@ function ChatPage() {
   const [serverName, setServerName] = useState('')
   const [channelName, setChannelName] = useState('')
   const [channelType, setChannelType] = useState<'text' | 'voice'>('text')
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>('')
+  const [categoryName, setCategoryName] = useState('')
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null)
+  const [editingCategoryName, setEditingCategoryName] = useState('')
   const [dmUsername, setDmUsername] = useState('')
   const [joinInviteCode, setJoinInviteCode] = useState('')
   const [lastInviteCode, setLastInviteCode] = useState<string | null>(null)
@@ -990,6 +1272,12 @@ function ChatPage() {
   const [isVoiceMuted, setIsVoiceMuted] = useState(false)
   const [isVideoEnabled, setIsVideoEnabled] = useState(false)
   const [isScreenSharing, setIsScreenSharing] = useState(false)
+
+  // Mention autocomplete state
+  const [showMentionAutocomplete, setShowMentionAutocomplete] = useState(false)
+  const [mentionSearch, setMentionSearch] = useState('')
+  const [mentionStartPos, _setMentionStartPos] = useState<number>(0)
+  const [selectedMentionIndex, setSelectedMentionIndex] = useState(0)
   // const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
   // const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([])
   // const [speakerDevices, setSpeakerDevices] = useState<MediaDeviceInfo[]>([])
@@ -1002,12 +1290,54 @@ function ChatPage() {
   // Account settings state
   const [profileBio, setProfileBio] = useState('')
   const [profileStatus, setProfileStatus] = useState('')
+  const [userStatus, setUserStatus] = useState<'online' | 'away' | 'busy' | 'offline'>('online')
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null)
   const [twoFASetup, setTwoFASetup] = useState<{ secret: string; qr_code: string; backup_codes: string[] } | null>(null)
   const [twoFACode, setTwoFACode] = useState('')
+  
+  // Role management state
+  const [serverRoles, setServerRoles] = useState<Record<string, any[]>>({})
+  const [selectedRole, setSelectedRole] = useState<any | null>(null)
+  const [isCreateRoleOpen, setIsCreateRoleOpen] = useState(false)
+  const [roleName, setRoleName] = useState('')
+  const [roleColor, setRoleColor] = useState('#99AAB5')
+  const [rolePermissions, setRolePermissions] = useState<string[]>([])
+  const [memberRoles, setMemberRoles] = useState<Record<string, any[]>>({})
+  const [isViewingMemberRoles, setIsViewingMemberRoles] = useState(false)
+  const [selectedMemberForRole, setSelectedMemberForRole] = useState<string | null>(null)
+  
+  // Ban management state
+  const [serverBans, setServerBans] = useState<Record<string, any[]>>({})
+  const [isViewingBans, setIsViewingBans] = useState(false)
+  const [banUsername, setBanUsername] = useState('')
+  const [banReason, setBanReason] = useState('')
   const [disable2FAPassword, setDisable2FAPassword] = useState('')
   const [disable2FACode, setDisable2FACode] = useState('')
   const [notificationMode, setNotificationMode] = useState<'all' | 'mentions' | 'none'>('all')
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default')
+  const [newEmail, setNewEmail] = useState('')
+  const [emailPassword, setEmailPassword] = useState('')
+  const [emailChangeStatus, setEmailChangeStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null)
+  const [newUsername, setNewUsername] = useState('')
+  const [usernamePassword, setUsernamePassword] = useState('')
+  const [usernameChangeStatus, setUsernameChangeStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null)
+  
+  // Reply state
+  const [replyingTo, setReplyingTo] = useState<WsChatMessage | null>(null)
+
+  // Automation state
+  const [scheduledMessages, setScheduledMessages] = useState<any[]>([])
+  const [scheduleContent, setScheduleContent] = useState('')
+  const [scheduleChannel, setScheduleChannel] = useState('')
+  const [scheduleDateTime, setScheduleDateTime] = useState('')
+  const [pollQuestion, setPollQuestion] = useState('')
+  const [pollOptions, setPollOptions] = useState(['', ''])
+  const [pollAllowMultiple, setPollAllowMultiple] = useState(false)
+  const [pollExpiresHours, setPollExpiresHours] = useState<number | null>(null)
+  const [welcomeEnabled, setWelcomeEnabled] = useState(false)
+  const [welcomeMessage, setWelcomeMessage] = useState('Welcome {user} to the server!')
+  const [welcomeChannel, setWelcomeChannel] = useState('')
+  const [isViewingAutomations, setIsViewingAutomations] = useState(false)
 
   const pushToast = useToastStore((s) => s.push)
 
@@ -1038,9 +1368,118 @@ function ChatPage() {
     if (wsClient.readyState !== WebSocket.OPEN) return
 
     if (ctx.kind === 'server') {
+      // Load both history and emojis at the same time
       wsClient.getChannelHistory({ type: 'get_channel_history', server_id: ctx.serverId, channel_id: ctx.channelId })
+      loadServerEmojis(ctx.serverId)
     } else if (ctx.kind === 'dm') {
       wsClient.getDmHistory({ type: 'get_dm_history', dm_id: ctx.dmId })
+    }
+  }
+
+  const clearUnreadForContext = (ctx: ChatContext) => {
+    const prev = useAppStore.getState().init
+    if (!prev) return
+
+    if (ctx.kind === 'dm') {
+      // Clear DM unread count
+      const updatedDms = prev.dms?.map((dm) => {
+        if (dm.id === ctx.dmId) {
+          return {
+            ...dm,
+            unread_count: 0,
+            has_mention: false
+          }
+        }
+        return dm
+      })
+      setInit({ ...prev, dms: updatedDms })
+    } else if (ctx.kind === 'server') {
+      // Clear channel unread count
+      const updatedServers = prev.servers?.map((server) => {
+        if (server.id === ctx.serverId) {
+          const channelUnreads = { ...(server.channel_unreads ?? {}) }
+          channelUnreads[ctx.channelId] = {
+            unread_count: 0,
+            has_mention: false
+          }
+          
+          // Recalculate total server unreads
+          let totalUnread = 0
+          let hasAnyMention = false
+          Object.values(channelUnreads).forEach((ch: any) => {
+            totalUnread += ch.unread_count ?? 0
+            if (ch.has_mention) hasAnyMention = true
+          })
+          
+          return {
+            ...server,
+            unread_count: totalUnread,
+            has_mention: hasAnyMention,
+            channel_unreads: channelUnreads
+          }
+        }
+        return server
+      })
+      setInit({ ...prev, servers: updatedServers })
+    }
+  }
+
+  const handleSearchResultClick = (result: SearchResult) => {
+    // Navigate to the context where the message is
+    if (result.context_type === 'dm') {
+      const dm = init?.dms?.find(d => d.id === result.context_id)
+      if (dm) {
+        const next: ChatContext = { kind: 'dm', dmId: dm.id, username: dm.username }
+        selectContext(next)
+        requestHistoryFor(next)
+        setSelectedServerId(null)
+        setIsDmSidebarOpen(true)
+        
+        // Scroll to message after a short delay to allow messages to load
+        setTimeout(() => {
+          const messageElement = document.getElementById(`message-${result.id}`)
+          if (messageElement) {
+            messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            // Highlight the message briefly
+            messageElement.classList.add('bg-sky-500/20')
+            setTimeout(() => {
+              messageElement.classList.remove('bg-sky-500/20')
+            }, 2000)
+          }
+        }, 500)
+      }
+    } else if (result.context_type === 'server' && result.context_id) {
+      const [serverId, channelId] = result.context_id.split('/')
+      const server = init?.servers?.find(s => s.id === serverId)
+      
+      if (server) {
+        const channel = server.channels?.find(c => c.id === channelId)
+        if (channel) {
+          setSelectedServerId(serverId)
+          setIsDmSidebarOpen(false)
+          const next: ChatContext = { kind: 'server', serverId, channelId }
+          selectContext(next)
+          requestHistoryFor(next)
+          
+          // Request server members if not already loaded
+          if (!serverMembers[serverId]) {
+            wsClient.getServerMembers({ type: 'get_server_members', server_id: serverId })
+          }
+          
+          // Scroll to message after a short delay to allow messages to load
+          setTimeout(() => {
+            const messageElement = document.getElementById(`message-${result.id}`)
+            if (messageElement) {
+              messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              // Highlight the message briefly
+              messageElement.classList.add('bg-sky-500/20')
+              setTimeout(() => {
+                messageElement.classList.remove('bg-sky-500/20')
+              }, 2000)
+            }
+          }, 500)
+        }
+      }
     }
   }
 
@@ -1054,67 +1493,42 @@ function ChatPage() {
     requestHistoryFor(next)
   }
 
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [email, setEmail] = useState('')
+  const [inviteCode, setInviteCode] = useState('')
+  const [verificationCode, setVerificationCode] = useState('')
+  const [needsVerification, setNeedsVerification] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  // Check notification permission on mount
   useEffect(() => {
-    const stored = getStoredAuth()
-    if (stored.token && stored.username && !authToken) {
-      setAuth({ token: stored.token, username: stored.username })
+    if (notificationManager.isSupported()) {
+      setNotificationPermission(notificationManager.getPermission())
     }
-  }, [authToken, setAuth])
+  }, [])
 
   useEffect(() => {
-    reconnectRef.current.stopped = false
-
-    const scheduleReconnect = () => {
-      if (reconnectRef.current.stopped) return
-      clearReconnectTimer()
-
-      const delay = backoffMs(reconnectRef.current.attempt)
-      reconnectRef.current.attempt += 1
-      setConnectionStatus('connecting')
-      reconnectRef.current.timer = window.setTimeout(() => {
-        connectAndAuth()
-      }, delay)
-    }
-
-    const connectAndAuth = () => {
-      if (reconnectRef.current.stopped) return
-
-      clearReconnectTimer()
-      setConnectionStatus('connecting')
-
-      const ws = wsClient.connect()
-
-      const doAuth = () => {
-        if (reconnectRef.current.stopped) return
-        setConnectionStatus('connected')
-        reconnectRef.current.attempt = 0
-        const token = useAppStore.getState().authToken ?? getStoredAuth().token
-        if (token) {
-          wsClient.authenticateWithToken({ type: 'token', token })
-        }
+    const unsubscribe = wsClient.onMessage((msg: WsMessage) => {
+      if (msg.type === 'auth_error') {
+        setIsSubmitting(false)
+        setNeedsVerification(false)
+        const message = typeof msg.message === 'string' ? msg.message : 'Authentication failed'
+        setLastAuthError(message)
       }
-
-      if (ws.readyState === WebSocket.OPEN) {
-        doAuth()
-      } else {
-        ws.onopen = () => doAuth()
+      if (msg.type === 'verification_required') {
+        setIsSubmitting(false)
+        setNeedsVerification(true)
+        setLastAuthError(null)
       }
-    }
-
-    const unsubMsg = wsClient.onMessage((msg: WsMessage) => {
       if (msg.type === 'auth_success') {
+        setIsSubmitting(false)
+        const u = username.trim()
+        if (!u) return
         const token = typeof msg.token === 'string' ? msg.token : ''
-        const u = authUsername ?? getStoredAuth().username
-        if (token && u) {
-          setStoredAuth({ token, username: u })
-          setAuth({ token, username: u })
-        }
-
-        // Legacy client calls sync after auth; do the same.
-        try {
-          wsClient.requestSync()
-        } catch {
-          // ignore
+        if (!token) {
+          setLastAuthError('Signup succeeded but no token was returned')
+          return
         }
 
         // Request admin settings (includes announcement info for all users)
@@ -1124,12 +1538,20 @@ function ChatPage() {
           // ignore
         }
 
+        // Request license info
+        try {
+          wsClient.getLicenseInfo()
+        } catch {
+          // ignore
+        }
+
         // Re-request history for the currently selected context after re-auth.
         requestHistoryFor(useAppStore.getState().selectedContext)
       }
       if (msg.type === 'init') {
-        const initUsername = typeof msg.username === 'string' ? msg.username : authUsername ?? ''
+        const initUsername = typeof msg.username === 'string' ? msg.username : username.trim()
         if (!initUsername) return
+        console.log('Init message full:', JSON.stringify(msg, null, 2))
         setInit({
           username: initUsername,
           is_admin: msg.is_admin,
@@ -1139,12 +1561,22 @@ function ChatPage() {
           avatar_data: msg.avatar_data,
           bio: msg.bio,
           status_message: msg.status_message,
+          user_status: msg.user_status,
           servers: msg.servers,
           dms: msg.dms,
           friends: msg.friends,
           friend_requests_sent: msg.friend_requests_sent,
           friend_requests_received: msg.friend_requests_received,
         })
+      }
+    })
+
+        // Sync user status
+        console.log('Init message received, user_status:', msg.user_status)
+        if (msg.user_status) {
+          setUserStatus(msg.user_status)
+          console.log('Set userStatus to:', msg.user_status)
+        }
 
         // If the user hasn't selected a context yet, default to first channel.
         if (useAppStore.getState().selectedContext.kind === 'global') {
@@ -1192,16 +1624,13 @@ function ChatPage() {
           setScreenShareFramerate(devices.screenShareFramerate)
         }
       }
-      if (msg.type === 'data_synced') {
-        const prev = useAppStore.getState().init
-        if (!prev) return
-        setInit({
-          ...prev,
-          servers: msg.servers ?? prev.servers,
-          dms: msg.dms ?? prev.dms,
-          friends: msg.friends ?? prev.friends,
-          friend_requests_sent: msg.friend_requests_sent ?? prev.friend_requests_sent,
-          friend_requests_received: msg.friend_requests_received ?? prev.friend_requests_received,
+
+      const ws = wsClient.connect()
+      const sendVerify = () => {
+        wsClient.verifyEmail({
+          type: 'verify_email',
+          username: u,
+          code,
         })
       }
       if (msg.type === 'auth_error') {
@@ -1220,29 +1649,169 @@ function ChatPage() {
         setLastAuthError(message)
         pushToast({ kind: 'error', message })
         setIsLoadingInviteUsage(false)
-      }
-
-      if (msg.type === 'server_created') {
-        const prev = useAppStore.getState().init
-        if (prev) {
-          setInit({ ...prev, servers: [...(prev.servers ?? []), msg.server] })
+        // Set error status for email/username change forms if applicable
+        const lowerMsg = message.toLowerCase()
+        if (lowerMsg.includes('email')) {
+          setEmailChangeStatus({ type: 'error', message })
         }
-        // Select the new server's first channel if present
-        const firstChannel = msg.server.channels?.[0]
-        if (firstChannel) {
-          const next: ChatContext = { kind: 'server', serverId: msg.server.id, channelId: firstChannel.id }
-          selectContext(next)
-          requestHistoryFor(next)
+        if (lowerMsg.includes('username')) {
+          setUsernameChangeStatus({ type: 'error', message })
         }
       }
 
-      if (msg.type === 'channel_created') {
+      ws.onopen = () => {
+        sendVerify()
+      }
+    } else {
+      // Signup step
+      if (!u || !password || !email) {
+        setIsSubmitting(false)
+        setLastAuthError('Username, password, and email are required')
+        return
+      }
+
+      if (msg.type === 'category_created') {
         const prev = useAppStore.getState().init
         if (prev?.servers) {
           const nextServers = prev.servers.map((s) =>
-            s.id === msg.server_id ? { ...s, channels: [...(s.channels ?? []), msg.channel] } : s,
+            s.id === msg.server_id ? { ...s, categories: [...(s.categories ?? []), msg.category] } : s,
           )
           setInit({ ...prev, servers: nextServers })
+        }
+      }
+
+      if (msg.type === 'category_updated') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) =>
+            s.id === msg.server_id
+              ? { ...s, categories: (s.categories ?? []).map((cat) => (cat.id === msg.category_id ? { ...cat, name: msg.name } : cat)) }
+              : s,
+          )
+          setInit({ ...prev, servers: nextServers })
+        }
+      }
+
+      if (msg.type === 'category_deleted') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) =>
+            s.id === msg.server_id
+              ? {
+                  ...s,
+                  categories: (s.categories ?? []).filter((cat) => cat.id !== msg.category_id),
+                  channels: (s.channels ?? []).map((ch) => (ch.category_id === msg.category_id ? { ...ch, category_id: null } : ch))
+                }
+              : s,
+          )
+          setInit({ ...prev, servers: nextServers })
+        }
+      }
+
+      if (msg.type === 'category_positions_updated') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) => {
+            if (s.id === msg.server_id) {
+              const positionMap = new Map<string, number>(
+                msg.positions.map((p: { category_id: string; position: number }) => [p.category_id, p.position])
+              )
+              return {
+                ...s,
+                categories: (s.categories ?? [])
+                  .map((cat) => {
+                    const newPos = positionMap.get(cat.id)
+                    return newPos !== undefined ? { ...cat, position: newPos } : cat
+                  })
+                  .sort((a, b) => {
+                    const aPos = typeof a.position === 'number' ? a.position : 0
+                    const bPos = typeof b.position === 'number' ? b.position : 0
+                    return aPos - bPos
+                  })
+              }
+            }
+            return s
+          })
+          setInit({ ...prev, servers: nextServers })
+        }
+      }
+
+      if (msg.type === 'channel_positions_updated') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) => {
+            if (s.id === msg.server_id) {
+              const positionMap = new Map<string, { position: number; category_id?: string | null }>(
+                msg.positions.map((p: { channel_id: string; position: number; category_id?: string | null }) => [
+                  p.channel_id,
+                  { position: p.position, category_id: p.category_id }
+                ])
+              )
+              return {
+                ...s,
+                channels: (s.channels ?? [])
+                  .map((ch) => {
+                    const update = positionMap.get(ch.id)
+                    if (update) {
+                      return {
+                        ...ch,
+                        position: update.position,
+                        category_id: update.category_id !== undefined ? update.category_id : ch.category_id
+                      }
+                    }
+                    return ch
+                  })
+                  .sort((a, b) => {
+                    const aPos = typeof a.position === 'number' ? a.position : 0
+                    const bPos = typeof b.position === 'number' ? b.position : 0
+                    return aPos - bPos
+                  })
+              }
+            }
+            return s
+          })
+          setInit({ ...prev, servers: nextServers })
+        }
+      }
+
+      if (msg.type === 'channel_category_updated') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) =>
+            s.id === msg.server_id
+              ? {
+                  ...s,
+                  channels: (s.channels ?? []).map((ch) =>
+                    ch.id === msg.channel_id ? { ...ch, category_id: msg.category_id } : ch
+                  )
+                }
+              : s
+          )
+          setInit({ ...prev, servers: nextServers })
+        }
+      }
+
+      if (msg.type === 'channel_deleted') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) =>
+            s.id === msg.server_id
+              ? { ...s, channels: (s.channels ?? []).filter((ch) => ch.id !== msg.channel_id) }
+              : s
+          )
+          setInit({ ...prev, servers: nextServers })
+          
+          // If the current channel was deleted, switch to the first available channel
+          const currentCtx = useAppStore.getState().selectedContext
+          if (currentCtx.kind === 'server' && currentCtx.serverId === msg.server_id && currentCtx.channelId === msg.channel_id) {
+            const updatedServer = nextServers.find(s => s.id === msg.server_id)
+            if (updatedServer && updatedServer.channels && updatedServer.channels.length > 0) {
+              const firstChannel = updatedServer.channels[0]
+              const next: ChatContext = { kind: 'server', serverId: msg.server_id, channelId: firstChannel.id }
+              selectContext(next)
+              requestHistoryFor(next)
+            }
+          }
         }
       }
 
@@ -1258,22 +1827,32 @@ function ChatPage() {
         requestHistoryFor(next)
       }
 
-      if (msg.type === 'invite_code') {
-        setLastInviteCode(msg.code)
-        pushToast({ kind: 'success', message: msg.message ?? `Invite code: ${msg.code}` })
+      if (ws.readyState === WebSocket.OPEN) {
+        sendSignup()
+        return
       }
 
-      if (msg.type === 'server_invite_code') {
-        setLastInviteCode(msg.code)
-        pushToast({ kind: 'success', message: msg.message ?? `Server invite: ${msg.code}` })
+      ws.onopen = () => {
+        sendSignup()
       }
+    }
+  }
 
-      if (msg.type === 'server_invite_usage') {
-        setInviteUsageServerId(msg.server_id)
-        setInviteUsageLogs(msg.usage_logs ?? [])
-        setIsLoadingInviteUsage(false)
-        pushToast({ kind: 'info', message: `Invite usage loaded (${(msg.usage_logs ?? []).length})` })
-      }
+  return (
+    <div className="min-h-screen bg-slate-950">
+      <div className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4 py-10">
+        <div className="w-full max-w-md">
+          <div className="mb-6">
+            <div className="text-xs font-medium text-sky-200/70">Decentra</div>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">
+              {needsVerification ? 'Verify Email' : 'Sign Up'}
+            </h1>
+            <p className="mt-2 text-sm text-slate-300">
+              {needsVerification
+                ? 'Enter the verification code sent to your email.'
+                : 'Create a new account to get started.'}
+            </p>
+          </div>
 
       if (msg.type === 'server_members') {
         setServerMembers((prev) => ({
@@ -1291,32 +1870,156 @@ function ChatPage() {
         }
         pushToast({ kind: 'success', message: `Joined server: ${msg.server.name}` })
 
-        const firstChannel = msg.server.channels?.[0]
-        if (firstChannel) {
-          const next: ChatContext = { kind: 'server', serverId: msg.server.id, channelId: firstChannel.id }
-          selectContext(next)
-          requestHistoryFor(next)
-        }
-      }
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="mt-1 inline-flex items-center justify-center rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isSubmitting ? 'Processing…' : needsVerification ? 'Verify Email' : 'Create Account'}
+              </button>
+            </form>
 
-      if (msg.type === 'history') {
-        setMessagesForContext({ kind: 'global' }, msg.messages ?? [])
-      }
+            <div className="mt-4 flex flex-wrap gap-3 text-sm">
+              <Link className="text-sky-300 hover:text-sky-200" to="/login">
+                Already have an account? Sign In
+              </Link>
+              {needsVerification && (
+                <button
+                  type="button"
+                  className="text-slate-300 hover:text-slate-200"
+                  onClick={() => {
+                    setNeedsVerification(false)
+                    setVerificationCode('')
+                    setLastAuthError(null)
+                  }}
+                >
+                  Change Username/Email
+                </button>
+              )}
+            </div>
 
-      if (msg.type === 'channel_history') {
-        setMessagesForContext({ kind: 'server', serverId: msg.server_id, channelId: msg.channel_id }, msg.messages ?? [])
-      }
+            {lastAuthError ? (
+              <div className="mt-4 rounded-xl border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-sm text-rose-50">
+                {lastAuthError}
+              </div>
+            ) : null}
+          </div>
 
-      if (msg.type === 'dm_history') {
-        setMessagesForContext({ kind: 'dm', dmId: msg.dm_id }, msg.messages ?? [])
-      }
+          <div className="mt-6 text-xs text-slate-400">
+            Backend via nginx proxy: <span className="text-slate-300">/api</span> and <span className="text-slate-300">/ws</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
 
       if (isWsChatMessage(msg)) {
         appendMessage(msg)
+        
+        // Update unread counts if message is not from current user and not in selected context
+        const currentUsername = useAppStore.getState().init?.username
+        const currentContext = useAppStore.getState().selectedContext
+        const isOwnMessage = msg.username === currentUsername
+        
+        if (!isOwnMessage) {
+          const prev = useAppStore.getState().init
+          if (prev) {
+            // Check if message is in current context
+            let isInCurrentContext = false
+            if (msg.context === 'dm' && currentContext.kind === 'dm') {
+              isInCurrentContext = msg.context_id === currentContext.dmId
+            } else if (msg.context === 'server' && currentContext.kind === 'server') {
+              const contextId = `${currentContext.serverId}/${currentContext.channelId}`
+              isInCurrentContext = msg.context_id === contextId
+            }
+            
+            // Only increment unread if not in current context
+            if (!isInCurrentContext) {
+              const isMention = msg.mentions?.includes(currentUsername ?? '') ?? false
+              
+              if (msg.context === 'dm' && msg.context_id) {
+                // Update DM unread count
+                const updatedDms = prev.dms?.map((dm) => {
+                  if (dm.id === msg.context_id) {
+                    return {
+                      ...dm,
+                      unread_count: (dm.unread_count ?? 0) + 1,
+                      has_mention: dm.has_mention || isMention
+                    }
+                  }
+                  return dm
+                })
+                setInit({ ...prev, dms: updatedDms })
+              } else if (msg.context === 'server' && msg.context_id) {
+                // Update server/channel unread count
+                const [serverId, channelId] = msg.context_id.split('/')
+                const updatedServers = prev.servers?.map((server) => {
+                  if (server.id === serverId) {
+                    const channelUnreads = { ...(server.channel_unreads ?? {}) }
+                    channelUnreads[channelId] = {
+                      unread_count: ((channelUnreads[channelId]?.unread_count ?? 0) + 1),
+                      has_mention: (channelUnreads[channelId]?.has_mention || isMention)
+                    }
+                    
+                    // Calculate total server unreads
+                    let totalUnread = 0
+                    let hasAnyMention = false
+                    Object.values(channelUnreads).forEach((ch: any) => {
+                      totalUnread += ch.unread_count ?? 0
+                      if (ch.has_mention) hasAnyMention = true
+                    })
+                    
+                    return {
+                      ...server,
+                      unread_count: totalUnread,
+                      has_mention: hasAnyMention,
+                      channel_unreads: channelUnreads
+                    }
+                  }
+                  return server
+                })
+                setInit({ ...prev, servers: updatedServers })
+              }
+            }
+          }
+        }
+        
+        // Load emojis for the server this message is from
+        if (msg.context === 'server' && msg.context_id) {
+          const serverId = msg.context_id.split('/')[0]
+          if (!serverEmojis[serverId] && wsClient.readyState === WebSocket.OPEN) {
+            loadServerEmojis(serverId)
+          }
+        }
+        
+        // Show browser notification for new messages based on notification mode
+        const shouldNotify = currentUsername && msg.username !== currentUsername
+        
+        if (shouldNotify && notificationMode === 'all') {
+          console.log('[App] Showing message notification for:', msg.username, 'mode:', notificationMode)
+          const contextType = msg.context === 'global' ? 'global' : msg.context === 'server' ? 'server' : 'dm'
+          notificationManager.showMessageNotification(
+            msg.username || 'Someone',
+            msg.content || '',
+            contextType
+          )
+        } else if (shouldNotify) {
+          console.log('[App] Skipping message notification, mode:', notificationMode, 'shouldNotify:', shouldNotify)
+        }
       }
 
       if (msg.type === 'admin_settings') {
         setAdminSettings(msg.settings || {})
+      }
+
+      if (msg.type === 'license_info') {
+        useLicenseStore.getState().setLicenseInfo(msg.data)
+      }
+      if (msg.type === 'license_updated') {
+        // The broadcast may contain partial license data (e.g., missing is_admin/customer/expires_at).
+        // Instead of overwriting the store with a partial payload, request a full license_info refresh.
+        wsClient.send({ type: 'get_license_info' })
       }
 
       if (msg.type === 'settings_saved') {
@@ -1330,6 +2033,151 @@ function ChatPage() {
           pushToast({ kind: 'success', message: msg.message || 'SMTP test successful' })
         } else {
           pushToast({ kind: 'error', message: msg.message || 'SMTP test failed' })
+        }
+      }
+      
+      // Role management messages
+      if (msg.type === 'server_roles') {
+        setServerRoles((prev) => ({
+          ...prev,
+          [msg.server_id]: msg.roles ?? [],
+        }))
+      }
+      
+      if (msg.type === 'role_created') {
+        pushToast({ kind: 'success', message: 'Role created successfully' })
+        if (selectedServerId) {
+          wsClient.send({ type: 'get_server_roles', server_id: selectedServerId })
+        }
+      }
+      
+      if (msg.type === 'role_updated') {
+        pushToast({ kind: 'success', message: 'Role updated successfully' })
+        if (selectedServerId) {
+          wsClient.send({ type: 'get_server_roles', server_id: selectedServerId })
+        }
+      }
+      
+      if (msg.type === 'role_deleted') {
+        pushToast({ kind: 'success', message: 'Role deleted successfully' })
+        if (selectedServerId) {
+          wsClient.send({ type: 'get_server_roles', server_id: selectedServerId })
+        }
+      }
+      
+      if (msg.type === 'role_assigned') {
+        pushToast({ kind: 'success', message: 'Role assigned successfully' })
+      }
+      
+      if (msg.type === 'role_removed') {
+        pushToast({ kind: 'success', message: 'Role removed successfully' })
+      }
+      
+      if (msg.type === 'user_roles') {
+        setMemberRoles((prev) => ({
+          ...prev,
+          [`${msg.server_id}:${msg.username}`]: msg.roles ?? [],
+        }))
+      }
+      
+      // Ban management messages
+      if (msg.type === 'server_bans') {
+        setServerBans((prev) => ({
+          ...prev,
+          [msg.server_id]: msg.bans ?? [],
+        }))
+      }
+      
+      // Automation messages
+      if (msg.type === 'scheduled_messages') {
+        setScheduledMessages(msg.messages || [])
+      }
+      
+      if (msg.type === 'scheduled_message_created') {
+        pushToast({ kind: 'success', message: 'Message scheduled successfully' })
+        if (selectedServerId) {
+          wsClient.send({ type: 'get_scheduled_messages', server_id: selectedServerId })
+        }
+      }
+      
+      if (msg.type === 'scheduled_message_deleted') {
+        pushToast({ kind: 'success', message: 'Scheduled message deleted' })
+      }
+      
+      if (msg.type === 'poll_created' || msg.type === 'poll_updated') {
+        // Polls are shown as messages, no special handling needed
+      }
+      
+      if (msg.type === 'welcome_message') {
+        const welcome = msg.welcome || {}
+        setWelcomeEnabled(welcome.enabled || false)
+        setWelcomeMessage(welcome.message || 'Welcome {user} to the server!')
+        setWelcomeChannel(welcome.channel_id || '')
+      }
+      
+      if (msg.type === 'welcome_message_updated') {
+        pushToast({ kind: 'success', message: 'Welcome message updated' })
+      }
+      
+      if (msg.type === 'admin_signup_notification') {
+        pushToast({ 
+          kind: 'info', 
+          message: `New user signup: ${msg.username}${msg.email ? ` (${msg.email})` : ''}` 
+        })
+      }
+      
+      if (msg.type === 'member_banned') {
+        pushToast({ kind: 'info', message: `${msg.username} has been banned` })
+        if (msg.server_id && selectedServerId === msg.server_id) {
+          // Refresh bans list if viewing
+          wsClient.send({ type: 'get_server_bans', server_id: msg.server_id })
+          // Refresh members list
+          wsClient.send({ type: 'get_server_members', server_id: msg.server_id })
+        }
+      }
+      
+      if (msg.type === 'member_unbanned') {
+        pushToast({ kind: 'success', message: `${msg.username} has been unbanned` })
+        if (msg.server_id && selectedServerId === msg.server_id) {
+          wsClient.send({ type: 'get_server_bans', server_id: msg.server_id })
+        }
+      }
+      
+      if (msg.type === 'banned_from_server') {
+        pushToast({ kind: 'error', message: `You have been banned from the server. Reason: ${msg.reason || 'No reason provided'}` })
+        // Remove server from list
+        const prev = useAppStore.getState().init
+        if (prev && msg.server_id) {
+          const servers = (prev.servers ?? []).filter((s) => s.id !== msg.server_id)
+          setInit({ ...prev, servers })
+        }
+      }
+      
+      if (msg.type === 'mention_notification') {
+        console.log('[App] Received mention_notification:', msg)
+        const mentionedBy = msg.mentioned_by || 'Someone'
+        const content = msg.content || ''
+        const preview = content.length > 50 ? content.substring(0, 50) + '...' : content
+        pushToast({ kind: 'info', message: `${mentionedBy} mentioned you: "${preview}"` })
+        
+        // Show browser notification if permission granted and mode allows
+        if (notificationMode !== 'none') {
+          console.log('[App] Showing mention notification, mode:', notificationMode)
+          notificationManager.showMentionNotification(mentionedBy, content, msg.context_type || 'global')
+        }
+      }
+      
+      if (msg.type === 'reply_notification') {
+        console.log('[App] Received reply_notification:', msg)
+        const repliedBy = msg.replied_by || 'Someone'
+        const content = msg.content || ''
+        const preview = content.length > 50 ? content.substring(0, 50) + '...' : content
+        pushToast({ kind: 'info', message: `${repliedBy} replied to your message: "${preview}"` })
+        
+        // Show browser notification if permission granted and mode allows
+        if (notificationMode !== 'none') {
+          console.log('[App] Showing reply notification, mode:', notificationMode)
+          notificationManager.showReplyNotification(repliedBy, content)
         }
       }
 
@@ -1393,6 +2241,83 @@ function ChatPage() {
         wsClient.requestSync()
       }
 
+      if (msg.type === 'user_status_changed') {
+        const { username, user_status } = msg
+        // Update status in init if it's the current user
+        const prev = useAppStore.getState().init
+        if (prev && prev.username === username) {
+          setInit({ ...prev, user_status })
+          setUserStatus(user_status)
+        }
+        // Update status in friends list
+        if (prev?.friends) {
+          const updatedFriends = prev.friends.map((f) =>
+            f.username === username ? { ...f, user_status } : f
+          )
+          setInit({ ...prev, friends: updatedFriends })
+        }
+        // Update status in DMs list
+        if (prev?.dms) {
+          const updatedDms = prev.dms.map((dm) =>
+            dm.username === username ? { ...dm, user_status } : dm
+          )
+          setInit({ ...prev, dms: updatedDms })
+        }
+      }
+
+      if (msg.type === 'email_changed') {
+        const prev = useAppStore.getState().init
+        if (prev) {
+          setInit({ ...prev, email: msg.email, email_verified: msg.email_verified })
+        }
+        setNewEmail('')
+        setEmailPassword('')
+        setEmailChangeStatus({ type: 'success', message: 'Email updated successfully' })
+      }
+
+      if (msg.type === 'username_changed') {
+        // Update auth token and username
+        const newToken = msg.token
+        const renamedUsername = msg.new_username
+        setStoredAuth({ token: newToken, username: renamedUsername })
+        setAuth({ token: newToken, username: renamedUsername })
+        const prev = useAppStore.getState().init
+        if (prev) {
+          setInit({ ...prev, username: renamedUsername })
+        }
+        setNewUsername('')
+        setUsernamePassword('')
+        setUsernameChangeStatus({ type: 'success', message: 'Username changed successfully' })
+      }
+
+      if (msg.type === 'user_renamed') {
+        const { old_username, new_username } = msg
+        const prev = useAppStore.getState().init
+        if (!prev) return
+        // Update friends list and DMs
+        const updateUsername = (list?: any[]) =>
+          list?.map((item: any) => {
+            const updated = { ...item }
+            if (updated.username === old_username) updated.username = new_username
+            if (updated.friend_username === old_username) updated.friend_username = new_username
+            return updated
+          }) || []
+
+        setInit({
+          ...prev,
+          friends: updateUsername(prev.friends),
+          friend_requests_sent: updateUsername(prev.friend_requests_sent),
+          friend_requests_received: updateUsername(prev.friend_requests_received),
+          dms: prev.dms?.map((dm: any) => {
+            const updated = { ...dm }
+            if (updated.username === old_username) {
+              updated.username = new_username
+            }
+            return updated
+          }) || [],
+        })
+      }
+
       if (msg.type === 'password_reset_requested') {
         pushToast({ kind: 'success', message: msg.message || 'Password reset email sent' })
       }
@@ -1424,10 +2349,35 @@ function ChatPage() {
       }
 
       if (msg.type === 'server_emojis') {
+        console.log('📦 Received server_emojis:', { server_id: msg.server_id, emoji_count: msg.emojis.length })
         setServerEmojis((prev) => ({
           ...prev,
           [msg.server_id]: msg.emojis,
         }))
+        
+        // Force re-render of all messages in this server by triggering messages refresh
+        // This ensures emojis render correctly when data arrives after messages
+        setTimeout(() => {
+          const store = useAppStore.getState()
+          Object.keys(store.messagesByContext).forEach((key) => {
+            // Only update contexts that belong to this server
+            if (key.startsWith(`server:${msg.server_id}/`)) {
+              const messages = store.messagesByContext[key]
+              if (messages && messages.length > 0) {
+                console.log(`🔄 Forcing re-render for context ${key} after emojis arrived`)
+                // Extract the context from the key and trigger a re-render
+                const [, contextId] = key.split(':', 2)
+                if (contextId && contextId.includes('/')) {
+                  const [serverId, channelId] = contextId.split('/', 2)
+                  setMessagesForContext(
+                    { kind: 'server', serverId, channelId },
+                    [...messages]
+                  )
+                }
+              }
+            }
+          })
+        }, 0)
       }
 
       if (msg.type === 'message_edited') {
@@ -1505,9 +2455,22 @@ function ChatPage() {
         // Update voice participants when someone joins/leaves
         if (msg.voice_members && Array.isArray(msg.voice_members)) {
           const participantUsernames = msg.voice_members.map((m: any) => m.username)
-          setVoiceParticipants(participantUsernames)
-          setIsInVoice(participantUsernames.includes(init?.username))
-          console.log('Updated voice participants:', participantUsernames)
+          const currentChannel = voiceChat?.getCurrentChannel()
+          const matchesCurrentChannel =
+            !!currentChannel?.server &&
+            !!currentChannel?.channel &&
+            msg.server_id === currentChannel.server &&
+            msg.channel_id === currentChannel.channel
+
+          if (matchesCurrentChannel) {
+            setVoiceParticipants(participantUsernames)
+            const isUserInVoice = participantUsernames.includes(init?.username)
+            setIsInVoice(isUserInVoice)
+            if (voiceChat) {
+              voiceChat.handleVoiceJoined(participantUsernames)
+            }
+            console.log('Updated voice participants:', participantUsernames)
+          }
         }
       }
 
@@ -1524,46 +2487,52 @@ function ChatPage() {
       }
 
       if (msg.type === 'webrtc_offer' && voiceChat) {
-        voiceChat.handleWebRTCOffer(msg.from_username, msg.offer)
+        const fromUsername = (msg as any).from_username ?? (msg as any).from
+        if (fromUsername) {
+          voiceChat.handleWebRTCOffer(fromUsername, msg.offer)
+        }
       }
 
       if (msg.type === 'webrtc_answer' && voiceChat) {
-        voiceChat.handleWebRTCAnswer(msg.from_username, msg.answer)
+        const fromUsername = (msg as any).from_username ?? (msg as any).from
+        if (fromUsername) {
+          voiceChat.handleWebRTCAnswer(fromUsername, msg.answer)
+        }
       }
 
       if (msg.type === 'webrtc_ice_candidate' && voiceChat) {
-        voiceChat.handleICECandidate(msg.from_username, msg.candidate)
+        const fromUsername = (msg as any).from_username ?? (msg as any).from
+        if (fromUsername) {
+          voiceChat.handleICECandidate(fromUsername, msg.candidate)
+        }
       }
     })
 
-    const unsubClose = wsClient.onClose(() => {
-      setConnectionStatus('disconnected')
-      scheduleReconnect()
-    })
-
-    const unsubErr = wsClient.onError(() => {
-      setConnectionStatus('disconnected')
-      scheduleReconnect()
-    })
-
-    connectAndAuth()
-
-    return () => {
-      reconnectRef.current.stopped = true
-      clearReconnectTimer()
-      unsubMsg()
-      unsubClose()
-      unsubErr()
-      wsClient.close()
-    }
-    // Intentionally mount-only: handlers pull latest state from the store.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
   useEffect(() => {
-    requestHistoryFor(selectedContext)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedKey])
+    if (!token) {
+      setErrorMessage('Invalid or missing reset token')
+    }
+  }, [token])
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setErrorMessage(null)
+    setSuccessMessage(null)
+
+    if (!token) {
+      setErrorMessage('Invalid or missing reset token')
+      return
+    }
+
+    if (newPassword.length < 8) {
+      setErrorMessage('Password must be at least 8 characters long')
+      return
+    }
+
+    if (newPassword !== confirmPassword) {
+      setErrorMessage('Passwords do not match')
+      return
+    }
 
   // Populate account settings when init data is available
   useEffect(() => {
@@ -1574,13 +2543,130 @@ function ChatPage() {
     }
   }, [init])
 
-  // Load server emojis when selected server changes
+  // Load server emojis when selected server changes and when component mounts
   useEffect(() => {
     if (selectedContext.kind === 'server' && wsClient.readyState === WebSocket.OPEN) {
+      // Always load emojis when context changes to ensure we have fresh data
+      console.log('🎯 Loading emojis for server:', selectedContext.serverId)
       loadServerEmojis(selectedContext.serverId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedContext])
+  }, [selectedContext, wsClient.readyState])
+
+  // Debug: Log whenever serverEmojis changes
+  useEffect(() => {
+    console.log('🔄 serverEmojis state updated:', Object.keys(serverEmojis).map(sid => ({ serverId: sid, count: serverEmojis[sid].length })))
+  }, [serverEmojis])
+
+  // Keep emojis for all visible servers in sync
+  useEffect(() => {
+    if (wsClient.readyState === WebSocket.OPEN && init?.servers) {
+      // Periodically ensure all server emojis are loaded
+      const serverIds = init.servers.map(s => s.id)
+      serverIds.forEach(serverId => {
+        // Only load if we don't have emojis for this server yet
+        if (!serverEmojis[serverId]) {
+          loadServerEmojis(serverId)
+        }
+      })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [init?.servers, wsClient.readyState])
+
+  // Debug logging for emoji state changes
+  useEffect(() => {
+    console.log('serverEmojis updated:', Object.keys(serverEmojis).map(key => ({ [key]: serverEmojis[key]?.length || 0 })))
+  }, [serverEmojis])
+
+  // Load server roles when server settings modal is opened
+  useEffect(() => {
+    if (isServerSettingsOpen && selectedServerId && wsClient.readyState === WebSocket.OPEN) {
+      loadServerRoles(selectedServerId)
+      loadServerBans(selectedServerId)
+      loadServerMembers(selectedServerId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isServerSettingsOpen, selectedServerId])
+
+  // Load member roles for the selected server
+  useEffect(() => {
+    if (selectedContext.kind === 'server' && wsClient.readyState === WebSocket.OPEN) {
+      const serverId = selectedContext.serverId
+      const members = serverMembers[serverId]
+      
+      if (members && members.length > 0) {
+        // Load roles for all members
+        members.forEach((member: any) => {
+          loadUserRoles(serverId, member.username)
+        })
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedContext, serverMembers])
+
+  // Helper function to get username style based on role color
+  const getUsernameStyle = (message: any) => {
+    if (message.role_color) {
+      return { color: message.role_color }
+    }
+    return {}
+  }
+
+  // Helper function to get the highest role color for a member
+  const getMemberRoleColor = (serverId: string, username: string) => {
+    const memberKey = `${serverId}:${username}`
+    const userRoles = memberRoles[memberKey] || []
+    
+    // Return the color of the first role (highest priority)
+    if (userRoles.length > 0 && userRoles[0].color) {
+      return userRoles[0].color
+    }
+    
+    return null
+  }
+
+  // Helper function to organize members by role
+  const organizeMembersByRole = (serverId: string, members: any[]) => {
+    const roleGroups: Record<string, { role: any | null; members: any[] }> = {}
+    
+    members.forEach((member) => {
+      const memberKey = `${serverId}:${member.username}`
+      const userRoles = memberRoles[memberKey] || []
+      
+      // Get the highest role (first in the array)
+      const highestRole = userRoles.length > 0 ? userRoles[0] : null
+      const roleName = highestRole?.name || 'No Role'
+      
+      if (!roleGroups[roleName]) {
+        roleGroups[roleName] = {
+          role: highestRole,
+          members: []
+        }
+      }
+      
+      roleGroups[roleName].members.push(member)
+    })
+    
+    // Sort members within each role group alphabetically
+    Object.values(roleGroups).forEach((group) => {
+      group.members.sort((a, b) => a.username.localeCompare(b.username))
+    })
+    
+    // Convert to array and sort by role name
+    const sortedGroups = Object.entries(roleGroups)
+      .map(([roleName, group]) => ({
+        roleName,
+        ...group
+      }))
+      .sort((a, b) => {
+        // "No Role" should be at the bottom
+        if (a.roleName === 'No Role') return 1
+        if (b.roleName === 'No Role') return -1
+        return a.roleName.localeCompare(b.roleName)
+      })
+    
+    return sortedGroups
+  }
 
   const selectedTitle =
     selectedContext.kind === 'global'
@@ -1599,23 +2685,30 @@ function ChatPage() {
     const content = draft.trim()
     if (!content && selectedFiles.length === 0) return
 
+    // Extract mentions from the message
+    const mentions = extractMentions(content)
+    
+    // Get reply_to ID if replying
+    const reply_to = replyingTo?.id || undefined
+
     // If there are files, send message first, then upload files
     if (selectedFiles.length > 0) {
-      await sendMessageWithFiles(content || '')
+      await sendMessageWithFiles(content || '', mentions, reply_to)
     } else {
       // Just send text message
       if (selectedContext.kind === 'server') {
-        wsClient.sendMessage({ type: 'message', content, context: 'server', context_id: `${selectedContext.serverId}/${selectedContext.channelId}` })
+        wsClient.sendMessage({ type: 'message', content, context: 'server', context_id: `${selectedContext.serverId}/${selectedContext.channelId}`, mentions, reply_to })
       } else if (selectedContext.kind === 'dm') {
-        wsClient.sendMessage({ type: 'message', content, context: 'dm', context_id: selectedContext.dmId })
+        wsClient.sendMessage({ type: 'message', content, context: 'dm', context_id: selectedContext.dmId, mentions, reply_to })
       } else {
-        wsClient.sendMessage({ type: 'message', content, context: 'global', context_id: null })
+        wsClient.sendMessage({ type: 'message', content, context: 'global', context_id: null, mentions, reply_to })
       }
       setDraft('')
+      setReplyingTo(null)
     }
   }
 
-  const sendMessageWithFiles = async (content: string) => {
+  const sendMessageWithFiles = async (content: string, mentions: string[] = [], reply_to?: number) => {
     setIsUploading(true)
     try {
       // Create a one-time listener for the message response
@@ -1635,21 +2728,27 @@ function ChatPage() {
           type: 'message', 
           content, 
           context: 'server', 
-          context_id: `${selectedContext.serverId}/${selectedContext.channelId}`
+          context_id: `${selectedContext.serverId}/${selectedContext.channelId}`,
+          mentions,
+          reply_to
         })
       } else if (selectedContext.kind === 'dm') {
         wsClient.sendMessage({ 
           type: 'message', 
           content, 
           context: 'dm', 
-          context_id: selectedContext.dmId
+          context_id: selectedContext.dmId,
+          mentions,
+          reply_to
         })
       } else {
         wsClient.sendMessage({ 
           type: 'message', 
           content, 
           context: 'global', 
-          context_id: null
+          context_id: null,
+          mentions,
+          reply_to
         })
       }
 
@@ -1705,9 +2804,10 @@ function ChatPage() {
         useAppStore.getState().updateMessage(messageId, { attachments: uploadedAttachments })
       }
 
-      // Clear files and draft
+      // Clear files, draft, and reply
       setSelectedFiles([])
       setDraft('')
+      setReplyingTo(null)
       pushToast({ kind: 'success', message: 'Message and files sent successfully' })
     } catch (error) {
       pushToast({ kind: 'error', message: 'Failed to upload files' })
@@ -1761,13 +2861,112 @@ function ChatPage() {
     setIsDragging(false)
   }
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
     setIsDragging(false)
     
     if (e.dataTransfer.files) {
-      handleFileSelect(e.dataTransfer.files)
+      await handleDroppedFiles(e.dataTransfer.files)
+    }
+  }
+
+  const handleDroppedFiles = async (files: FileList) => {
+    if (!files || files.length === 0) return
+
+    const executableExtensions = ['.exe', '.sh', '.bat', '.ps1', '.cmd', '.com', '.msi', '.scr', '.vbs', '.js', '.jar']
+    const maxSize = (adminSettings.max_attachment_size_mb || 10) * 1024 * 1024
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg']
+    const videoExtensions = ['.mp4', '.webm', '.ogg', '.mov']
+    
+    const filesToEmbed: File[] = []
+    const filesToAttach: File[] = []
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      const ext = file.name.toLowerCase().substring(file.name.lastIndexOf('.'))
+
+      // Check if executable
+      if (executableExtensions.includes(ext)) {
+        pushToast({ kind: 'error', message: `${file.name}: Executable files are not allowed` })
+        continue
+      }
+
+      // Check file size
+      if (file.size > maxSize) {
+        pushToast({ kind: 'error', message: `${file.name}: File exceeds maximum size of ${adminSettings.max_attachment_size_mb || 10}MB` })
+        continue
+      }
+
+      // Categorize file for embedding or attaching
+      if (imageExtensions.includes(ext) || videoExtensions.includes(ext)) {
+        filesToEmbed.push(file)
+      } else {
+        filesToAttach.push(file)
+      }
+    }
+
+    // Add non-media files as attachments
+    if (filesToAttach.length > 0) {
+      setSelectedFiles(prev => [...prev, ...filesToAttach])
+    }
+
+    // Upload and embed media files
+    if (filesToEmbed.length > 0) {
+      await uploadAndEmbedFiles(filesToEmbed)
+    }
+  }
+
+  const uploadAndEmbedFiles = async (files: File[]) => {
+    const token = authToken || getStoredAuth().token
+    if (!token) {
+      pushToast({ kind: 'error', message: 'Authentication required' })
+      return
+    }
+
+    setIsUploading(true)
+
+    try {
+      // Use a placeholder message_id of 0 for these uploads
+      // The files will be uploaded and we'll get URLs back
+      const uploadedUrls: string[] = []
+
+      for (const file of files) {
+        const formData = new FormData()
+        formData.append('file', file)
+        formData.append('token', token)
+        formData.append('message_id', '0') // Placeholder ID
+
+        try {
+          const response = await fetch('/api/upload-attachment', {
+            method: 'POST',
+            body: formData,
+          })
+
+          if (!response.ok) {
+            const data = await response.json()
+            pushToast({ kind: 'error', message: data.error || `Failed to upload ${file.name}` })
+          } else {
+            const data = await response.json()
+            if (data.success && data.attachment) {
+              // Create a URL that can be embedded - include filename for extension detection
+              const url = `/api/download-attachment/${data.attachment.attachment_id}/${encodeURIComponent(data.attachment.filename)}`
+              uploadedUrls.push(url)
+            }
+          }
+        } catch (error) {
+          pushToast({ kind: 'error', message: `Failed to upload ${file.name}` })
+        }
+      }
+
+      // Add URLs to draft
+      if (uploadedUrls.length > 0) {
+        const urlText = uploadedUrls.join('\n')
+        setDraft(prev => prev ? `${prev}\n${urlText}` : urlText)
+        pushToast({ kind: 'success', message: `${uploadedUrls.length} file(s) ready to embed` })
+      }
+    } finally {
+      setIsUploading(false)
     }
   }
 
@@ -1786,7 +2985,13 @@ function ChatPage() {
     if (channelType === 'voice') {
       wsClient.createVoiceChannel({ type: 'create_voice_channel', server_id: contextServerId, name })
     } else {
-      wsClient.createChannel({ type: 'create_channel', server_id: contextServerId, name, channel_type: 'text' })
+      wsClient.createChannel({
+        type: 'create_channel',
+        server_id: contextServerId,
+        name,
+        channel_type: 'text',
+        category_id: selectedCategoryId || undefined,
+      })
     }
     setChannelName('')
   }
@@ -1816,15 +3021,17 @@ function ChatPage() {
     wsClient.getServerInviteUsage({ type: 'get_server_invite_usage', server_id: serverId })
   }
 
-  const copyLastInvite = async () => {
-    if (!lastInviteCode) return
-    try {
-      await navigator.clipboard.writeText(lastInviteCode)
-      pushToast({ kind: 'info', message: 'Copied invite code to clipboard' })
-    } catch {
-      pushToast({ kind: 'error', message: 'Failed to copy invite code' })
-    }
-  }
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Announcement Message</div>
+                          <input
+                            type="text"
+                            maxLength={500}
+                            value={adminSettings.announcement_message || ''}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, announcement_message: e.target.value })}
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="Enter announcement message"
+                          />
+                        </label>
 
   const loadAdminSettings = () => {
     if (wsClient.readyState !== WebSocket.OPEN) return
@@ -1897,15 +3104,392 @@ function ChatPage() {
   }
 
   const loadServerEmojis = (serverId: string) => {
-    wsClient.send({
-      type: 'get_server_emojis',
-      server_id: serverId,
-    })
+    console.log('🎨 loadServerEmojis requested:', { serverId, wsReady: wsClient.readyState === WebSocket.OPEN })
+    if (wsClient.readyState === WebSocket.OPEN) {
+      wsClient.send({
+        type: 'get_server_emojis',
+        server_id: serverId,
+      })
+      console.log('🎨 loadServerEmojis request sent to server')
+    } else {
+      console.warn('🎨 loadServerEmojis skipped: WebSocket not ready', wsClient.readyState)
+    }
   }
 
   const insertEmoji = (emoji: string) => {
     setDraft((prev) => prev + emoji)
     setIsEmojiPickerOpen(false)
+  }
+
+  // Role management functions
+  const loadServerRoles = (serverId: string) => {
+    wsClient.send({
+      type: 'get_server_roles',
+      server_id: serverId,
+    })
+  }
+
+  const createRole = () => {
+    if (!selectedServerId || !roleName.trim()) return
+    wsClient.send({
+      type: 'create_role',
+      server_id: selectedServerId,
+      name: roleName.trim(),
+      color: roleColor,
+      permissions: rolePermissions,
+    })
+    setIsCreateRoleOpen(false)
+    setRoleName('')
+    setRoleColor('#3B82F6')
+    setRolePermissions([])
+  }
+
+  const updateRole = () => {
+    if (!selectedServerId || !selectedRole || !roleName.trim()) return
+    wsClient.send({
+      type: 'update_role',
+      server_id: selectedServerId,
+      role_id: selectedRole,
+      name: roleName.trim(),
+      color: roleColor,
+      permissions: rolePermissions,
+    })
+    setIsCreateRoleOpen(false)
+    setSelectedRole(null)
+    setRoleName('')
+    setRoleColor('#3B82F6')
+    setRolePermissions([])
+  }
+
+  const deleteRole = (roleId: string) => {
+    if (!selectedServerId || !confirm('Are you sure you want to delete this role?')) return
+    wsClient.send({
+      type: 'delete_role',
+      server_id: selectedServerId,
+      role_id: roleId,
+    })
+  }
+
+  const openEditRole = (role: any) => {
+    setSelectedRole(role.id)
+    setRoleName(role.name)
+    setRoleColor(role.color || '#3B82F6')
+    setRolePermissions(role.permissions || [])
+    setIsCreateRoleOpen(true)
+  }
+
+  const togglePermission = (permission: string) => {
+    setRolePermissions((prev) =>
+      prev.includes(permission)
+        ? prev.filter((p) => p !== permission)
+        : [...prev, permission]
+    )
+  }
+
+  const assignRoleToMember = (username: string, roleId: string) => {
+    if (!selectedServerId) return
+    wsClient.send({
+      type: 'assign_role',
+      server_id: selectedServerId,
+      username,
+      role_id: roleId,
+    })
+    // Refresh user roles
+    loadUserRoles(selectedServerId, username)
+  }
+
+  const removeRoleFromMember = (username: string, roleId: string) => {
+    if (!selectedServerId) return
+    wsClient.send({
+      type: 'remove_role_from_user',
+      server_id: selectedServerId,
+      username,
+      role_id: roleId,
+    })
+    // Refresh user roles
+    loadUserRoles(selectedServerId, username)
+  }
+
+  const loadUserRoles = (serverId: string, username: string) => {
+    wsClient.send({
+      type: 'get_user_roles',
+      server_id: serverId,
+      username,
+    })
+  }
+
+  const loadServerMembers = (serverId: string) => {
+    wsClient.send({
+      type: 'get_server_members',
+      server_id: serverId,
+    })
+  }
+
+  // Ban management functions
+  const loadServerBans = (serverId: string) => {
+    wsClient.send({
+      type: 'get_server_bans',
+      server_id: serverId,
+    })
+  }
+
+  const banMember = () => {
+    if (!selectedServerId || !banUsername.trim()) return
+    wsClient.send({
+      type: 'ban_member',
+      server_id: selectedServerId,
+      username: banUsername.trim(),
+      reason: banReason.trim() || undefined,
+    })
+    setBanUsername('')
+    setBanReason('')
+  }
+
+  const unbanMember = (username: string) => {
+    if (!selectedServerId) return
+    wsClient.send({
+      type: 'unban_member',
+      server_id: selectedServerId,
+      username,
+    })
+  }
+
+  // Mention handling functions
+  const extractMentions = (text: string): string[] => {
+    const mentionRegex = /@(\w+)/g
+    const mentions: string[] = []
+    let match
+    while ((match = mentionRegex.exec(text)) !== null) {
+      mentions.push(match[1])
+    }
+    return mentions
+  }
+
+  const handleDraftChange = (newDraft: string) => {
+    setDraft(newDraft)
+  }
+
+  const insertMention = (username: string) => {
+    const before = draft.slice(0, mentionStartPos)
+    const after = draft.slice(mentionStartPos + mentionSearch.length + 1)
+    setDraft(`${before}@${username} ${after}`)
+    setShowMentionAutocomplete(false)
+    setMentionSearch('')
+  }
+
+  const getFilteredMentionUsers = () => {
+    if (!selectedContext || selectedContext.kind !== 'server') return []
+    const members = serverMembers[selectedContext.serverId] || []
+    if (!mentionSearch) return members.slice(0, 10)
+    return members.filter((m: ServerMember) => 
+      m.username.toLowerCase().startsWith(mentionSearch.toLowerCase())
+    ).slice(0, 10)
+  }
+
+  const renderMessageContent = (content: string, messageContext?: string, messageContextId?: string | null): React.ReactNode => {
+    // Determine which server's emojis to use based on message context
+    let availableEmojis: CustomEmoji[] = []
+    let serverId: string | null = null
+    
+    console.log('🎬 renderMessageContent START:', { content: content.substring(0, 50), messageContext, messageContextId, serverEmojisKeys: Object.keys(serverEmojis) })
+    
+    // Infer context if not provided but contextId exists
+    let actualContext = messageContext
+    if (!actualContext && messageContextId) {
+      if (messageContextId.includes('/')) {
+        actualContext = 'server'
+        console.log('✨ Inferred context as "server" from context_id:', messageContextId)
+      } else if (messageContextId.startsWith('dm_')) {
+        actualContext = 'dm'
+      }
+    }
+    
+    if (actualContext === 'server' && messageContextId) {
+      serverId = messageContextId.split('/')[0]
+      availableEmojis = serverEmojis[serverId] || []
+      console.log('renderMessageContent called:', { serverId, emojiCount: availableEmojis.length, hasEmojisInState: !!serverEmojis[serverId], contentPreview: content.substring(0, 50), actualEmojis: serverEmojis[serverId] })
+    } else {
+      console.log('⚠️ renderMessageContent: NO CONTEXT!', { messageContext, actualContext, messageContextId })
+    }
+
+    // Helper function to process mentions and custom emojis within text
+    const processTextWithEmojisAndMentions = (text: string, keyPrefix: string): React.ReactNode[] => {
+      const parts = text.split(/(@\w+|:\w+:)/g)
+      console.log('🔍 processTextWithEmojisAndMentions:', { text: text.substring(0, 50), partsCount: parts.length, parts: parts.slice(0, 10), availableEmojiCount: availableEmojis.length })
+      return parts.map((part, index) => {
+        const key = `${keyPrefix}-${index}`
+        
+        // Handle mentions
+        if (part.match(/^@\w+$/)) {
+          const mentionedUser = part.slice(1)
+          const isCurrentUser = mentionedUser === init?.username
+          return (
+            <span
+              key={key}
+              className={`font-semibold ${
+                isCurrentUser 
+                  ? 'bg-sky-500/30 text-sky-300 px-1 rounded' 
+                  : 'text-sky-400'
+              }`}
+            >
+              {part}
+            </span>
+          )
+        }
+        
+        // Handle custom emojis
+        if (part.match(/^:\w+:$/)) {
+          const emojiName = part.slice(1, -1)
+          const emoji = availableEmojis.find(e => e.name === emojiName)
+          console.log('🎨 Emoji lookup:', { emojiName, found: !!emoji, availableNames: availableEmojis.map(e => e.name) })
+          if (!emoji && availableEmojis.length > 0) {
+            console.log('❌ Emoji not found:', { emojiName, availableCount: availableEmojis.length, available: availableEmojis.map(e => e.name) })
+          }
+          if (emoji) {
+            console.log('✅ Rendering emoji image:', emojiName)
+            return (
+              <img
+                key={key}
+                src={emoji.image_data}
+                alt={`:${emojiName}:`}
+                title={`:${emojiName}:`}
+                className="inline-block w-5 h-5 object-contain align-text-bottom mx-0.5"
+              />
+            )
+          }
+          return <span key={key}>{part}</span>
+        }
+        
+        return <span key={key}>{part}</span>
+      })
+    }
+
+    // Parse message formatting
+    const tokens = parseMessageFormat(content)
+    console.log('📝 After parseMessageFormat:', { tokenCount: tokens.length, availableEmojiCount: availableEmojis.length, tokens: tokens.map(t => ({ type: t.type, content: t.content?.substring(0, 20) })) })
+    
+    // Render formatted tokens with mention and emoji support
+    return tokens.map((token, index) => {
+      const key = `fmt-${index}`
+      console.log('🔧 Processing token:', { index, type: token.type, content: token.content?.substring(0, 30), availableEmojiCountNow: availableEmojis.length })
+      
+      switch (token.type) {
+        case 'bold':
+          return (
+            <strong key={key} className="font-bold">
+              {processTextWithEmojisAndMentions(token.content, `${key}-content`)}
+            </strong>
+          )
+        
+        case 'italic':
+          return (
+            <em key={key} className="italic">
+              {processTextWithEmojisAndMentions(token.content, `${key}-content`)}
+            </em>
+          )
+        
+        case 'boldItalic':
+          return (
+            <strong key={key} className="font-bold italic">
+              {processTextWithEmojisAndMentions(token.content, `${key}-content`)}
+            </strong>
+          )
+        
+        case 'code':
+          return (
+            <code key={key} className="bg-slate-800/60 text-sky-300 px-1.5 py-0.5 rounded text-sm font-mono">
+              {token.content}
+            </code>
+          )
+        
+        case 'codeBlock':
+          return (
+            <pre key={key} className="bg-slate-800/60 text-slate-200 p-3 rounded-lg overflow-x-auto my-1 border border-white/5">
+              <code className="text-sm font-mono block">
+                {token.language && (
+                  <div className="text-xs text-slate-400 mb-1">{token.language}</div>
+                )}
+                {token.content}
+              </code>
+            </pre>
+          )
+        
+        case 'strikethrough':
+          return (
+            <s key={key} className="line-through opacity-75">
+              {processTextWithEmojisAndMentions(token.content, `${key}-content`)}
+            </s>
+          )
+        
+        case 'spoiler':
+          return (
+            <span
+              key={key}
+              className="bg-slate-800 text-slate-800 hover:text-slate-200 cursor-pointer px-1 rounded transition-colors select-none"
+              title="Click to reveal spoiler"
+              onClick={(e) => {
+                const target = e.currentTarget
+                target.classList.toggle('text-slate-800')
+                target.classList.toggle('text-slate-200')
+              }}
+            >
+              {processTextWithEmojisAndMentions(token.content, `${key}-content`)}
+            </span>
+          )
+        
+        case 'quote':
+          return (
+            <div key={key} className="border-l-2 border-slate-600 pl-3 py-0.5 italic text-slate-300 my-1">
+              {processTextWithEmojisAndMentions(token.content, `${key}-content`)}
+            </div>
+          )
+        
+        case 'text':
+        default:
+          return (
+            <span key={key}>
+              {processTextWithEmojisAndMentions(token.content, `${key}-content`)}
+            </span>
+          )
+      }
+    })
+  }
+
+  const handleMentionKeyDown = (e: React.KeyboardEvent) => {
+    if (!showMentionAutocomplete) return false
+    
+    const filteredUsers = getFilteredMentionUsers()
+    if (filteredUsers.length === 0) return false
+    
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setSelectedMentionIndex((prev) => 
+        prev < filteredUsers.length - 1 ? prev + 1 : 0
+      )
+      return true
+    }
+    
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setSelectedMentionIndex((prev) => 
+        prev > 0 ? prev - 1 : filteredUsers.length - 1
+      )
+      return true
+    }
+    
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault()
+      insertMention(filteredUsers[selectedMentionIndex].username)
+      return true
+    }
+    
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      setShowMentionAutocomplete(false)
+      return true
+    }
+    
+    return false
   }
 
   // Message edit/delete/reaction functions
@@ -2081,6 +3665,38 @@ function ChatPage() {
     })
   }
 
+  const handleChangeStatus = (newStatus: 'online' | 'away' | 'busy' | 'offline') => {
+    setUserStatus(newStatus)
+    // Update init object so the ring changes immediately
+    if (init) {
+      setInit({ ...init, user_status: newStatus })
+    }
+    wsClient.send({
+      type: 'change_user_status',
+      user_status: newStatus,
+    })
+  }
+
+  const handleChangeEmail = () => {
+    if (!newEmail.trim() || !emailPassword) return
+    setEmailChangeStatus(null)
+    wsClient.changeEmail({
+      type: 'change_email',
+      new_email: newEmail.trim(),
+      password: emailPassword,
+    })
+  }
+
+  const handleChangeUsername = () => {
+    if (!newUsername.trim() || !usernamePassword) return
+    setUsernameChangeStatus(null)
+    wsClient.changeUsername({
+      type: 'change_username',
+      new_username: newUsername.trim(),
+      password: usernamePassword,
+    })
+  }
+
   const handleAvatarFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -2212,12 +3828,16 @@ function ChatPage() {
             <button
               type="button"
               onClick={() => setIsDmSidebarOpen(!isDmSidebarOpen)}
-              className={`flex h-12 w-12 items-center justify-center rounded-2xl text-2xl transition ${
+              className={`relative flex h-12 w-12 items-center justify-center rounded-2xl text-2xl transition ${
                 isDmSidebarOpen ? 'bg-sky-500 text-white' : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 hover:rounded-xl'
               }`}
               title="Direct Messages"
             >
               #
+              {/* Unread indicator dot */}
+              {(init?.dms ?? []).some((dm) => (dm.unread_count ?? 0) > 0) && (
+                <span className="absolute -top-1 -right-1 h-3 w-3 rounded-full bg-red-500" />
+              )}
             </button>
           </div>
 
@@ -2226,38 +3846,49 @@ function ChatPage() {
 
           {/* Server icons */}
           <div className="flex-1 overflow-auto p-3 space-y-2 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-            {(init?.servers ?? []).map((server) => (
-              <button
-                key={server.id}
-                type="button"
-                onClick={() => {
-                  if (selectedServerId === server.id) {
-                    setSelectedServerId(null)
-                    selectContext({ kind: 'global' })
-                  } else {
-                    setSelectedServerId(server.id)
-                    setIsDmSidebarOpen(false)
-                    const firstChannel = server.channels?.[0]
-                    if (firstChannel) {
-                      selectContext({ kind: 'server', serverId: server.id, channelId: firstChannel.id })
-                      requestHistoryFor({ kind: 'server', serverId: server.id, channelId: firstChannel.id })
+            {(init?.servers ?? []).map((server) => {
+              const hasUnread = (server.unread_count ?? 0) > 0
+              const hasMention = server.has_mention ?? false
+              
+              return (
+                <button
+                  key={server.id}
+                  type="button"
+                  onClick={() => {
+                    if (selectedServerId === server.id) {
+                      setSelectedServerId(null)
+                      selectContext({ kind: 'global' })
+                    } else {
+                      setSelectedServerId(server.id)
+                      setIsDmSidebarOpen(false)
+                      const firstChannel = server.channels?.[0]
+                      if (firstChannel) {
+                        selectContext({ kind: 'server', serverId: server.id, channelId: firstChannel.id })
+                        requestHistoryFor({ kind: 'server', serverId: server.id, channelId: firstChannel.id })
+                      }
+                      // Request server members
+                      wsClient.getServerMembers({ type: 'get_server_members', server_id: server.id })
                     }
-                    // Request server members
-                    wsClient.getServerMembers({ type: 'get_server_members', server_id: server.id })
-                  }
-                }}
-                className={`flex h-12 w-12 items-center justify-center rounded-2xl text-xl transition overflow-hidden ${
-                  selectedServerId === server.id ? 'bg-sky-500 text-white' : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 hover:rounded-xl'
-                }`}
-                title={server.name}
-              >
-                {server.icon_type === 'image' && server.icon_data ? (
-                  <img src={server.icon_data} alt={server.name} className="h-full w-full object-cover" />
-                ) : (
-                  <>{server.icon ?? '🏠'}</>
-                )}
-              </button>
-            ))}
+                  }}
+                  className={`relative flex h-12 w-12 items-center justify-center rounded-2xl text-xl transition overflow-hidden ${
+                    selectedServerId === server.id ? 'bg-sky-500 text-white' : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 hover:rounded-xl'
+                  }`}
+                  title={server.name}
+                >
+                  {server.icon_type === 'image' && server.icon_data ? (
+                    <img src={server.icon_data} alt={server.name} className="h-full w-full object-cover" />
+                  ) : (
+                    <>{server.icon ?? '🏠'}</>
+                  )}
+                  {/* Unread indicator dot */}
+                  {hasMention ? (
+                    <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-red-500 border-2 border-slate-900" />
+                  ) : hasUnread ? (
+                    <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-slate-400 border-2 border-slate-900" />
+                  ) : null}
+                </button>
+              )
+            })}
           </div>
 
           {/* Profile section at bottom */}
@@ -2265,14 +3896,16 @@ function ChatPage() {
             <button
               type="button"
               onClick={() => setIsUserMenuOpen(true)}
-              className="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-800/50 text-xl hover:bg-slate-700/50 hover:rounded-xl transition overflow-hidden"
+              className="rounded-2xl bg-slate-800/50 hover:bg-slate-700/50 hover:rounded-xl transition"
               title={init?.username ?? 'User'}
             >
-              {init?.avatar_type === 'image' && init?.avatar_data ? (
-                <img src={init.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
-              ) : (
-                <>{init?.avatar ?? '👤'}</>
-              )}
+              <AvatarWithStatus
+                avatar={init?.avatar}
+                avatar_type={init?.avatar_type}
+                avatar_data={init?.avatar_data}
+                user_status={init?.user_status}
+                size="lg"
+              />
             </button>
           </div>
         </aside>
@@ -2292,6 +3925,9 @@ function ChatPage() {
                   <div className="space-y-1">
                     {(init?.dms ?? []).map((dm) => {
                       const isSelected = selectedContext.kind === 'dm' && selectedContext.dmId === dm.id
+                      const hasUnread = (dm.unread_count ?? 0) > 0
+                      const hasMention = dm.has_mention ?? false
+                      
                       return (
                         <button
                           key={dm.id}
@@ -2301,19 +3937,41 @@ function ChatPage() {
                             selectContext(next)
                             requestHistoryFor(next)
                             setSelectedServerId(null)
+                            
+                            // Clear unread count immediately in UI
+                            clearUnreadForContext(next)
+                            
+                            // Mark messages as read on server
+                            if (wsClient.readyState === WebSocket.OPEN) {
+                              wsClient.send({
+                                type: 'mark_as_read',
+                                context_type: 'dm',
+                                context_id: dm.id
+                              })
+                            }
                           }}
                           className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition ${
                             isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
                           }`}
                         >
-                          <span className="text-lg flex h-8 w-8 items-center justify-center overflow-hidden rounded-full">
-                            {dm.avatar_type === 'image' && dm.avatar_data ? (
-                              <img src={dm.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
-                            ) : (
-                              <>{dm.avatar ?? '👤'}</>
-                            )}
+                          <AvatarWithStatus
+                            avatar={dm.avatar}
+                            avatar_type={dm.avatar_type}
+                            avatar_data={dm.avatar_data}
+                            user_status={dm.user_status}
+                            size="md"
+                          />
+                          <span 
+                            className={`text-sm truncate ${
+                              hasMention 
+                                ? 'font-bold italic text-red-400' 
+                                : hasUnread 
+                                  ? 'font-bold italic' 
+                                  : 'font-medium'
+                            }`}
+                          >
+                            {dm.username}
                           </span>
-                          <span className="text-sm font-medium truncate">{dm.username}</span>
                         </button>
                       )
                     })}
@@ -2368,71 +4026,140 @@ function ChatPage() {
 
               {/* Channels list */}
               <div className="flex-1 overflow-auto p-2">
-                <div className="mb-3">
-                  <div className="px-2 text-xs font-medium text-slate-400 uppercase mb-1">Text Channels</div>
-                  <div className="space-y-1">
-                    {(selectedServerObj.channels ?? [])
-                      .filter((ch) => ch.type !== 'voice')
-                      .map((ch) => {
-                        const isSelected =
-                          selectedContext.kind === 'server' &&
-                          selectedContext.serverId === selectedServerId &&
-                          selectedContext.channelId === ch.id
-                        return (
-                          <button
-                            key={ch.id}
-                            type="button"
-                            onClick={() => {
-                              const next: ChatContext = { kind: 'server', serverId: selectedServerId, channelId: ch.id }
-                              selectContext(next)
-                              requestHistoryFor(next)
-                            }}
-                            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
-                              isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
-                            }`}
-                          >
-                            <span className="text-slate-400">#</span>
-                            <span className="text-sm font-medium">{ch.name}</span>
-                          </button>
-                        )
-                      })}
-                  </div>
-                </div>
+                {/* Render categories with their channels */}
+                {(selectedServerObj.categories ?? [])
+                  .sort((a, b) => a.position - b.position)
+                  .map((category) => {
+                    const categoryChannels = (selectedServerObj.channels ?? [])
+                      .filter((ch) => ch.category_id === category.id)
+                      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
 
-                <div>
-                  <div className="px-2 text-xs font-medium text-slate-400 uppercase mb-1">Voice Channels</div>
-                  <div className="space-y-1">
-                    {(selectedServerObj.channels ?? [])
-                      .filter((ch) => ch.type === 'voice')
-                      .map((ch) => {
-                        const isSelected =
-                          selectedContext.kind === 'server' &&
-                          selectedContext.serverId === selectedServerId &&
-                          selectedContext.channelId === ch.id
-                        return (
-                          <button
-                            key={ch.id}
-                            type="button"
-                            onClick={() => {
-                              const next: ChatContext = { kind: 'server', serverId: selectedServerId, channelId: ch.id }
-                              selectContext(next)
-                              // Join voice channel instead of loading chat
-                              if (voiceChat && selectedServerId) {
-                                joinVoiceChannel(selectedServerId, ch.id)
-                              }
-                            }}
-                            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
-                              isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
-                            }`}
-                          >
-                            <span className="text-slate-400">🔊</span>
-                            <span className="text-sm font-medium">{ch.name}</span>
-                            {isInVoice && isSelected && <span className="text-emerald-400 text-xs ml-auto">●</span>}
-                          </button>
-                        )
-                      })}
-                  </div>
-                </div>
+                    return (
+                      <div key={category.id} className="mb-3">
+                        <div className="px-2 text-xs font-medium text-slate-400 uppercase mb-1">{category.name}</div>
+                        <div className="space-y-1">
+                          {categoryChannels.map((ch) => {
+                            const isSelected =
+                              selectedContext.kind === 'server' &&
+                              selectedContext.serverId === selectedServerId &&
+                              selectedContext.channelId === ch.id
+                            const channelUnread = selectedServerObj.channel_unreads?.[ch.id]
+                            const hasUnread = (channelUnread?.unread_count ?? 0) > 0
+                            const hasMention = channelUnread?.has_mention ?? false
+                            
+                            return (
+                              <button
+                                key={ch.id}
+                                type="button"
+                                onClick={() => {
+                                  const next: ChatContext = { kind: 'server', serverId: selectedServerId, channelId: ch.id }
+                                  if (ch.type === 'voice') {
+                                    // Join voice channel instead of loading chat
+                                    selectContext(next)
+                                    joinVoiceChannel(selectedServerId, ch.id)
+                                  } else {
+                                    selectContext(next)
+                                    requestHistoryFor(next)
+                                    
+                                    // Clear unread count immediately in UI
+                                    clearUnreadForContext(next)
+                                    
+                                    // Mark messages as read on server
+                                    if (wsClient.readyState === WebSocket.OPEN) {
+                                      wsClient.send({
+                                        type: 'mark_as_read',
+                                        context_type: 'server',
+                                        context_id: `${selectedServerId}/${ch.id}`
+                                      })
+                                    }
+                                  }
+                                }}
+                                className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
+                                  isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
+                                }`}
+                              >
+                                <span className="text-slate-400">{ch.type === 'voice' ? '🔊' : '#'}</span>
+                                <span className={`text-sm ${
+                                  hasMention 
+                                    ? 'font-bold italic text-red-400' 
+                                    : hasUnread 
+                                      ? 'font-bold italic' 
+                                      : 'font-medium'
+                                }`}>{ch.name}</span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )
+                  })}
+
+                {/* Render channels without a category */}
+                {(() => {
+                  const uncategorizedChannels = (selectedServerObj.channels ?? [])
+                    .filter((ch) => !ch.category_id)
+                    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+
+                  if (uncategorizedChannels.length === 0) return null
+
+                  return (
+                    <div className="mb-3">
+                      <div className="px-2 text-xs font-medium text-slate-400 uppercase mb-1">Uncategorized</div>
+                      <div className="space-y-1">
+                        {uncategorizedChannels.map((ch) => {
+                          const isSelected =
+                            selectedContext.kind === 'server' &&
+                            selectedContext.serverId === selectedServerId &&
+                            selectedContext.channelId === ch.id
+                          const channelUnread = selectedServerObj.channel_unreads?.[ch.id]
+                          const hasUnread = (channelUnread?.unread_count ?? 0) > 0
+                          const hasMention = channelUnread?.has_mention ?? false
+                          
+                          return (
+                            <button
+                              key={ch.id}
+                              type="button"
+                              onClick={() => {
+                                const next: ChatContext = { kind: 'server', serverId: selectedServerId, channelId: ch.id }
+                                if (ch.type === 'voice') {
+                                  selectContext(next)
+                                  joinVoiceChannel(selectedServerId, ch.id)
+                                } else {
+                                  selectContext(next)
+                                  requestHistoryFor(next)
+                                  
+                                  // Clear unread count immediately in UI
+                                  clearUnreadForContext(next)
+                                  
+                                  // Mark messages as read on server
+                                  if (wsClient.readyState === WebSocket.OPEN) {
+                                    wsClient.send({
+                                      type: 'mark_as_read',
+                                      context_type: 'server',
+                                      context_id: `${selectedServerId}/${ch.id}`
+                                    })
+                                  }
+                                }
+                              }}
+                              className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
+                                isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
+                              }`}
+                            >
+                              <span className="text-slate-400">{ch.type === 'voice' ? '🔊' : '#'}</span>
+                              <span className={`text-sm ${
+                                hasMention 
+                                  ? 'font-bold italic text-red-400' 
+                                  : hasUnread 
+                                    ? 'font-bold italic' 
+                                    : 'font-medium'
+                              }`}>{ch.name}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })()}
               </div>
             </div>
           </aside>
@@ -2442,17 +4169,25 @@ function ChatPage() {
         <main className="flex min-w-0 flex-1 flex-col">
           <header className="border-b border-white/10 bg-slate-950/60 px-6 py-4">
             <div className="flex items-center justify-between gap-4">
-              <div>
-                <div className="text-xs font-medium text-slate-400">
-                  {selectedContext.kind === 'global'
-                    ? 'Global Chat'
-                    : selectedContext.kind === 'dm'
-                      ? 'Direct Message'
-                      : isVoiceChannel
-                        ? 'Voice Channel'
-                        : 'Channel'}
+              <div className="flex items-center gap-4 min-w-0 flex-1">
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-slate-400">
+                    {selectedContext.kind === 'global'
+                      ? 'Global Chat'
+                      : selectedContext.kind === 'dm'
+                        ? 'Direct Message'
+                        : isVoiceChannel
+                          ? 'Voice Channel'
+                          : 'Channel'}
+                  </div>
+                  <div className="mt-1 text-lg font-semibold text-white truncate">{selectedTitle}</div>
                 </div>
-                <div className="mt-1 text-lg font-semibold text-white">{selectedTitle}</div>
+                <div className="hidden md:block">
+                  <SearchBar 
+                    currentUsername={init?.username ?? null} 
+                    onResultClick={handleSearchResultClick}
+                  />
+                </div>
               </div>
               <div className="flex items-center gap-3">
                 {selectedServerId && !isVoiceChannel && (
@@ -2592,14 +4327,14 @@ function ChatPage() {
                               />
                             ) : (
                               <div className="flex flex-col items-center justify-center p-8">
-                                <div className="w-32 h-32 rounded-full border-4 border-white/10 bg-slate-950/40 flex items-center justify-center text-6xl mb-4 overflow-hidden">
-                                  {participant?.avatar_type === 'image' && participant?.avatar_data ? (
-                                    <img src={participant.avatar_data} alt="Avatar" className="w-full h-full object-cover" />
-                                  ) : (
-                                    <>{participant?.avatar ?? init?.avatar ?? '👤'}</>
-                                  )}
-                                </div>
-                                <div className="text-xl font-semibold text-white">{participantUsername}</div>
+                                <AvatarWithStatus
+                                  avatar={participant?.avatar ?? init?.avatar}
+                                  avatar_type={participant?.avatar_type ?? init?.avatar_type}
+                                  avatar_data={participant?.avatar_data ?? init?.avatar_data}
+                                  user_status={participant?.user_status}
+                                  size="xl"
+                                />
+                                <div className="text-xl font-semibold text-white mt-4">{participantUsername}</div>
                               </div>
                             )}
                             {/* Participant name overlay */}
@@ -2634,17 +4369,24 @@ function ChatPage() {
                 ) : (
                   <div className="flex flex-col gap-3">
                     {messages.map((m: WsChatMessage, idx: number) => (
-                      <div key={(m.id ?? idx).toString()} className="group flex gap-3">
-                        <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-slate-950/30 text-sm overflow-hidden">
-                          {m.avatar_type === 'image' && m.avatar_data ? (
-                            <img src={m.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
-                          ) : (
-                            <>{m.avatar ?? '👤'}</>
-                          )}
+                      <div key={(m.id ?? idx).toString()} id={m.id ? `message-${m.id}` : undefined} className="group flex gap-3 transition rounded-lg px-2 py-1">
+                        <div className="mt-0.5 shrink-0">
+                          <AvatarWithStatus
+                            avatar={m.avatar}
+                            avatar_type={m.avatar_type}
+                            avatar_data={m.avatar_data}
+                            user_status={m.user_status}
+                            size="md"
+                          />
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-baseline gap-x-2">
-                            <div className="font-semibold text-slate-100">{m.username}</div>
+                            <div 
+                              className="font-semibold text-slate-100" 
+                              style={getUsernameStyle(m)}
+                            >
+                              {m.username}
+                            </div>
                             <div className="text-xs text-slate-500">
                               {new Date(m.timestamp).toLocaleString()}
                               {m.edited_at && <span className="ml-1.5 text-slate-600">(edited)</span>}
@@ -2653,6 +4395,15 @@ function ChatPage() {
                             <div className="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
                               {m.id && (
                                 <>
+                                  {/* Reply button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => setReplyingTo(m)}
+                                    className="text-slate-400 hover:text-sky-400 text-sm px-1.5 py-0.5 rounded"
+                                    title="Reply"
+                                  >
+                                    ↩️
+                                  </button>
                                   {/* Reaction button */}
                                   <button
                                     type="button"
@@ -2689,6 +4440,33 @@ function ChatPage() {
                             </div>
                           </div>
                           
+                          {/* Reply reference - show if this message is a reply */}
+                          {m.reply_data && (
+                            <div className="mt-1 mb-1 pl-3 border-l-2 border-slate-600 text-xs text-slate-400">
+                              <div className="flex items-center gap-1">
+                                <span>↩️</span>
+                                <span className="font-medium text-slate-300">{m.reply_data.username}</span>
+                                <span>•</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    // Jump to message functionality
+                                    if (!m.reply_data) return
+                                    const element = document.getElementById(`message-${m.reply_data.id}`)
+                                    if (element) {
+                                      element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                                      element.classList.add('bg-sky-500/10')
+                                      setTimeout(() => element.classList.remove('bg-sky-500/10'), 2000)
+                                    }
+                                  }}
+                                  className="hover:underline truncate max-w-[400px]"
+                                >
+                                  {m.reply_data.deleted ? '[Message deleted]' : renderMessageContent(m.reply_data.content, m.context, m.context_id)}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                          
                           {/* Edit mode */}
                           {editingMessageId === m.id ? (
                             <div className="mt-2">
@@ -2722,7 +4500,7 @@ function ChatPage() {
                               {/* Normal message display */}
                               {m.content && (
                                 <>
-                                  <div className="mt-1 whitespace-pre-wrap text-sm text-slate-200">{linkifyText(m.content)}</div>
+                                  <div className="mt-1 whitespace-pre-wrap text-sm text-slate-200">{linkifyText(m.content, (content) => renderMessageContent(content, m.context, m.context_id))}</div>
                                   <MessageEmbeds content={m.content} />
                                 </>
                               )}
@@ -2749,25 +4527,40 @@ function ChatPage() {
                           {/* Reactions display */}
                           {m.reactions && Array.isArray(m.reactions) && m.reactions.length > 0 && (
                             <div className="mt-2 flex flex-wrap gap-1.5">
-                              {m.reactions.map((reaction: Reaction, rIdx: number) => {
-                                const userReacted = init?.username && Array.isArray(reaction.users) && reaction.users.includes(init.username)
-                                return (
-                                  <button
-                                    key={rIdx}
-                                    type="button"
-                                    onClick={() => userReacted ? removeReaction(m.id, reaction.emoji) : addReaction(m.id, reaction.emoji, reaction.emoji_type)}
-                                    className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs border transition ${
-                                      userReacted
-                                        ? 'bg-sky-500/20 border-sky-500/40 text-sky-300'
-                                        : 'bg-slate-900/40 border-white/10 text-slate-300 hover:bg-slate-800/40'
-                                    }`}
-                                    title={Array.isArray(reaction.users) ? reaction.users.join(', ') : ''}
-                                  >
-                                    <span>{reaction.emoji}</span>
-                                    <span className="font-semibold">{reaction.count}</span>
-                                  </button>
-                                )
-                              })}
+                              {(() => {
+                                // Group reactions by emoji
+                                const reactionGroups = m.reactions.reduce((acc: any, reaction: Reaction) => {
+                                  if (!acc[reaction.emoji]) {
+                                    acc[reaction.emoji] = {
+                                      emoji: reaction.emoji,
+                                      emoji_type: reaction.emoji_type,
+                                      usernames: []
+                                    }
+                                  }
+                                  acc[reaction.emoji].usernames.push(reaction.username)
+                                  return acc
+                                }, {})
+                                
+                                return Object.values(reactionGroups).map((group: any, rIdx: number) => {
+                                  const userReacted = init?.username && group.usernames.includes(init.username)
+                                  return (
+                                    <button
+                                      key={rIdx}
+                                      type="button"
+                                      onClick={() => userReacted ? removeReaction(m.id, group.emoji) : addReaction(m.id, group.emoji, group.emoji_type)}
+                                      className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs border transition ${
+                                        userReacted
+                                          ? 'bg-sky-500/20 border-sky-500/40 text-sky-300'
+                                          : 'bg-slate-900/40 border-white/10 text-slate-300 hover:bg-slate-800/40'
+                                      }`}
+                                      title={group.usernames.join(', ')}
+                                    >
+                                      <span>{group.emoji}</span>
+                                      <span className="font-semibold">{group.usernames.length}</span>
+                                    </button>
+                                  )
+                                })
+                              })()}
                             </div>
                           )}
                           
@@ -2831,6 +4624,54 @@ function ChatPage() {
                 </div>
               )}
 
+              {/* Mention autocomplete */}
+              {showMentionAutocomplete && selectedContext.kind === 'server' && (
+                <div className="mb-2 rounded-xl border border-white/10 bg-slate-900 p-2 shadow-xl max-h-48 overflow-y-auto">
+                  <div className="text-xs font-semibold text-slate-400 mb-1 px-2">Mention User</div>
+                  {getFilteredMentionUsers().length > 0 ? (
+                    getFilteredMentionUsers().map((member, index) => (
+                      <button
+                        key={member.username}
+                        type="button"
+                        onClick={() => insertMention(member.username)}
+                        className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition ${
+                          index === selectedMentionIndex ? 'bg-sky-500/20' : 'hover:bg-white/5'
+                        }`}
+                      >
+                        <AvatarWithStatus
+                          avatar={member.avatar}
+                          avatar_type={member.avatar_type}
+                          avatar_data={member.avatar_data}
+                          user_status={member.user_status}
+                          size="sm"
+                        />
+                        <span className="text-sm text-slate-200">{member.username}</span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="text-xs text-slate-500 px-2 py-1">No matching users</div>
+                  )}
+                </div>
+              )}
+              
+              {/* Replying to indicator */}
+              {replyingTo && (
+                <div className="mb-2 rounded-xl border border-white/10 bg-slate-900/40 p-3 flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="text-xs font-semibold text-slate-400 mb-1">Replying to {replyingTo.username}</div>
+                    <div className="text-sm text-slate-300 truncate">{renderMessageContent(replyingTo.content, replyingTo.context, replyingTo.context_id)}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setReplyingTo(null)}
+                    className="ml-2 text-slate-400 hover:text-slate-200 text-lg"
+                    title="Cancel reply"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+
               <form
                 onSubmit={(e) => {
                   e.preventDefault()
@@ -2843,7 +4684,10 @@ function ChatPage() {
               >
                 <input
                   value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
+                  onChange={(e) => handleDraftChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (handleMentionKeyDown(e)) return
+                  }}
                   placeholder={isDragging ? "Drop files here..." : selectedFiles.length > 0 ? "Add a message (optional)…" : "Type a message…"}
                   disabled={isUploading}
                   className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40 disabled:opacity-50"
@@ -2950,62 +4794,49 @@ function ChatPage() {
                   <div className="px-3 py-2 text-sm text-slate-400">No members</div>
                 ) : (
                   <div className="space-y-1">
-                    {/* Owner first */}
-                    {serverMembers[selectedServerId]
-                      .filter((member) => member.is_owner)
-                      .map((member) => (
-                        <div
-                          key={member.username}
-                          className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/5 transition"
+                    {/* Organize members by role */}
+                    {organizeMembersByRole(selectedServerId, serverMembers[selectedServerId]).map((roleGroup, idx) => (
+                      <div key={roleGroup.roleName}>
+                        {/* Role section header */}
+                        {idx > 0 && <div className="h-2"></div>}
+                        <div 
+                          className="px-2 py-1 text-xs font-semibold uppercase tracking-wide"
+                          style={{ color: roleGroup.role?.color || '#99AAB5' }}
                         >
-                          <span className="text-lg flex h-8 w-8 items-center justify-center overflow-hidden rounded-full">
-                            {member.avatar_type === 'image' && member.avatar_data ? (
-                              <img src={member.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
-                            ) : (
-                              <>{member.avatar ?? '👤'}</>
-                            )}
-                          </span>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-sm font-medium text-slate-100 truncate">{member.username}</span>
-                              <span className="text-xs" title="Server Owner">👑</span>
+                          {roleGroup.roleName} — {roleGroup.members.length}
+                        </div>
+                        
+                        {/* Members in this role */}
+                        {roleGroup.members.map((member) => (
+                          <div
+                            key={member.username}
+                            className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/5 transition"
+                          >
+                            <AvatarWithStatus
+                              avatar={member.avatar}
+                              avatar_type={member.avatar_type}
+                              avatar_data={member.avatar_data}
+                              user_status={member.user_status}
+                              size="md"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span 
+                                  className="text-sm font-medium truncate"
+                                  style={{ color: getMemberRoleColor(selectedServerId, member.username) || '#e2e8f0' }}
+                                >
+                                  {member.username}
+                                </span>
+                                {member.is_owner && <span className="text-xs" title="Server Owner">👑</span>}
+                              </div>
+                              {member.status_message && (
+                                <div className="text-xs text-slate-400 truncate">{member.status_message}</div>
+                              )}
                             </div>
-                            {member.status_message && (
-                              <div className="text-xs text-slate-400 truncate">{member.status_message}</div>
-                            )}
                           </div>
-                        </div>
-                      ))}
-                    
-                    {/* Members section separator */}
-                    {serverMembers[selectedServerId].some((m) => m.is_owner) && 
-                     serverMembers[selectedServerId].some((m) => !m.is_owner) && (
-                      <div className="px-2 text-xs font-medium text-slate-500 uppercase mt-3 mb-1">Members</div>
-                    )}
-                    
-                    {/* Regular members */}
-                    {serverMembers[selectedServerId]
-                      .filter((member) => !member.is_owner)
-                      .map((member) => (
-                        <div
-                          key={member.username}
-                          className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/5 transition"
-                        >
-                          <span className="text-lg flex h-8 w-8 items-center justify-center overflow-hidden rounded-full">
-                            {member.avatar_type === 'image' && member.avatar_data ? (
-                              <img src={member.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
-                            ) : (
-                              <>{member.avatar ?? '👤'}</>
-                            )}
-                          </span>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-sm font-medium text-slate-200 truncate">{member.username}</div>
-                            {member.status_message && (
-                              <div className="text-xs text-slate-400 truncate">{member.status_message}</div>
-                            )}
-                          </div>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -3016,8 +4847,8 @@ function ChatPage() {
         {/* User menu modal - centered overlay */}
         {isUserMenuOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setIsUserMenuOpen(false)}>
-            <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-              <div className="flex items-center justify-between border-b border-white/10 px-6 py-4">
+            <div className="w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-6 py-4">
                 <div className="flex items-center gap-3">
                   {init?.is_admin && !isAdminMode && (
                     <button
@@ -3050,7 +4881,7 @@ function ChatPage() {
                 </button>
               </div>
 
-              <div className="p-6">
+              <div className="overflow-y-auto p-6">
                 {!isAdminMode ? (
                   <div className="space-y-6">
                     <div className="text-center">
@@ -3314,6 +5145,16 @@ function ChatPage() {
                           <div className="text-sm text-slate-200">Require Invite Code for Registration</div>
                         </label>
 
+                        <label className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={adminSettings.notify_admin_on_signup !== false}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, notify_admin_on_signup: e.target.checked })}
+                            className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
+                          />
+                          <div className="text-sm text-slate-200">Notify Admin on New Signups</div>
+                        </label>
+
                         <label className="block">
                           <div className="mb-1 text-sm text-slate-200">Maximum File Upload Size (MB)</div>
                           <input
@@ -3517,6 +5358,12 @@ function ChatPage() {
                         </label>
                       </div>
                     </section>
+
+                    {/* License Management */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">License Management</h3>
+                      <LicensePanel />
+                    </section>
                   </div>
                 )}
               </div>
@@ -3540,6 +5387,85 @@ function ChatPage() {
               </div>
 
               <div className="p-6 space-y-6">
+                {/* Account Section */}
+                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Account</h3>
+                  <div className="space-y-4">
+                    {/* Current Username */}
+                    <div>
+                      <div className="mb-1 text-sm text-slate-200">Username</div>
+                      <div className="text-sm text-slate-400 mb-2">{init?.username}</div>
+                      <div className="space-y-2">
+                        <input
+                          type="text"
+                          value={newUsername}
+                          onChange={(e) => setNewUsername(e.target.value)}
+                          placeholder="New username"
+                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                        <input
+                          type="password"
+                          value={usernamePassword}
+                          onChange={(e) => setUsernamePassword(e.target.value)}
+                          placeholder="Confirm with password"
+                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleChangeUsername}
+                          disabled={!newUsername.trim() || !usernamePassword}
+                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Change Username
+                        </button>
+                        {usernameChangeStatus && (
+                          <div className={`text-sm ${usernameChangeStatus.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+                            {usernameChangeStatus.message}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Divider */}
+                    <div className="border-t border-white/5" />
+
+                    {/* Current Email */}
+                    <div>
+                      <div className="mb-1 text-sm text-slate-200">Email</div>
+                      <div className="text-sm text-slate-400 mb-2">{init?.email || 'No email set'}</div>
+                      <div className="space-y-2">
+                        <input
+                          type="email"
+                          value={newEmail}
+                          onChange={(e) => setNewEmail(e.target.value)}
+                          placeholder="New email address"
+                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                        <input
+                          type="password"
+                          value={emailPassword}
+                          onChange={(e) => setEmailPassword(e.target.value)}
+                          placeholder="Confirm with password"
+                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleChangeEmail}
+                          disabled={!newEmail.trim() || !emailPassword}
+                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Change Email
+                        </button>
+                        {emailChangeStatus && (
+                          <div className={`text-sm ${emailChangeStatus.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+                            {emailChangeStatus.message}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
                 {/* Profile Section */}
                 <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                   <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Profile</h3>
@@ -3570,6 +5496,60 @@ function ChatPage() {
                       <div className="mt-1 text-xs text-slate-400">{profileStatus.length}/100 characters</div>
                     </label>
 
+                    <div>
+                      <div className="mb-2 text-sm text-slate-200">User Status</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleChangeStatus('online')}
+                          className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                            userStatus === 'online'
+                              ? 'border-green-500/50 bg-green-500/20 text-green-300'
+                              : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="h-2.5 w-2.5 rounded-full bg-green-500" />
+                          Online
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleChangeStatus('away')}
+                          className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                            userStatus === 'away'
+                              ? 'border-yellow-500/50 bg-yellow-500/20 text-yellow-300'
+                              : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="h-2.5 w-2.5 rounded-full bg-yellow-500" />
+                          Away
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleChangeStatus('busy')}
+                          className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                            userStatus === 'busy'
+                              ? 'border-red-500/50 bg-red-500/20 text-red-300'
+                              : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="h-2.5 w-2.5 rounded-full bg-red-500" />
+                          Busy
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleChangeStatus('offline')}
+                          className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                            userStatus === 'offline'
+                              ? 'border-gray-500/50 bg-gray-500/20 text-gray-300'
+                              : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="h-2.5 w-2.5 rounded-full bg-gray-500" />
+                          Offline
+                        </button>
+                      </div>
+                    </div>
+
                     <button
                       type="button"
                       onClick={handleUpdateProfile}
@@ -3585,17 +5565,20 @@ function ChatPage() {
                   <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Avatar</h3>
                   <div className="space-y-4">
                     <div className="flex items-center gap-4">
-                      <div className="flex h-20 w-20 items-center justify-center rounded-full border border-white/10 bg-slate-950/30 text-4xl overflow-hidden">
-                        {init?.avatar_type === 'image' && init?.avatar_data ? (
-                          <img src={init.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
-                        ) : (
-                          <>{init?.avatar ?? '👤'}</>
-                        )}
-                      </div>
+                      <AvatarWithStatus
+                        avatar={init?.avatar}
+                        avatar_type={init?.avatar_type}
+                        avatar_data={init?.avatar_data}
+                        user_status={init?.user_status}
+                        size="xl"
+                      />
                       <div className="flex-1">
                         <div className="text-sm text-slate-200 mb-2">Current Avatar</div>
                         <div className="text-xs text-slate-400">
                           Type: {init?.avatar_type || 'emoji'}
+                        </div>
+                        <div className="text-xs text-slate-400">
+                          Status: {init?.user_status}
                         </div>
                       </div>
                     </div>
@@ -3745,15 +5728,90 @@ function ChatPage() {
                 <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                   <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Notifications</h3>
                   <div className="space-y-4">
+                    {/* Browser Notifications Permission */}
+                    <div className="rounded-xl border border-white/10 bg-slate-950/20 p-3">
+                      <label className="block mb-2">
+                        <div className="text-sm font-medium text-slate-200">Browser Notifications</div>
+                        <div className="text-xs text-slate-400 mt-1">
+                          {notificationManager.isSupported() 
+                            ? 'Get desktop notifications for mentions, replies, and messages'
+                            : 'Browser notifications are not supported in your browser'}
+                        </div>
+                      </label>
+                      {notificationManager.isSupported() && (
+                        <div className="flex items-center gap-3">
+                          <div className="text-xs text-slate-300">
+                            Status: <span className={`font-semibold ${
+                              notificationPermission === 'granted' ? 'text-emerald-400' :
+                              notificationPermission === 'denied' ? 'text-red-400' :
+                              'text-amber-400'
+                            }`}>
+                              {notificationPermission === 'granted' ? 'Enabled' :
+                               notificationPermission === 'denied' ? 'Blocked' :
+                               'Not requested'}
+                            </span>
+                          </div>
+                          {notificationPermission !== 'granted' && notificationPermission !== 'denied' && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const permission = await notificationManager.requestPermission()
+                                setNotificationPermission(permission)
+                                if (permission === 'granted') {
+                                  pushToast({ kind: 'success', message: 'Browser notifications enabled' })
+                                  // Show test notification immediately
+                                  setTimeout(() => {
+                                    notificationManager.showNotification('Notifications Enabled!', {
+                                      body: 'You will now receive desktop notifications for messages, mentions, and replies.',
+                                      icon: '/favicon.ico',
+                                    })
+                                  }, 500)
+                                } else {
+                                  pushToast({ kind: 'error', message: 'Browser notifications permission denied' })
+                                }
+                              }}
+                              className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
+                            >
+                              Enable Notifications
+                            </button>
+                          )}
+                          {notificationPermission === 'granted' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                notificationManager.showNotification('Test Notification', {
+                                  body: 'This is a test notification. If you see this, notifications are working!',
+                                  icon: '/favicon.ico',
+                                })
+                                pushToast({ kind: 'info', message: 'Test notification sent - check your system tray!' })
+                              }}
+                              className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+                            >
+                              Test Notification
+                            </button>
+                          )}
+                          {notificationPermission === 'denied' && (
+                            <div className="text-xs text-red-400">
+                              Please enable notifications in your browser settings
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    
+                    {/* Notification Mode */}
                     <label className="block">
                       <div className="mb-2 text-sm text-slate-200">Notification Mode</div>
+                      <div className="text-xs text-slate-400 mb-2">
+                        Controls when you receive notifications (only works when browser notifications are enabled)
+                      </div>
                       <select
                         value={notificationMode}
                         onChange={(e) => setNotificationMode(e.target.value as 'all' | 'mentions' | 'none')}
                         className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
                       >
                         <option value="all">All messages</option>
-                        <option value="mentions">Only mentions</option>
+                        <option value="mentions">Only mentions and replies</option>
                         <option value="none">None</option>
                       </select>
                     </label>
@@ -3790,9 +5848,9 @@ function ChatPage() {
 
         {/* Server Settings Modal */}
         {isServerSettingsOpen && selectedServerObj && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setIsServerSettingsOpen(false)}>
-            <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-              <div className="flex items-center justify-between border-b border-white/10 px-6 py-4">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsServerSettingsOpen(false)}>
+            <div className="w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-white/10 px-6 py-4 flex-shrink-0">
                 <div className="flex items-center gap-3">
                   <span className="text-2xl">{selectedServerObj.icon ?? '🏠'}</span>
                   <h2 className="text-xl font-semibold text-white">{selectedServerObj.name} Settings</h2>
@@ -3806,8 +5864,200 @@ function ChatPage() {
                 </button>
               </div>
 
-              <div className="p-6">
+              <div className="p-6 overflow-y-auto flex-1">
                 <div className="space-y-6">
+                  {/* Category Management Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Categories</h3>
+                    <div className="space-y-3">
+                      {/* Create Category */}
+                      <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                        <div className="mb-2 text-sm font-medium text-slate-200">Create Category</div>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={categoryName}
+                            onChange={(e) => setCategoryName(e.target.value)}
+                            placeholder="Category name (e.g., 📚 Resources)"
+                            className="flex-1 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (categoryName.trim() && selectedServerId) {
+                                wsClient.send({ type: 'create_category', server_id: selectedServerId, name: categoryName.trim() })
+                                setCategoryName('')
+                              }
+                            }}
+                            disabled={!categoryName.trim() || wsClient.readyState !== WebSocket.OPEN}
+                            className="rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                          >
+                            Create
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* List Categories */}
+                      <div className="space-y-2">
+                        <div className="text-xs font-medium text-slate-400 mb-2">Manage Categories</div>
+                        {(() => {
+                          const sortedCategories = (selectedServerObj.categories ?? []).sort((a, b) => a.position - b.position)
+                          
+                          const moveCategoryUp = (categoryId: string, currentPosition: number) => {
+                            if (currentPosition === 0) return
+                            const newPositions = sortedCategories.map((cat, idx) => {
+                              if (cat.id === categoryId) {
+                                return { category_id: cat.id, position: currentPosition - 1 }
+                              }
+                              if (idx === currentPosition - 1) {
+                                return { category_id: cat.id, position: currentPosition }
+                              }
+                              return { category_id: cat.id, position: idx }
+                            })
+                            wsClient.send({ type: 'update_category_positions', server_id: selectedServerId, positions: newPositions })
+                          }
+                          
+                          const moveCategoryDown = (categoryId: string, currentPosition: number) => {
+                            if (currentPosition === sortedCategories.length - 1) return
+                            const newPositions = sortedCategories.map((cat, idx) => {
+                              if (cat.id === categoryId) {
+                                return { category_id: cat.id, position: currentPosition + 1 }
+                              }
+                              if (idx === currentPosition + 1) {
+                                return { category_id: cat.id, position: currentPosition }
+                              }
+                              return { category_id: cat.id, position: idx }
+                            })
+                            wsClient.send({ type: 'update_category_positions', server_id: selectedServerId, positions: newPositions })
+                          }
+                          
+                          return sortedCategories.map((category, index) => (
+                            <div key={category.id} className="rounded-lg border border-white/10 bg-slate-950/40 p-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2 flex-1 min-w-0">
+                                  {/* Reorder buttons */}
+                                  <div className="flex flex-col gap-0.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => moveCategoryUp(category.id, index)}
+                                      disabled={index === 0}
+                                      className="rounded bg-slate-700 px-1.5 py-0.5 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                      title="Move up"
+                                    >
+                                      ▲
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => moveCategoryDown(category.id, index)}
+                                      disabled={index === sortedCategories.length - 1}
+                                      className="rounded bg-slate-700 px-1.5 py-0.5 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                      title="Move down"
+                                    >
+                                      ▼
+                                    </button>
+                                  </div>
+                                  
+                                  {/* Category name */}
+                                  <div className="flex-1 min-w-0">
+                                    {editingCategoryId === category.id ? (
+                                      <input
+                                        type="text"
+                                        value={editingCategoryName}
+                                        onChange={(e) => setEditingCategoryName(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') {
+                                            if (editingCategoryName.trim()) {
+                                              wsClient.send({
+                                                type: 'update_category',
+                                                category_id: category.id,
+                                                name: editingCategoryName.trim()
+                                              })
+                                            }
+                                            setEditingCategoryId(null)
+                                            setEditingCategoryName('')
+                                          } else if (e.key === 'Escape') {
+                                            setEditingCategoryId(null)
+                                            setEditingCategoryName('')
+                                          }
+                                        }}
+                                        className="w-full rounded border border-sky-500/40 bg-slate-900 px-2 py-1 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                                        autoFocus
+                                      />
+                                    ) : (
+                                      <div className="text-sm font-medium text-slate-200 truncate">{category.name}</div>
+                                    )}
+                                  </div>
+                                </div>
+                                
+                                {/* Action buttons */}
+                                <div className="flex items-center gap-1 flex-shrink-0">
+                                  {editingCategoryId === category.id ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (editingCategoryName.trim()) {
+                                            wsClient.send({
+                                              type: 'update_category',
+                                              category_id: category.id,
+                                              name: editingCategoryName.trim()
+                                            })
+                                          }
+                                          setEditingCategoryId(null)
+                                          setEditingCategoryName('')
+                                        }}
+                                        className="rounded bg-green-600 px-2 py-1 text-xs font-semibold text-white hover:bg-green-500"
+                                      >
+                                        ✓
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEditingCategoryId(null)
+                                          setEditingCategoryName('')
+                                        }}
+                                        className="rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-500"
+                                      >
+                                        ✕
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEditingCategoryId(category.id)
+                                          setEditingCategoryName(category.name)
+                                        }}
+                                        className="rounded bg-slate-700 px-2 py-1 text-xs font-semibold text-slate-200 hover:bg-slate-600"
+                                      >
+                                        Edit
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (confirm(`Delete category "${category.name}"? Channels will not be deleted.`)) {
+                                            wsClient.send({ type: 'delete_category', category_id: category.id })
+                                          }
+                                        }}
+                                        className="rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-500"
+                                      >
+                                        Delete
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        })()}
+                        {(selectedServerObj.categories ?? []).length === 0 && (
+                          <div className="text-xs text-slate-500 text-center py-4">No categories yet. Create one above!</div>
+                        )}
+                      </div>
+                    </div>
+                  </section>
+
                   {/* Create Channel Section */}
                   <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                     <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Create Channel</h3>
@@ -3835,17 +6085,190 @@ function ChatPage() {
                         </select>
                       </label>
 
+                      <label className="block">
+                        <div className="mb-1 text-sm text-slate-200">Category (Optional)</div>
+                        <select
+                          value={selectedCategoryId}
+                          onChange={(e) => setSelectedCategoryId(e.target.value)}
+                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        >
+                          <option value="">No Category</option>
+                          {(selectedServerObj.categories ?? [])
+                            .sort((a, b) => a.position - b.position)
+                            .map((cat) => (
+                              <option key={cat.id} value={cat.id}>
+                                {cat.name}
+                              </option>
+                            ))}
+                        </select>
+                      </label>
+
                       <button
                         type="button"
                         onClick={() => {
                           createChannel()
                           setChannelName('')
+                          setSelectedCategoryId('')
                         }}
                         disabled={!channelName.trim() || wsClient.readyState !== WebSocket.OPEN}
                         className="w-full rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
                       >
                         Create Channel
                       </button>
+                    </div>
+                  </section>
+
+                  {/* Manage Channels Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Manage Channels</h3>
+                    <div className="space-y-3">
+                      <div className="text-xs font-medium text-slate-400 mb-2">Existing Channels</div>
+                      {(() => {
+                        const sortedChannels = (selectedServerObj.channels ?? []).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+                        
+                        const moveChannelUp = (currentIndex: number) => {
+                          if (currentIndex === 0) return
+                          const currentChannel = sortedChannels[currentIndex]
+                          // Find the previous channel in the same category
+                          let targetIndex = -1
+                          for (let i = currentIndex - 1; i >= 0; i--) {
+                            if (sortedChannels[i].category_id === currentChannel.category_id) {
+                              targetIndex = i
+                              break
+                            }
+                          }
+                          if (targetIndex === -1) return
+                          
+                          const newPositions = sortedChannels.map((ch, idx) => {
+                            if (idx === currentIndex) {
+                              return { channel_id: ch.id, position: targetIndex, category_id: ch.category_id }
+                            }
+                            if (idx === targetIndex) {
+                              return { channel_id: ch.id, position: currentIndex, category_id: ch.category_id }
+                            }
+                            return { channel_id: ch.id, position: idx, category_id: ch.category_id }
+                          })
+                          wsClient.send({ type: 'update_channel_positions', server_id: selectedServerId, positions: newPositions })
+                        }
+                        
+                        const moveChannelDown = (currentIndex: number) => {
+                          if (currentIndex === sortedChannels.length - 1) return
+                          const currentChannel = sortedChannels[currentIndex]
+                          // Find the next channel in the same category
+                          let targetIndex = -1
+                          for (let i = currentIndex + 1; i < sortedChannels.length; i++) {
+                            if (sortedChannels[i].category_id === currentChannel.category_id) {
+                              targetIndex = i
+                              break
+                            }
+                          }
+                          if (targetIndex === -1) return
+                          
+                          const newPositions = sortedChannels.map((ch, idx) => {
+                            if (idx === currentIndex) {
+                              return { channel_id: ch.id, position: targetIndex, category_id: ch.category_id }
+                            }
+                            if (idx === targetIndex) {
+                              return { channel_id: ch.id, position: currentIndex, category_id: ch.category_id }
+                            }
+                            return { channel_id: ch.id, position: idx, category_id: ch.category_id }
+                          })
+                          wsClient.send({ type: 'update_channel_positions', server_id: selectedServerId, positions: newPositions })
+                        }
+                        
+                        const canMoveUp = (currentIndex: number) => {
+                          if (currentIndex === 0) return false
+                          const currentChannel = sortedChannels[currentIndex]
+                          for (let i = currentIndex - 1; i >= 0; i--) {
+                            if (sortedChannels[i].category_id === currentChannel.category_id) {
+                              return true
+                            }
+                          }
+                          return false
+                        }
+                        
+                        const canMoveDown = (currentIndex: number) => {
+                          if (currentIndex === sortedChannels.length - 1) return false
+                          const currentChannel = sortedChannels[currentIndex]
+                          for (let i = currentIndex + 1; i < sortedChannels.length; i++) {
+                            if (sortedChannels[i].category_id === currentChannel.category_id) {
+                              return true
+                            }
+                          }
+                          return false
+                        }
+                        
+                        return sortedChannels.map((channel, index) => (
+                          <div key={channel.id} className="rounded-lg border border-white/10 bg-slate-950/40 p-3">
+                            <div className="flex items-center justify-between gap-2 mb-2">
+                              <div className="flex items-center gap-2 min-w-0 flex-1">
+                                {/* Reorder buttons */}
+                                <div className="flex flex-col gap-0.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => moveChannelUp(index)}
+                                    disabled={!canMoveUp(index)}
+                                    className="rounded bg-slate-700 px-1.5 py-0.5 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                    title="Move up"
+                                  >
+                                    ▲
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => moveChannelDown(index)}
+                                    disabled={!canMoveDown(index)}
+                                    className="rounded bg-slate-700 px-1.5 py-0.5 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                    title="Move down"
+                                  >
+                                    ▼
+                                  </button>
+                                </div>
+                                
+                                <span className="text-slate-400">{channel.type === 'voice' ? '🔊' : '#'}</span>
+                                <div className="text-sm font-medium text-slate-200 truncate">{channel.name}</div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (confirm(`Delete channel "${channel.name}"? This cannot be undone.`)) {
+                                    wsClient.send({ type: 'delete_channel', channel_id: channel.id })
+                                  }
+                                }}
+                                className="rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-500 flex-shrink-0"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                            <label className="block">
+                              <div className="mb-1 text-xs text-slate-400">Move to Category</div>
+                              <select
+                                value={channel.category_id || ''}
+                                onChange={(e) => {
+                                  const newCategoryId = e.target.value || null
+                                  wsClient.send({
+                                    type: 'update_channel_category',
+                                    channel_id: channel.id,
+                                    category_id: newCategoryId
+                                  })
+                                }}
+                                className="w-full rounded border border-white/10 bg-slate-900 px-2 py-1 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                              >
+                                <option value="">No Category</option>
+                                {(selectedServerObj.categories ?? [])
+                                  .sort((a, b) => a.position - b.position)
+                                  .map((cat) => (
+                                    <option key={cat.id} value={cat.id}>
+                                      {cat.name}
+                                    </option>
+                                  ))}
+                              </select>
+                            </label>
+                          </div>
+                        ))
+                      })()}
+                      {(selectedServerObj.channels ?? []).length === 0 && (
+                        <div className="text-xs text-slate-500 text-center py-4">No channels yet. Create one above!</div>
+                      )}
                     </div>
                   </section>
 
@@ -4017,6 +6440,614 @@ function ChatPage() {
                       )}
                     </div>
                   </section>
+
+                  {/* Roles & Permissions Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Roles & Permissions</h3>
+                    <div className="space-y-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            loadServerRoles(selectedServerId)
+                          }
+                          setSelectedRole(null)
+                          setRoleName('')
+                          setRoleColor('#3B82F6')
+                          setRolePermissions([])
+                          setIsCreateRoleOpen(true)
+                        }}
+                        className="w-full rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                      >
+                        Create New Role
+                      </button>
+
+                      {selectedServerId && serverRoles[selectedServerId]?.length > 0 && (
+                        <div className="space-y-2 max-h-64 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                          {serverRoles[selectedServerId].map((role: any) => (
+                            <div
+                              key={role.id}
+                              className="flex items-center justify-between rounded-lg border border-white/10 bg-slate-900/60 p-3"
+                            >
+                              <div className="flex items-center gap-3">
+                                <div
+                                  className="h-4 w-4 rounded"
+                                  style={{ backgroundColor: role.color || '#3B82F6' }}
+                                />
+                                <div>
+                                  <div className="text-sm font-semibold text-white">{role.name}</div>
+                                  <div className="text-xs text-slate-400">
+                                    {role.permissions?.length || 0} permission(s)
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="flex gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => openEditRole(role)}
+                                  className="rounded-lg bg-slate-700 px-3 py-1 text-xs font-semibold text-slate-200 hover:bg-slate-600"
+                                >
+                                  Edit
+                                </button>
+                                {role.name !== 'Admin' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteRole(role.id)}
+                                    className="rounded-lg bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-500"
+                                  >
+                                    Delete
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+
+                  {/* Member Roles Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Member Roles</h3>
+                    <div className="space-y-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            loadServerMembers(selectedServerId)
+                            // Load roles for all members
+                            if (serverMembers[selectedServerId]) {
+                              serverMembers[selectedServerId].forEach((member: any) => {
+                                loadUserRoles(selectedServerId, member.username)
+                              })
+                            }
+                          }
+                          setIsViewingMemberRoles(!isViewingMemberRoles)
+                        }}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                      >
+                        {isViewingMemberRoles ? 'Hide Member Roles' : 'View Member Roles'}
+                      </button>
+
+                      {isViewingMemberRoles && selectedServerId && serverMembers[selectedServerId] && (
+                        <div className="space-y-2 max-h-96 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                          {serverMembers[selectedServerId].map((member: any) => {
+                            const memberKey = `${selectedServerId}:${member.username}`
+                            const userRoles = memberRoles[memberKey] || []
+                            const availableRoles = serverRoles[selectedServerId] || []
+                            
+                            return (
+                              <div
+                                key={member.username}
+                                className="rounded-lg border border-white/10 bg-slate-900/60 p-3"
+                              >
+                                <div className="flex items-center justify-between mb-2">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-semibold text-white">
+                                      {member.username}
+                                    </span>
+                                    {member.is_owner && (
+                                      <span className="text-xs bg-sky-500/20 text-sky-300 px-2 py-0.5 rounded">
+                                        Owner
+                                      </span>
+                                    )}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedMemberForRole(
+                                      selectedMemberForRole === member.username ? null : member.username
+                                    )}
+                                    className="text-xs rounded-lg bg-slate-700 px-3 py-1 text-slate-200 hover:bg-slate-600"
+                                  >
+                                    {selectedMemberForRole === member.username ? 'Close' : 'Manage Roles'}
+                                  </button>
+                                </div>
+
+                                {/* Current roles */}
+                                {userRoles.length > 0 && (
+                                  <div className="flex flex-wrap gap-1.5 mb-2">
+                                    {userRoles.map((role: any) => (
+                                      <div
+                                        key={role.id}
+                                        className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-slate-800/60 px-2 py-1"
+                                      >
+                                        <div
+                                          className="h-3 w-3 rounded"
+                                          style={{ backgroundColor: role.color || '#3B82F6' }}
+                                        />
+                                        <span className="text-xs text-slate-200">{role.name}</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => removeRoleFromMember(member.username, role.id)}
+                                          className="text-slate-400 hover:text-rose-400 text-xs"
+                                          title="Remove role"
+                                        >
+                                          ×
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {/* Role assignment dropdown */}
+                                {selectedMemberForRole === member.username && (
+                                  <div className="mt-2 space-y-1.5">
+                                    <div className="text-xs text-slate-400 mb-1">Assign Role:</div>
+                                    {availableRoles
+                                      .filter((role: any) => !userRoles.some((ur: any) => ur.id === role.id))
+                                      .map((role: any) => (
+                                        <button
+                                          key={role.id}
+                                          type="button"
+                                          onClick={() => {
+                                            assignRoleToMember(member.username, role.id)
+                                            setSelectedMemberForRole(null)
+                                          }}
+                                          className="w-full flex items-center gap-2 rounded-lg border border-white/10 bg-slate-800/40 px-3 py-2 text-left hover:bg-slate-700/40"
+                                        >
+                                          <div
+                                            className="h-3 w-3 rounded"
+                                            style={{ backgroundColor: role.color || '#3B82F6' }}
+                                          />
+                                          <span className="text-xs text-slate-200">{role.name}</span>
+                                        </button>
+                                      ))}
+                                    {availableRoles.filter((role: any) => !userRoles.some((ur: any) => ur.id === role.id)).length === 0 && (
+                                      <div className="text-xs text-slate-500 text-center py-2">
+                                        All roles assigned
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+
+                  {/* Banned Members Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Banned Members</h3>
+                    <div className="space-y-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            loadServerBans(selectedServerId)
+                          }
+                          setIsViewingBans(!isViewingBans)
+                        }}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                      >
+                        {isViewingBans ? 'Hide Banned Members' : 'View Banned Members'}
+                      </button>
+
+                      {isViewingBans && (
+                        <>
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              value={banUsername}
+                              onChange={(e) => setBanUsername(e.target.value)}
+                              placeholder="Username to ban"
+                              className="flex-1 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                            <input
+                              type="text"
+                              value={banReason}
+                              onChange={(e) => setBanReason(e.target.value)}
+                              placeholder="Reason (optional)"
+                              className="flex-1 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                            <button
+                              type="button"
+                              onClick={banMember}
+                              disabled={!banUsername.trim()}
+                              className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
+                            >
+                              Ban
+                            </button>
+                          </div>
+
+                          {selectedServerId && serverBans[selectedServerId]?.length > 0 ? (
+                            <div className="space-y-2 max-h-48 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                              {serverBans[selectedServerId].map((ban: any, idx: number) => (
+                                <div
+                                  key={idx}
+                                  className="flex items-center justify-between rounded-lg border border-white/10 bg-slate-900/60 p-3"
+                                >
+                                  <div>
+                                    <div className="text-sm font-semibold text-white">{ban.username}</div>
+                                    {ban.reason && (
+                                      <div className="text-xs text-slate-400">Reason: {ban.reason}</div>
+                                    )}
+                                    <div className="text-xs text-slate-500">
+                                      Banned: {new Date(ban.banned_at).toLocaleDateString()}
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => unbanMember(ban.username)}
+                                    className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
+                                  >
+                                    Unban
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            selectedServerId && serverBans[selectedServerId] && (
+                              <div className="text-sm text-slate-400 text-center py-4">
+                                No banned members
+                              </div>
+                            )
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </section>
+
+                  {/* Automations Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">🤖 Automations</h3>
+                    <div className="space-y-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsViewingAutomations(!isViewingAutomations)
+                          if (!isViewingAutomations && selectedServerId) {
+                            // Load automations data
+                            wsClient.send({ type: 'get_scheduled_messages', server_id: selectedServerId })
+                            wsClient.send({ type: 'get_welcome_message', server_id: selectedServerId })
+                          }
+                        }}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                      >
+                        {isViewingAutomations ? 'Hide Automations' : 'Manage Automations'}
+                      </button>
+
+                      {isViewingAutomations && (
+                        <div className="space-y-4">
+                          {/* Scheduled Messages */}
+                          <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3 space-y-3">
+                            <div className="text-sm font-semibold text-white">📅 Scheduled Messages</div>
+                            <div className="space-y-2">
+                              <select
+                                value={scheduleChannel}
+                                onChange={(e) => setScheduleChannel(e.target.value)}
+                                className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                              >
+                                <option value="">Select Channel</option>
+                                {(selectedServerObj?.channels ?? []).map((ch: any) => (
+                                  <option key={ch.id} value={ch.id}>
+                                    {ch.type === 'voice' ? '🔊' : '#'} {ch.name}
+                                  </option>
+                                ))}
+                              </select>
+                              <input
+                                type="datetime-local"
+                                value={scheduleDateTime}
+                                onChange={(e) => setScheduleDateTime(e.target.value)}
+                                className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                              />
+                              <textarea
+                                value={scheduleContent}
+                                onChange={(e) => setScheduleContent(e.target.value)}
+                                placeholder="Message to send later..."
+                                rows={2}
+                                className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500 resize-none"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (selectedServerId && scheduleChannel && scheduleDateTime && scheduleContent.trim()) {
+                                    wsClient.send({
+                                      type: 'create_scheduled_message',
+                                      server_id: selectedServerId,
+                                      channel_id: scheduleChannel,
+                                      content: scheduleContent,
+                                      scheduled_for: new Date(scheduleDateTime).toISOString()
+                                    })
+                                    setScheduleContent('')
+                                    setScheduleDateTime('')
+                                    pushToast({ kind: 'success', message: 'Message scheduled!' })
+                                  }
+                                }}
+                                disabled={!scheduleChannel || !scheduleDateTime || !scheduleContent.trim()}
+                                className="w-full rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                              >
+                                Schedule Message
+                              </button>
+                            </div>
+                            {scheduledMessages.length > 0 && (
+                              <div className="mt-2 space-y-1 max-h-32 overflow-y-auto">
+                                {scheduledMessages.map((msg: any) => (
+                                  <div key={msg.id} className="flex items-start justify-between text-xs bg-slate-900/60 rounded p-2">
+                                    <div className="flex-1 min-w-0">
+                                      <div className="text-slate-300 truncate">{msg.content}</div>
+                                      <div className="text-slate-500 text-[10px]">
+                                        {new Date(msg.scheduled_for).toLocaleString()}
+                                      </div>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        wsClient.send({ type: 'delete_scheduled_message', message_id: msg.id })
+                                        setScheduledMessages(prev => prev.filter(m => m.id !== msg.id))
+                                      }}
+                                      className="text-rose-400 hover:text-rose-300 ml-2"
+                                    >
+                                      ×
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Create Poll */}
+                          <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3 space-y-3">
+                            <div className="text-sm font-semibold text-white">📊 Create Poll</div>
+                            <div className="space-y-2">
+                              <input
+                                type="text"
+                                value={pollQuestion}
+                                onChange={(e) => setPollQuestion(e.target.value)}
+                                placeholder="Poll question..."
+                                className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                              />
+                              {pollOptions.map((opt, idx) => (
+                                <div key={idx} className="flex gap-2">
+                                  <input
+                                    type="text"
+                                    value={opt}
+                                    onChange={(e) => {
+                                      const newOpts = [...pollOptions]
+                                      newOpts[idx] = e.target.value
+                                      setPollOptions(newOpts)
+                                    }}
+                                    placeholder={`Option ${idx + 1}`}
+                                    className="flex-1 rounded-lg border border-white/10 bg-slate-900 px-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                                  />
+                                  {pollOptions.length > 2 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setPollOptions(prev => prev.filter((_, i) => i !== idx))}
+                                      className="text-rose-400 hover:text-rose-300 px-2"
+                                    >
+                                      ×
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
+                              <button
+                                type="button"
+                                onClick={() => setPollOptions([...pollOptions, ''])}
+                                className="text-xs text-sky-400 hover:text-sky-300"
+                              >
+                                + Add Option
+                              </button>
+                              <div className="flex items-center gap-2">
+                                <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300">
+                                  <input
+                                    type="checkbox"
+                                    checked={pollAllowMultiple}
+                                    onChange={(e) => setPollAllowMultiple(e.target.checked)}
+                                    className="rounded border-white/10 text-sky-500 focus:ring-sky-500/40"
+                                  />
+                                  Allow multiple choices
+                                </label>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <label className="text-xs text-slate-400">Expires in (hours):</label>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max="168"
+                                  value={pollExpiresHours || ''}
+                                  onChange={(e) => setPollExpiresHours(e.target.value ? parseInt(e.target.value) : null)}
+                                  placeholder="Never"
+                                  className="w-20 rounded-lg border border-white/10 bg-slate-900 px-2 py-1 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const validOptions = pollOptions.filter(o => o.trim())
+                                  if (selectedServerId && selectedContext?.kind === 'server' && pollQuestion.trim() && validOptions.length >= 2) {
+                                    wsClient.send({
+                                      type: 'create_poll',
+                                      server_id: selectedServerId,
+                                      channel_id: selectedContext.channelId,
+                                      question: pollQuestion,
+                                      options: validOptions,
+                                      allow_multiple: pollAllowMultiple,
+                                      expires_hours: pollExpiresHours
+                                    })
+                                    setPollQuestion('')
+                                    setPollOptions(['', ''])
+                                    setPollAllowMultiple(false)
+                                    setPollExpiresHours(null)
+                                    pushToast({ kind: 'success', message: 'Poll created!' })
+                                  }
+                                }}
+                                disabled={!pollQuestion.trim() || pollOptions.filter(o => o.trim()).length < 2}
+                                className="w-full rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                              >
+                                Post Poll to Current Channel
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Welcome Message */}
+                          <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3 space-y-3">
+                            <div className="text-sm font-semibold text-white">👋 Welcome Message</div>
+                            <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300">
+                              <input
+                                type="checkbox"
+                                checked={welcomeEnabled}
+                                onChange={(e) => setWelcomeEnabled(e.target.checked)}
+                                className="rounded border-white/10 text-sky-500 focus:ring-sky-500/40"
+                              />
+                              Send welcome message to new members
+                            </label>
+                            {welcomeEnabled && (
+                              <div className="space-y-2">
+                                <select
+                                  value={welcomeChannel}
+                                  onChange={(e) => setWelcomeChannel(e.target.value)}
+                                  className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                                >
+                                  <option value="">First channel (default)</option>
+                                  {(selectedServerObj?.channels ?? []).filter((ch: any) => ch.type === 'text').map((ch: any) => (
+                                    <option key={ch.id} value={ch.id}>
+                                      # {ch.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                <textarea
+                                  value={welcomeMessage}
+                                  onChange={(e) => setWelcomeMessage(e.target.value)}
+                                  placeholder="Welcome message (use {user} for username)"
+                                  rows={2}
+                                  className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500 resize-none"
+                                />
+                                <div className="text-[10px] text-slate-500">Use {'{user}'} to mention the new member</div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (selectedServerId && welcomeMessage.trim()) {
+                                      wsClient.send({
+                                        type: 'set_welcome_message',
+                                        server_id: selectedServerId,
+                                        enabled: welcomeEnabled,
+                                        message: welcomeMessage,
+                                        channel_id: welcomeChannel || null
+                                      })
+                                      pushToast({ kind: 'success', message: 'Welcome message saved!' })
+                                    }
+                                  }}
+                                  disabled={!welcomeMessage.trim()}
+                                  className="w-full rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                                >
+                                  Save Welcome Message
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Create/Edit Role Modal */}
+        {isCreateRoleOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsCreateRoleOpen(false)}>
+            <div className="w-full max-w-md max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-white/10 px-6 py-4 flex-shrink-0">
+                <h2 className="text-xl font-semibold text-white">{selectedRole ? 'Edit Role' : 'Create Role'}</h2>
+                <button
+                  type="button"
+                  onClick={() => setIsCreateRoleOpen(false)}
+                  className="text-2xl text-slate-400 hover:text-slate-200"
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="p-6 overflow-y-auto flex-1">
+                <div className="space-y-4">
+                  <label className="block">
+                    <div className="mb-1 text-sm text-slate-200">Role Name</div>
+                    <input
+                      type="text"
+                      value={roleName}
+                      onChange={(e) => setRoleName(e.target.value)}
+                      placeholder="Enter role name"
+                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    />
+                  </label>
+
+                  <label className="block">
+                    <div className="mb-1 text-sm text-slate-200">Role Color</div>
+                    <input
+                      type="color"
+                      value={roleColor}
+                      onChange={(e) => setRoleColor(e.target.value)}
+                      className="w-full h-10 rounded-xl border border-white/10 bg-slate-950/40 cursor-pointer"
+                    />
+                  </label>
+
+                  <div>
+                    <div className="mb-2 text-sm text-slate-200">Permissions</div>
+                    <div className="space-y-2 max-h-64 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                      {[
+                        { key: 'administrator', label: 'Administrator (All Permissions)' },
+                        { key: 'manage_server', label: 'Manage Server' },
+                        { key: 'manage_channels', label: 'Manage Channels' },
+                        { key: 'ban_members', label: 'Ban Members' },
+                        { key: 'delete_messages', label: 'Delete Messages' },
+                        { key: 'manage_emojis', label: 'Manage Emojis' },
+                        { key: 'send_messages', label: 'Send Messages' },
+                        { key: 'read_messages', label: 'Read Messages' },
+                      ].map((perm) => (
+                        <label key={perm.key} className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={rolePermissions.includes(perm.key)}
+                            onChange={() => togglePermission(perm.key)}
+                            className="rounded border-white/10 bg-slate-950/40 text-sky-500 focus:ring-sky-500/40"
+                          />
+                          <span className="text-sm text-slate-200">{perm.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex gap-3 justify-end pt-4">
+                    <button
+                      type="button"
+                      onClick={() => setIsCreateRoleOpen(false)}
+                      className="rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={selectedRole ? updateRole : createRole}
+                      disabled={!roleName.trim()}
+                      className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                    >
+                      {selectedRole ? 'Update Role' : 'Create Role'}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

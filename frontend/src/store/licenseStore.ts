@@ -1,0 +1,84 @@
+import { create } from 'zustand'
+import type { LicenseFeatures, LicenseLimits, LicenseInfo } from '../types/protocol'
+
+interface LicenseState {
+  tier: string
+  features: LicenseFeatures
+  limits: LicenseLimits
+  customer: { name: string; email: string; company: string } | null
+  expiresAt: string | null
+  isAdmin: boolean
+  loading: boolean
+  lastCheckAt: string | null
+  isInGracePeriod: boolean
+  graceDaysRemaining: number | null
+
+  setLicenseInfo: (info: LicenseInfo) => void
+  hasFeature: (name: keyof LicenseFeatures) => boolean
+  getLimit: (name: keyof LicenseLimits) => number
+  isUnlimited: (name: keyof LicenseLimits) => boolean
+  setLoading: (loading: boolean) => void
+  clear: () => void
+}
+
+const DEFAULT_FEATURES: LicenseFeatures = {
+  voice_chat: true,
+  file_uploads: true,
+  webhooks: true,
+  custom_emojis: true,
+  audit_logs: true,
+  sso: false,
+}
+
+const DEFAULT_LIMITS: LicenseLimits = {
+  max_users: 30,
+  max_servers: 2,
+  max_channels_per_server: 30,
+  max_file_size_mb: 10,
+  max_messages_history: -1,
+}
+
+export const useLicenseStore = create<LicenseState>((set, get) => ({
+  tier: 'community',
+  features: { ...DEFAULT_FEATURES },
+  limits: { ...DEFAULT_LIMITS },
+  customer: null,
+  expiresAt: null,
+  isAdmin: false,
+  loading: true,
+  lastCheckAt: null,
+  isInGracePeriod: false,
+  graceDaysRemaining: null,
+
+  setLicenseInfo: (info) =>
+    set({
+      tier: info.tier,
+      features: info.features,
+      limits: info.limits,
+      customer: info.customer || null,
+      expiresAt: info.expires_at || null,
+      isAdmin: info.is_admin,
+      lastCheckAt: info.last_check_at || null,
+      isInGracePeriod: info.is_in_grace_period || false,
+      graceDaysRemaining: info.grace_days_remaining || null,
+      loading: false,
+    }),
+
+  hasFeature: (name) => get().features[name],
+  getLimit: (name) => get().limits[name],
+  isUnlimited: (name) => get().limits[name] === -1,
+  setLoading: (loading) => set({ loading }),
+  clear: () =>
+    set({
+      tier: 'community',
+      features: { ...DEFAULT_FEATURES },
+      limits: { ...DEFAULT_LIMITS },
+      customer: null,
+      expiresAt: null,
+      isAdmin: false,
+      loading: true,
+      lastCheckAt: null,
+      isInGracePeriod: false,
+      graceDaysRemaining: null,
+    }),
+}))

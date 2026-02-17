@@ -1,5 +1,7 @@
 import type {
   WsMessage,
+  WsOutboundChangeEmail,
+  WsOutboundChangeUsername,
   WsOutboundCreateChannel,
   WsOutboundCreateServer,
   WsOutboundCreateVoiceChannel,
@@ -161,6 +163,14 @@ export class WsClient {
     this.send(payload)
   }
 
+  changeEmail(payload: WsOutboundChangeEmail) {
+    this.send(payload)
+  }
+
+  changeUsername(payload: WsOutboundChangeUsername) {
+    this.send(payload)
+  }
+
   setAvatar(payload: WsOutboundSetAvatar) {
     this.send(payload)
   }
@@ -183,6 +193,22 @@ export class WsClient {
 
   requestPasswordReset(payload: WsOutboundRequestPasswordReset) {
     this.send(payload)
+  }
+
+  getLicenseInfo() {
+    this.send({ type: 'get_license_info' })
+  }
+
+  updateLicense(licenseKey: string) {
+    this.send({ type: 'update_license', license_key: licenseKey })
+  }
+
+  removeLicense() {
+    this.send({ type: 'remove_license' })
+  }
+
+  forceLicenseCheckin() {
+    this.send({ type: 'force_license_checkin' })
   }
 
   close() {

@@ -13,12 +13,21 @@ export type Avatar = {
 export type Profile = {
   bio?: string
   status_message?: string
+  user_status?: 'online' | 'away' | 'busy' | 'offline'
 }
 
 export type ServerChannel = {
   id: string
   name: string
   type?: 'text' | 'voice' | string
+  category_id?: string | null
+  position?: number
+}
+
+export type ServerCategory = {
+  id: string
+  name: string
+  position: number
 }
 
 export type ServerPermissions = {
@@ -29,6 +38,11 @@ export type ServerPermissions = {
   can_delete_messages?: boolean
 }
 
+export type UnreadChannelInfo = {
+  unread_count: number
+  has_mention: boolean
+}
+
 export type Server = {
   id: string
   name: string
@@ -37,16 +51,24 @@ export type Server = {
   icon_type?: 'emoji' | 'image' | string
   icon_data?: string | null
   channels: ServerChannel[]
+  categories?: ServerCategory[]
   permissions?: ServerPermissions
+  unread_count?: number
+  has_mention?: boolean
+  channel_unreads?: Record<string, UnreadChannelInfo>
 }
 
 export type Dm = {
   id: string
   username: string
+  user_status?: 'online' | 'away' | 'busy' | 'offline'
+  unread_count?: number
+  has_mention?: boolean
 } & Avatar
 
 export type Friend = {
   username: string
+  user_status?: 'online' | 'away' | 'busy' | 'offline'
 } & Avatar &
   Profile
 
@@ -63,6 +85,8 @@ export type WsTwoFaRequired = {
 export type WsInit = {
   type: 'init'
   username: string
+  email?: string
+  email_verified?: boolean
   is_admin?: boolean
   notification_mode?: string
   servers?: Server[]
@@ -105,10 +129,10 @@ export type Attachment = {
 }
 
 export type Reaction = {
+  username: string
   emoji: string
   emoji_type: 'standard' | 'custom'
-  users: string[]
-  count: number
+  created_at: string
 }
 
 export type WsChatMessage = {
@@ -123,6 +147,15 @@ export type WsChatMessage = {
   messageKey?: string
   reactions?: Reaction[]
   attachments?: Attachment[]
+  mentions?: string[]
+  user_status?: 'online' | 'away' | 'busy' | 'offline'
+  role_color?: string
+  reply_data?: {
+    id: number
+    username: string
+    content: string
+    deleted: boolean
+  }
 } & Avatar
 
 export type WsHistory = {
@@ -191,6 +224,19 @@ export type WsChannelCreated = {
   channel: ServerChannel
 }
 
+export type WsChannelCategoryUpdated = {
+  type: 'channel_category_updated'
+  server_id: string
+  channel_id: string
+  category_id: string | null
+}
+
+export type WsChannelDeleted = {
+  type: 'channel_deleted'
+  server_id: string
+  channel_id: string
+}
+
 export type WsDmStarted = {
   type: 'dm_started'
   dm: Dm & Profile
@@ -241,6 +287,31 @@ export type WsNotificationModeUpdated = {
   notification_mode: string
 }
 
+export type WsEmailChanged = {
+  type: 'email_changed'
+  email: string
+  email_verified: boolean
+}
+
+export type WsEmailVerified = {
+  type: 'email_verified'
+  email: string
+  email_verified: boolean
+}
+
+export type WsUsernameChanged = {
+  type: 'username_changed'
+  old_username: string
+  new_username: string
+  token: string
+}
+
+export type WsUserRenamed = {
+  type: 'user_renamed'
+  old_username: string
+  new_username: string
+}
+
 export type WsPasswordResetRequested = {
   type: 'password_reset_requested'
   message?: string
@@ -274,6 +345,21 @@ export type WsReactionRemoved = {
   reactions: Reaction[]
 }
 
+export type WsUserStatusChanged = {
+  type: 'user_status_changed'
+  username: string
+  user_status: 'online' | 'away' | 'busy' | 'offline'
+}
+
+export type WsMentionNotification = {
+  type: 'mention_notification'
+  message_id: number
+  mentioned_by: string
+  content: string
+  context_type: 'global' | 'server' | 'dm'
+  context_id?: string | null
+}
+
 export type WsMessage =
   | WsAuthSuccess
   | WsAuthError
@@ -291,6 +377,8 @@ export type WsMessage =
   | WsServerCreated
   | WsServerJoined
   | WsChannelCreated
+  | WsChannelCategoryUpdated
+  | WsChannelDeleted
   | WsDmStarted
   | WsServerMembers
   | WsInviteCode
@@ -302,6 +390,10 @@ export type WsMessage =
   | WsProfileUpdated
   | WsAvatarUpdated
   | WsNotificationModeUpdated
+  | WsEmailChanged
+  | WsEmailVerified
+  | WsUsernameChanged
+  | WsUserRenamed
   | WsPasswordResetRequested
   | WsServerIconUpdate
   | WsCustomEmojiAdded
@@ -311,6 +403,8 @@ export type WsMessage =
   | WsMessageDeleted
   | WsReactionAdded
   | WsReactionRemoved
+  | WsInboundLicenseInfo
+  | WsInboundLicenseUpdated
   | WsVoiceChannelJoined
   | WsDirectCallStarted
   | WsUserJoinedVoice
@@ -319,6 +413,8 @@ export type WsMessage =
   | WsWebRTCOffer
   | WsWebRTCAnswer
   | WsWebRTCIceCandidate
+  | WsUserStatusChanged
+  | WsMentionNotification
   | { type: string; [k: string]: any }
 
 export type WsOutboundLogin = {
@@ -372,6 +468,9 @@ export type WsOutboundSendMessage = {
   content: string
   context?: 'global' | 'server' | 'dm'
   context_id?: string | null
+  mentions?: string[]
+  messageKey?: string
+  reply_to?: number
 }
 
 export type WsOutboundCreateServer = {
@@ -384,6 +483,8 @@ export type WsOutboundCreateChannel = {
   server_id: string
   name: string
   channel_type?: 'text' | 'voice'
+  category_id?: string
+  position?: number
 }
 
 export type WsOutboundCreateVoiceChannel = {
@@ -432,6 +533,18 @@ export type WsOutboundSetAvatar = {
   avatar_type: 'emoji' | 'image'
   avatar?: string
   avatar_data?: string
+}
+
+export type WsOutboundChangeEmail = {
+  type: 'change_email'
+  new_email: string
+  password: string
+}
+
+export type WsOutboundChangeUsername = {
+  type: 'change_username'
+  new_username: string
+  password: string
 }
 
 export type WsOutboundSetup2FA = {
@@ -624,4 +737,91 @@ export type WsServerEmojis = {
   type: 'server_emojis'
   server_id: string
   emojis: CustomEmoji[]
+}
+
+// ── License System ──────────────────────────────────────
+
+export interface LicenseFeatures {
+  voice_chat: boolean
+  file_uploads: boolean
+  webhooks: boolean
+  custom_emojis: boolean
+  audit_logs: boolean
+  sso: boolean
+}
+
+export interface LicenseLimits {
+  max_users: number
+  max_servers: number
+  max_channels_per_server: number
+  max_file_size_mb: number
+  max_messages_history: number
+}
+
+export interface LicenseInfo {
+  tier: string
+  features: LicenseFeatures
+  limits: LicenseLimits
+  customer?: {
+    name: string
+    email: string
+    company: string
+  }
+  expires_at?: string
+  is_admin: boolean
+  last_check_at?: string
+  is_in_grace_period?: boolean
+  grace_days_remaining?: number
+}
+
+export interface WsOutboundGetLicenseInfo {
+  type: 'get_license_info'
+}
+
+export interface WsOutboundUpdateLicense {
+  type: 'update_license'
+  license_key: string
+}
+
+export interface WsOutboundRemoveLicense {
+  type: 'remove_license'
+}
+
+// ── Read Status System ──────────────────────────────────────
+
+export type WsMarkAsRead = {
+  type: 'mark_as_read'
+  context_type: 'server' | 'dm' | 'global'
+  context_id: string
+}
+
+export type WsUnreadCounts = {
+  type: 'unread_counts'
+  dm_counts: Record<string, { unread_count: number; has_mention: boolean }>
+  server_counts: Record<string, { 
+    unread_count: number
+    has_mention: boolean
+    channels: Record<string, { unread_count: number; has_mention: boolean }>
+  }>
+}
+
+export type WsUnreadUpdate = {
+  type: 'unread_update'
+  context_type: 'server' | 'dm'
+  context_id: string
+  dm_id?: string
+  server_id?: string
+  channel_id?: string
+  unread_count: number
+  has_mention: boolean
+}
+
+export interface WsInboundLicenseInfo {
+  type: 'license_info'
+  data: LicenseInfo
+}
+
+export interface WsInboundLicenseUpdated {
+  type: 'license_updated'
+  data: LicenseInfo
 }

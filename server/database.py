@@ -67,7 +67,8 @@ class Database:
                             email VARCHAR(255),
                             email_verified BOOLEAN DEFAULT FALSE,
                             bio TEXT DEFAULT '',
-                            status_message VARCHAR(100) DEFAULT ''
+                            status_message VARCHAR(100) DEFAULT '',
+                            user_status VARCHAR(20) DEFAULT 'online'
                         )
                     ''')
                     
@@ -84,14 +85,29 @@ class Database:
                         )
                     ''')
                     
+                    # Categories table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS categories (
+                            category_id VARCHAR(255) PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            name VARCHAR(255) NOT NULL,
+                            position INTEGER DEFAULT 0,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
+                        )
+                    ''')
+                    
                     # Channels table
                     cursor.execute('''
                         CREATE TABLE IF NOT EXISTS channels (
                             channel_id VARCHAR(255) PRIMARY KEY,
                             server_id VARCHAR(255) NOT NULL,
+                            category_id VARCHAR(255),
                             name VARCHAR(255) NOT NULL,
                             type VARCHAR(50) DEFAULT 'text',
-                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
+                            position INTEGER DEFAULT 0,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (category_id) REFERENCES categories(category_id) ON DELETE CASCADE
                         )
                     ''')
                     
@@ -249,6 +265,22 @@ class Database:
                         )
                     ''')
                     
+                    # Server bans table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS server_bans (
+                            ban_id SERIAL PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            username VARCHAR(255) NOT NULL,
+                            banned_by VARCHAR(255) NOT NULL,
+                            reason TEXT,
+                            banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE (server_id, username),
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE,
+                            FOREIGN KEY (banned_by) REFERENCES users(username)
+                        )
+                    ''')
+                    
                     # Email verification codes table
                     cursor.execute('''
                         CREATE TABLE IF NOT EXISTS email_verification_codes (
@@ -335,7 +367,7 @@ class Database:
                     cursor.execute('''
                         CREATE TABLE IF NOT EXISTS message_attachments (
                             attachment_id VARCHAR(255) PRIMARY KEY,
-                            message_id INTEGER NOT NULL,
+                            message_id INTEGER,
                             filename VARCHAR(255) NOT NULL,
                             content_type VARCHAR(100) NOT NULL,
                             file_size INTEGER NOT NULL,
@@ -349,6 +381,49 @@ class Database:
                     cursor.execute('''
                         CREATE INDEX IF NOT EXISTS idx_attachments_message 
                         ON message_attachments(message_id)
+                    ''')
+                    
+                    # Message mentions table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS message_mentions (
+                            message_id INTEGER NOT NULL,
+                            mentioned_username VARCHAR(255) NOT NULL,
+                            created_at TIMESTAMP NOT NULL,
+                            PRIMARY KEY (message_id, mentioned_username),
+                            FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                            FOREIGN KEY (mentioned_username) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Create index for faster mention retrieval
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_mentions_user 
+                        ON message_mentions(mentioned_username)
+                    ''')
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_mentions_message 
+                        ON message_mentions(message_id)
+                    ''')
+                    
+                    # Message read status table
+                    # Tracks which messages have been read by each user
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS message_read_status (
+                            username VARCHAR(255) NOT NULL,
+                            context_type VARCHAR(50) NOT NULL,
+                            context_id VARCHAR(255) NOT NULL,
+                            last_read_message_id INTEGER,
+                            last_read_at TIMESTAMP,
+                            PRIMARY KEY (username, context_type, context_id),
+                            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE,
+                            FOREIGN KEY (last_read_message_id) REFERENCES messages(id) ON DELETE SET NULL
+                        )
+                    ''')
+                    
+                    # Create index for faster read status retrieval
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_read_status_user 
+                        ON message_read_status(username)
                     ''')
                     
                     # Add notification_mode column if it doesn't exist (migration)
@@ -535,6 +610,12 @@ class Database:
                             ) THEN
                                 ALTER TABLE messages ADD COLUMN deleted BOOLEAN DEFAULT FALSE;
                             END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'messages' AND column_name = 'reply_to'
+                            ) THEN
+                                ALTER TABLE messages ADD COLUMN reply_to INTEGER REFERENCES messages(id) ON DELETE SET NULL;
+                            END IF;
                         END $$;
                     ''')
                     
@@ -582,19 +663,96 @@ class Database:
                         END $$;
                     ''')
                     
+                    # Alter message_attachments to allow NULL message_id for embedding (migration)
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            -- Check if the column has NOT NULL constraint
+                            IF EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'message_attachments' 
+                                AND column_name = 'message_id' 
+                                AND is_nullable = 'NO'
+                            ) THEN
+                                ALTER TABLE message_attachments ALTER COLUMN message_id DROP NOT NULL;
+                            END IF;
+                        END $$;
+                    ''')
+                    
                     # Add DM purge schedule column if it doesn't exist (migration)
                     cursor.execute('''
-                        DO $$ 
+                        DO $$
                         BEGIN
                             IF NOT EXISTS (
-                                SELECT 1 FROM information_schema.columns 
+                                SELECT 1 FROM information_schema.columns
                                 WHERE table_name = 'admin_settings' AND column_name = 'dm_purge_schedule'
                             ) THEN
                                 ALTER TABLE admin_settings ADD COLUMN dm_purge_schedule INTEGER DEFAULT 0;
                             END IF;
                         END $$;
                     ''')
-                    
+
+                    # Add license system columns if they don't exist (migration)
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'license_key'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN license_key TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'license_tier'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN license_tier VARCHAR(50) DEFAULT 'community';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'license_expires_at'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN license_expires_at TIMESTAMP;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'license_customer_name'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN license_customer_name VARCHAR(255) DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'license_customer_email'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN license_customer_email VARCHAR(255) DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'last_license_check_at'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN last_license_check_at TIMESTAMP;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'license_server_url'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN license_server_url TEXT DEFAULT 'https://licenses.decentra.example.com';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'license_check_grace_period_days'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN license_check_grace_period_days INTEGER DEFAULT 7;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'instance_fingerprint'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN instance_fingerprint TEXT;
+                            END IF;
+                        END $$;
+                    ''')
+
                     # Server settings table
                     cursor.execute('''
                         CREATE TABLE IF NOT EXISTS server_settings (
@@ -617,8 +775,231 @@ class Database:
                         )
                     ''')
                     
+                    # Add category_id and position to channels if they don't exist (migration)
+                    cursor.execute('''
+                        DO $$ 
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'channels' AND column_name = 'category_id'
+                            ) THEN
+                                ALTER TABLE channels ADD COLUMN category_id VARCHAR(255) REFERENCES categories(category_id) ON DELETE CASCADE;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'channels' AND column_name = 'position'
+                            ) THEN
+                                ALTER TABLE channels ADD COLUMN position INTEGER DEFAULT 0;
+                            END IF;
+                        END $$;
+                    ''')
+
+                    
+                    # Add ON UPDATE CASCADE to all foreign keys referencing users(username) (migration)
+                    # This enables PostgreSQL to automatically cascade username renames
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            -- Check if migration is already applied by inspecting a known FK
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.referential_constraints
+                                WHERE constraint_name = 'server_members_username_fkey'
+                                AND update_rule = 'CASCADE'
+                            ) THEN
+                                -- servers.owner -> users(username)
+                                ALTER TABLE servers DROP CONSTRAINT IF EXISTS servers_owner_fkey;
+                                ALTER TABLE servers ADD CONSTRAINT servers_owner_fkey
+                                    FOREIGN KEY (owner) REFERENCES users(username) ON UPDATE CASCADE;
+
+                                -- server_members.username -> users(username)
+                                ALTER TABLE server_members DROP CONSTRAINT IF EXISTS server_members_username_fkey;
+                                ALTER TABLE server_members ADD CONSTRAINT server_members_username_fkey
+                                    FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- messages.username -> users(username)
+                                ALTER TABLE messages DROP CONSTRAINT IF EXISTS messages_username_fkey;
+                                ALTER TABLE messages ADD CONSTRAINT messages_username_fkey
+                                    FOREIGN KEY (username) REFERENCES users(username) ON UPDATE CASCADE;
+
+                                -- friendships.user1 -> users(username)
+                                ALTER TABLE friendships DROP CONSTRAINT IF EXISTS friendships_user1_fkey;
+                                ALTER TABLE friendships ADD CONSTRAINT friendships_user1_fkey
+                                    FOREIGN KEY (user1) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- friendships.user2 -> users(username)
+                                ALTER TABLE friendships DROP CONSTRAINT IF EXISTS friendships_user2_fkey;
+                                ALTER TABLE friendships ADD CONSTRAINT friendships_user2_fkey
+                                    FOREIGN KEY (user2) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- direct_messages.user1 -> users(username)
+                                ALTER TABLE direct_messages DROP CONSTRAINT IF EXISTS direct_messages_user1_fkey;
+                                ALTER TABLE direct_messages ADD CONSTRAINT direct_messages_user1_fkey
+                                    FOREIGN KEY (user1) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- direct_messages.user2 -> users(username)
+                                ALTER TABLE direct_messages DROP CONSTRAINT IF EXISTS direct_messages_user2_fkey;
+                                ALTER TABLE direct_messages ADD CONSTRAINT direct_messages_user2_fkey
+                                    FOREIGN KEY (user2) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- invite_codes.creator -> users(username)
+                                ALTER TABLE invite_codes DROP CONSTRAINT IF EXISTS invite_codes_creator_fkey;
+                                ALTER TABLE invite_codes ADD CONSTRAINT invite_codes_creator_fkey
+                                    FOREIGN KEY (creator) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- invite_usage.used_by -> users(username)
+                                ALTER TABLE invite_usage DROP CONSTRAINT IF EXISTS invite_usage_used_by_fkey;
+                                ALTER TABLE invite_usage ADD CONSTRAINT invite_usage_used_by_fkey
+                                    FOREIGN KEY (used_by) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- user_roles.username -> users(username)
+                                ALTER TABLE user_roles DROP CONSTRAINT IF EXISTS user_roles_username_fkey;
+                                ALTER TABLE user_roles ADD CONSTRAINT user_roles_username_fkey
+                                    FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- password_reset_tokens.username -> users(username)
+                                ALTER TABLE password_reset_tokens DROP CONSTRAINT IF EXISTS password_reset_tokens_username_fkey;
+                                ALTER TABLE password_reset_tokens ADD CONSTRAINT password_reset_tokens_username_fkey
+                                    FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- user_2fa.username -> users(username)
+                                ALTER TABLE user_2fa DROP CONSTRAINT IF EXISTS user_2fa_username_fkey;
+                                ALTER TABLE user_2fa ADD CONSTRAINT user_2fa_username_fkey
+                                    FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- user_e2e_keys.username -> users(username)
+                                ALTER TABLE user_e2e_keys DROP CONSTRAINT IF EXISTS user_e2e_keys_username_fkey;
+                                ALTER TABLE user_e2e_keys ADD CONSTRAINT user_e2e_keys_username_fkey
+                                    FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- custom_emojis.uploader -> users(username)
+                                ALTER TABLE custom_emojis DROP CONSTRAINT IF EXISTS custom_emojis_uploader_fkey;
+                                ALTER TABLE custom_emojis ADD CONSTRAINT custom_emojis_uploader_fkey
+                                    FOREIGN KEY (uploader) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+
+                                -- message_reactions.username -> users(username)
+                                ALTER TABLE message_reactions DROP CONSTRAINT IF EXISTS message_reactions_username_fkey;
+                                ALTER TABLE message_reactions ADD CONSTRAINT message_reactions_username_fkey
+                                    FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
+                            END IF;
+                        END $$;
+                    ''')
+
+                    # Add UNIQUE constraint on users.email (migration)
+                    # PostgreSQL allows multiple NULLs in UNIQUE columns so users without email are fine
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM pg_constraint
+                                WHERE conname = 'users_email_unique'
+                            ) THEN
+                                ALTER TABLE users ADD CONSTRAINT users_email_unique UNIQUE (email);
+                            END IF;
+                        END $$;
+                    ''')
+
+                    # Scheduled messages table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS scheduled_messages (
+                            id SERIAL PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            channel_id VARCHAR(255) NOT NULL,
+                            username VARCHAR(255) NOT NULL,
+                            content TEXT NOT NULL,
+                            scheduled_for TIMESTAMP NOT NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            sent BOOLEAN DEFAULT FALSE,
+                            sent_at TIMESTAMP,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (channel_id) REFERENCES channels(channel_id) ON DELETE CASCADE,
+                            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Create index for faster scheduled message retrieval
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_scheduled_messages_server 
+                        ON scheduled_messages(server_id, sent)
+                    ''')
+                    
+                    # Polls table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS polls (
+                            poll_id VARCHAR(255) PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            channel_id VARCHAR(255) NOT NULL,
+                            creator VARCHAR(255) NOT NULL,
+                            question TEXT NOT NULL,
+                            allow_multiple BOOLEAN DEFAULT FALSE,
+                            expires_at TIMESTAMP,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            closed BOOLEAN DEFAULT FALSE,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (channel_id) REFERENCES channels(channel_id) ON DELETE CASCADE,
+                            FOREIGN KEY (creator) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Poll options table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS poll_options (
+                            option_id VARCHAR(255) PRIMARY KEY,
+                            poll_id VARCHAR(255) NOT NULL,
+                            option_text TEXT NOT NULL,
+                            position INTEGER DEFAULT 0,
+                            FOREIGN KEY (poll_id) REFERENCES polls(poll_id) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Poll votes table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS poll_votes (
+                            poll_id VARCHAR(255) NOT NULL,
+                            option_id VARCHAR(255) NOT NULL,
+                            username VARCHAR(255) NOT NULL,
+                            voted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            PRIMARY KEY (poll_id, option_id, username),
+                            FOREIGN KEY (poll_id) REFERENCES polls(poll_id) ON DELETE CASCADE,
+                            FOREIGN KEY (option_id) REFERENCES poll_options(option_id) ON DELETE CASCADE,
+                            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Create index for faster poll vote retrieval
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_poll_votes_poll 
+                        ON poll_votes(poll_id)
+                    ''')
+                    
+                    # Welcome messages table (automation per server)
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS welcome_messages (
+                            server_id VARCHAR(255) PRIMARY KEY,
+                            enabled BOOLEAN DEFAULT FALSE,
+                            message TEXT NOT NULL,
+                            channel_id VARCHAR(255),
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (channel_id) REFERENCES channels(channel_id) ON DELETE SET NULL
+                        )
+                    ''')
+                    
+                    # Add signup notification settings to admin_settings if it doesn't exist (migration)
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'notify_admin_on_signup'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN notify_admin_on_signup BOOLEAN DEFAULT TRUE;
+                            END IF;
+                        END $$;
+                    ''')
+
                     conn.commit()
-                
+
                 # If we get here, connection was successful
                 print(f"Database connection established successfully")
                 return
@@ -722,7 +1103,86 @@ class Database:
                     SET status_message = %s
                     WHERE username = %s
                 ''', (status_message, username))
-    
+
+    def update_user_status(self, username: str, user_status: str):
+        """Update user status (online, away, busy, offline)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE users 
+                SET user_status = %s
+                WHERE username = %s
+            ''', (user_status, username))
+
+    def update_user_email(self, username: str, new_email: str) -> bool:
+        """Update user email and reset verification status. Returns False if email is taken."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE users
+                    SET email = %s, email_verified = FALSE
+                    WHERE username = %s
+                ''', (new_email, username))
+                return cursor.rowcount > 0
+        except psycopg2.IntegrityError:
+            return False  # Email unique constraint violation
+
+    def change_username(self, old_username: str, new_username: str) -> bool:
+        """Change a user's username. Cascades to all related tables via ON UPDATE CASCADE."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+
+                # Temporarily drop friendships CHECK constraint (user1 < user2)
+                # because after cascading rename, ordering may be violated
+                cursor.execute(
+                    "ALTER TABLE friendships DROP CONSTRAINT IF EXISTS friendships_check"
+                )
+
+                # Update the primary key -- ON UPDATE CASCADE handles all FK columns
+                cursor.execute(
+                    "UPDATE users SET username = %s WHERE username = %s",
+                    (new_username, old_username)
+                )
+
+                # If no user was updated, restore the constraint and report failure
+                if cursor.rowcount == 0:
+                    cursor.execute(
+                        "ALTER TABLE friendships ADD CONSTRAINT friendships_check CHECK (user1 < user2)"
+                    )
+                    return False
+                # Manually update columns without FK constraints
+                # friendships.requester has no FK
+                cursor.execute(
+                    "UPDATE friendships SET requester = %s WHERE requester = %s",
+                    (new_username, old_username)
+                )
+
+                # email_verification_codes.username has no FK
+                cursor.execute(
+                    "UPDATE email_verification_codes SET username = %s WHERE username = %s",
+                    (new_username, old_username)
+                )
+
+                # Fix friendship row ordering where user1 >= user2 after rename
+                cursor.execute('''
+                    UPDATE friendships
+                    SET user1 = LEAST(user1, user2),
+                        user2 = GREATEST(user1, user2)
+                    WHERE user1 >= user2
+                ''')
+
+                # Re-add the CHECK constraint
+                cursor.execute(
+                    "ALTER TABLE friendships ADD CONSTRAINT friendships_check CHECK (user1 < user2)"
+                )
+
+                return True
+        except Exception as e:
+            print(f"Error changing username: {e}")
+            return False
+
     def verify_user_email(self, username: str) -> bool:
         """Mark user's email as verified."""
         try:
@@ -779,6 +1239,19 @@ class Database:
                     DELETE FROM email_verification_codes 
                     WHERE email = %s AND username = %s
                 ''', (email, username))
+                return True
+        except Exception:
+            return False
+    
+    def delete_all_user_verification_codes(self, username: str) -> bool:
+        """Delete all email verification codes for a user."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    DELETE FROM email_verification_codes 
+                    WHERE username = %s
+                ''', (username,))
                 return True
         except Exception:
             return False
@@ -1140,15 +1613,15 @@ class Database:
             return False
     
     # Channel operations
-    def create_channel(self, channel_id: str, server_id: str, name: str, channel_type: str = 'text') -> bool:
+    def create_channel(self, channel_id: str, server_id: str, name: str, channel_type: str = 'text', category_id: Optional[str] = None, position: int = 0) -> bool:
         """Create a new channel."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT INTO channels (channel_id, server_id, name, type)
-                    VALUES (%s, %s, %s, %s)
-                ''', (channel_id, server_id, name, channel_type))
+                    INSERT INTO channels (channel_id, server_id, name, type, category_id, position)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                ''', (channel_id, server_id, name, channel_type, category_id, position))
                 return True
         except psycopg2.IntegrityError:
             return False
@@ -1158,9 +1631,111 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT * FROM channels WHERE server_id = %s ORDER BY channel_id
+                SELECT * FROM channels WHERE server_id = %s ORDER BY position, channel_id
             ''', (server_id,))
             return [dict(row) for row in cursor.fetchall()]
+    
+    def delete_channel(self, channel_id: str) -> bool:
+        """Delete a channel."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM channels WHERE channel_id = %s', (channel_id,))
+                return cursor.rowcount > 0
+        except psycopg2.Error:
+            return False
+    
+    # Category operations
+    def create_category(self, category_id: str, server_id: str, name: str, position: int = 0) -> bool:
+        """Create a new category."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO categories (category_id, server_id, name, position)
+                    VALUES (%s, %s, %s, %s)
+                ''', (category_id, server_id, name, position))
+                return True
+        except psycopg2.IntegrityError:
+            return False
+    
+    def get_server_categories(self, server_id: str) -> List[Dict]:
+        """Get all categories for a server."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM categories WHERE server_id = %s ORDER BY position, category_id
+            ''', (server_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def update_category(self, category_id: str, name: str) -> bool:
+        """Update a category name."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE categories SET name = %s WHERE category_id = %s
+                ''', (name, category_id))
+                return cursor.rowcount > 0
+        except psycopg2.Error:
+            return False
+    
+    def delete_category(self, category_id: str) -> bool:
+        """Delete a category. Channels in this category will have category_id set to NULL."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM categories WHERE category_id = %s', (category_id,))
+                return True
+        except psycopg2.Error:
+            return False
+    
+    def update_category_positions(self, positions: List[Tuple[str, int]]) -> bool:
+        """Update positions of multiple categories.
+        
+        Args:
+            positions: List of (category_id, position) tuples
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                for category_id, position in positions:
+                    cursor.execute('''
+                        UPDATE categories SET position = %s WHERE category_id = %s
+                    ''', (position, category_id))
+                return True
+        except psycopg2.Error:
+            return False
+    
+    def update_channel_positions(self, positions: List[Tuple[str, int]]) -> bool:
+        """Update positions of multiple channels.
+        
+        Args:
+            positions: List of (channel_id, position) tuples
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                for channel_id, position in positions:
+                    cursor.execute('''
+                        UPDATE channels SET position = %s WHERE channel_id = %s
+                    ''', (position, channel_id))
+                return True
+        except psycopg2.Error:
+            return False
+    
+    def update_channel_category(self, channel_id: str, category_id: Optional[str]) -> bool:
+        """Update a channel's category."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE channels SET category_id = %s WHERE channel_id = %s
+                ''', (category_id, channel_id))
+                return cursor.rowcount > 0
+        except psycopg2.Error:
+            return False
+
     
     # Server members operations
     def add_server_member(self, server_id: str, username: str) -> bool:
@@ -1376,8 +1951,101 @@ class Database:
             ''', (role_id,))
             return [row['username'] for row in cursor.fetchall()]
     
+    # Ban operations
+    def ban_user_from_server(self, server_id: str, username: str, banned_by: str, reason: str = None) -> bool:
+        """Ban a user from a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO server_bans (server_id, username, banned_by, reason)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (server_id, username) DO UPDATE
+                    SET banned_by = EXCLUDED.banned_by,
+                        reason = EXCLUDED.reason,
+                        banned_at = CURRENT_TIMESTAMP
+                ''', (server_id, username, banned_by, reason))
+                
+                # Remove user from server members
+                cursor.execute('''
+                    DELETE FROM server_members
+                    WHERE server_id = %s AND username = %s
+                ''', (server_id, username))
+                
+                # Remove user's roles in this server
+                cursor.execute('''
+                    DELETE FROM user_roles
+                    WHERE server_id = %s AND username = %s
+                ''', (server_id, username))
+                
+                return True
+        except Exception as e:
+            print(f"Error banning user: {e}")
+            return False
+    
+    def unban_user_from_server(self, server_id: str, username: str) -> bool:
+        """Unban a user from a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    DELETE FROM server_bans
+                    WHERE server_id = %s AND username = %s
+                ''', (server_id, username))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error unbanning user: {e}")
+            return False
+    
+    def is_user_banned(self, server_id: str, username: str) -> bool:
+        """Check if a user is banned from a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT 1 FROM server_bans
+                    WHERE server_id = %s AND username = %s
+                    LIMIT 1
+                ''', (server_id, username))
+                return cursor.fetchone() is not None
+        except Exception as e:
+            print(f"Error checking ban status: {e}")
+            return False
+    
+    def get_server_bans(self, server_id: str) -> List[Dict]:
+        """Get all bans for a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT ban_id, server_id, username, banned_by, reason, banned_at
+                    FROM server_bans
+                    WHERE server_id = %s
+                    ORDER BY banned_at DESC
+                ''', (server_id,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting server bans: {e}")
+            return []
+    
+    def get_user_ban_info(self, server_id: str, username: str) -> Optional[Dict]:
+        """Get ban information for a specific user in a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT ban_id, server_id, username, banned_by, reason, banned_at
+                    FROM server_bans
+                    WHERE server_id = %s AND username = %s
+                ''', (server_id, username))
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            print(f"Error getting user ban info: {e}")
+            return None
+    
     # Message operations
-    def save_message(self, username: str, content: str, context_type: str, context_id: Optional[str] = None) -> int:
+    def save_message(self, username: str, content: str, context_type: str, context_id: Optional[str] = None, reply_to: Optional[int] = None) -> int:
         """Save a message and return its ID. Message content is encrypted before storage."""
         # Encrypt message content before storing
         try:
@@ -1389,10 +2057,10 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO messages (username, content, timestamp, context_type, context_id)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO messages (username, content, timestamp, context_type, context_id, reply_to)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 RETURNING id
-            ''', (username, encrypted_content, datetime.now(), context_type, context_id))
+            ''', (username, encrypted_content, datetime.now(), context_type, context_id, reply_to))
             result = cursor.fetchone()
             return result['id']
     
@@ -1406,9 +2074,15 @@ class Database:
                        m.context_type, m.context_id,
                        m.edited_at::text as edited_at,
                        m.deleted,
-                       u.avatar, u.avatar_type, u.avatar_data
+                       m.reply_to,
+                       u.avatar, u.avatar_type, u.avatar_data,
+                       rm.id as reply_msg_id,
+                       rm.username as reply_username,
+                       rm.content as reply_content,
+                       rm.deleted as reply_deleted
                 FROM messages m
                 LEFT JOIN users u ON m.username = u.username
+                LEFT JOIN messages rm ON m.reply_to = rm.id
                 WHERE m.context_type = %s AND m.context_id = %s
                 ORDER BY m.timestamp DESC
                 LIMIT %s
@@ -1419,7 +2093,99 @@ class Database:
                 msg = dict(row)
                 # Decrypt the message content
                 msg['content'] = self.encryption_manager.decrypt(msg['content'])
+                
+                # Add reply information if present
+                if msg.get('reply_to') and msg.get('reply_msg_id'):
+                    # Decrypt the reply content
+                    reply_content = self.encryption_manager.decrypt(msg['reply_content']) if msg['reply_content'] else None
+                    msg['reply_data'] = {
+                        'id': msg['reply_msg_id'],
+                        'username': msg['reply_username'],
+                        'content': reply_content,
+                        'deleted': msg['reply_deleted']
+                    }
+                
+                # Remove the temporary reply fields from the main message
+                msg.pop('reply_msg_id', None)
+                msg.pop('reply_username', None)
+                msg.pop('reply_content', None)
+                msg.pop('reply_deleted', None)
+                
                 messages.append(msg)
+            return messages
+    
+    def search_messages(self, username: str, query: str, limit: int = 50) -> List[Dict]:
+        """Search messages for a user. Searches across all DMs and server messages they have access to."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get all DMs the user is part of
+            user_dms = self.get_user_dms(username)
+            dm_ids = [dm['dm_id'] for dm in user_dms]
+            
+            # Get all servers the user is a member of
+            server_ids = self.get_user_servers(username)
+            server_channel_ids = []
+            for server_id in server_ids:
+                channels = self.get_server_channels(server_id)
+                for channel in channels:
+                    server_channel_ids.append(f"{server_id}/{channel['channel_id']}")
+            
+            # Build query to search messages
+            # We'll fetch all messages from contexts the user has access to, then filter by content after decryption
+            dm_conditions = ' OR '.join(['(m.context_type = %s AND m.context_id = %s)'] * len(dm_ids))
+            server_conditions = ' OR '.join(['(m.context_type = %s AND m.context_id = %s)'] * len(server_channel_ids))
+            
+            conditions = []
+            params = []
+            
+            if dm_ids:
+                conditions.append(f'({dm_conditions})')
+                for dm_id in dm_ids:
+                    params.extend(['dm', dm_id])
+            
+            if server_channel_ids:
+                conditions.append(f'({server_conditions})')
+                for context_id in server_channel_ids:
+                    params.extend(['server', context_id])
+            
+            if not conditions:
+                return []
+            
+            where_clause = ' OR '.join(conditions)
+            
+            cursor.execute(f'''
+                SELECT m.id, m.username, m.content, 
+                       m.timestamp::text as timestamp,
+                       m.context_type, m.context_id,
+                       m.edited_at::text as edited_at,
+                       m.deleted,
+                       u.avatar, u.avatar_type, u.avatar_data
+                FROM messages m
+                LEFT JOIN users u ON m.username = u.username
+                WHERE ({where_clause}) AND m.deleted = FALSE
+                ORDER BY m.timestamp DESC
+                LIMIT %s
+            ''', tuple(params) + (limit * 10,))  # Fetch more to filter by content
+            
+            # Decrypt and filter messages by query
+            messages = []
+            query_lower = query.lower()
+            for row in cursor.fetchall():
+                msg = dict(row)
+                try:
+                    decrypted_content = self.encryption_manager.decrypt(msg['content'])
+                    msg['content'] = decrypted_content
+                    
+                    # Check if query matches in content or username
+                    if query_lower in decrypted_content.lower() or query_lower in msg['username'].lower():
+                        messages.append(msg)
+                        if len(messages) >= limit:
+                            break
+                except Exception:
+                    # Skip messages that can't be decrypted
+                    continue
+            
             return messages
     
     def edit_message(self, message_id: int, new_content: str) -> bool:
@@ -1476,11 +2242,13 @@ class Database:
         """Save a file attachment for a message."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            # Allow None/NULL for message_id to support embedding without message association
+            msg_id = message_id if message_id != 0 else None
             cursor.execute('''
                 INSERT INTO message_attachments 
                 (attachment_id, message_id, filename, content_type, file_size, file_data, uploaded_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ''', (attachment_id, message_id, filename, content_type, file_size, file_data, datetime.now()))
+            ''', (attachment_id, msg_id, filename, content_type, file_size, file_data, datetime.now()))
             return cursor.rowcount > 0
     
     def get_attachment(self, attachment_id: str) -> Optional[Dict]:
@@ -1938,3 +2706,559 @@ class Database:
                 })
             
             return reactions_by_message
+
+    # Message mention operations
+    def add_mentions(self, message_id: int, mentioned_usernames: List[str]) -> bool:
+        """Add mentions for a message."""
+        if not mentioned_usernames:
+            return True
+        
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                timestamp = datetime.now()
+                for username in mentioned_usernames:
+                    try:
+                        cursor.execute('''
+                            INSERT INTO message_mentions (message_id, mentioned_username, created_at)
+                            VALUES (%s, %s, %s)
+                        ''', (message_id, username, timestamp))
+                    except psycopg2.IntegrityError:
+                        # Mention already exists or user doesn't exist
+                        continue
+                return True
+        except Exception as e:
+            print(f"Error adding mentions: {e}")
+            return False
+    
+    def get_message_mentions(self, message_id: int) -> List[str]:
+        """Get all mentioned usernames for a message."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT mentioned_username
+                FROM message_mentions
+                WHERE message_id = %s
+            ''', (message_id,))
+            return [row['mentioned_username'] for row in cursor.fetchall()]
+    
+    def get_mentions_for_messages(self, message_ids: List[int]) -> Dict[int, List[str]]:
+        """Get mentions for multiple messages."""
+        if not message_ids:
+            return {}
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT message_id, mentioned_username
+                FROM message_mentions
+                WHERE message_id = ANY(%s)
+            ''', (message_ids,))
+            
+            # Group mentions by message_id
+            mentions_by_message = {}
+            for row in cursor.fetchall():
+                msg_id = row['message_id']
+                if msg_id not in mentions_by_message:
+                    mentions_by_message[msg_id] = []
+                mentions_by_message[msg_id].append(row['mentioned_username'])
+            
+            return mentions_by_message
+
+    # Read status operations
+    def mark_messages_as_read(self, username: str, context_type: str, context_id: str, last_message_id: int = None) -> bool:
+        """Mark messages as read for a user in a specific context."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Get the latest message ID if not provided
+                if last_message_id is None:
+                    cursor.execute('''
+                        SELECT id FROM messages
+                        WHERE context_type = %s AND context_id = %s
+                        ORDER BY timestamp DESC
+                        LIMIT 1
+                    ''', (context_type, context_id))
+                    result = cursor.fetchone()
+                    if result:
+                        last_message_id = result['id']
+                    else:
+                        return False
+                
+                # Upsert read status
+                cursor.execute('''
+                    INSERT INTO message_read_status (username, context_type, context_id, last_read_message_id, last_read_at)
+                    VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (username, context_type, context_id)
+                    DO UPDATE SET last_read_message_id = EXCLUDED.last_read_message_id,
+                                  last_read_at = EXCLUDED.last_read_at
+                ''', (username, context_type, context_id, last_message_id))
+                return True
+        except Exception as e:
+            print(f"Error marking messages as read: {e}")
+            return False
+    
+    def get_unread_counts(self, username: str) -> Dict:
+        """
+        Get unread message counts for a user across all contexts.
+        Returns a dict with:
+        - dm_counts: {dm_id: {unread_count: int, has_mention: bool}}
+        - server_counts: {server_id: {unread_count: int, has_mention: bool, channels: {channel_id: {unread_count: int, has_mention: bool}}}}
+        """
+        unread_data = {
+            'dm_counts': {},
+            'server_counts': {}
+        }
+        
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Get all DMs for the user
+                cursor.execute('''
+                    SELECT dm_id, user1, user2
+                    FROM direct_messages
+                    WHERE user1 = %s OR user2 = %s
+                ''', (username, username))
+                dms = cursor.fetchall()
+                
+                for dm in dms:
+                    dm_id = dm['dm_id']
+                    context_id = dm_id
+                    
+                    # Get last read message ID for this DM
+                    cursor.execute('''
+                        SELECT last_read_message_id
+                        FROM message_read_status
+                        WHERE username = %s AND context_type = 'dm' AND context_id = %s
+                    ''', (username, context_id))
+                    read_status = cursor.fetchone()
+                    last_read_id = read_status['last_read_message_id'] if read_status else 0
+                    
+                    # Count unread messages
+                    cursor.execute('''
+                        SELECT COUNT(*) as count
+                        FROM messages
+                        WHERE context_type = 'dm' AND context_id = %s
+                        AND id > %s
+                        AND username != %s
+                    ''', (context_id, last_read_id, username))
+                    unread_count = cursor.fetchone()['count']
+                    
+                    # Check for mentions
+                    cursor.execute('''
+                        SELECT COUNT(*) as count
+                        FROM messages m
+                        JOIN message_mentions mm ON m.id = mm.message_id
+                        WHERE m.context_type = 'dm' AND m.context_id = %s
+                        AND m.id > %s
+                        AND mm.mentioned_username = %s
+                    ''', (context_id, last_read_id, username))
+                    has_mention = cursor.fetchone()['count'] > 0
+                    
+                    unread_data['dm_counts'][dm_id] = {
+                        'unread_count': unread_count,
+                        'has_mention': has_mention
+                    }
+                
+                # Get all servers the user is a member of
+                cursor.execute('''
+                    SELECT server_id
+                    FROM server_members
+                    WHERE username = %s
+                ''', (username,))
+                servers = cursor.fetchall()
+                
+                for server in servers:
+                    server_id = server['server_id']
+                    server_unread = 0
+                    server_has_mention = False
+                    channel_data = {}
+                    
+                    # Get all channels in this server
+                    cursor.execute('''
+                        SELECT channel_id
+                        FROM channels
+                        WHERE server_id = %s
+                    ''', (server_id,))
+                    channels = cursor.fetchall()
+                    
+                    for channel in channels:
+                        channel_id = channel['channel_id']
+                        context_id = f"{server_id}/{channel_id}"
+                        
+                        # Get last read message ID for this channel
+                        cursor.execute('''
+                            SELECT last_read_message_id
+                            FROM message_read_status
+                            WHERE username = %s AND context_type = 'server' AND context_id = %s
+                        ''', (username, context_id))
+                        read_status = cursor.fetchone()
+                        last_read_id = read_status['last_read_message_id'] if read_status else 0
+                        
+                        # Count unread messages in this channel
+                        cursor.execute('''
+                            SELECT COUNT(*) as count
+                            FROM messages
+                            WHERE context_type = 'server' AND context_id = %s
+                            AND id > %s
+                            AND username != %s
+                        ''', (context_id, last_read_id, username))
+                        channel_unread = cursor.fetchone()['count']
+                        
+                        # Check for mentions in this channel
+                        cursor.execute('''
+                            SELECT COUNT(*) as count
+                            FROM messages m
+                            JOIN message_mentions mm ON m.id = mm.message_id
+                            WHERE m.context_type = 'server' AND m.context_id = %s
+                            AND m.id > %s
+                            AND mm.mentioned_username = %s
+                        ''', (context_id, last_read_id, username))
+                        channel_has_mention = cursor.fetchone()['count'] > 0
+                        
+                        if channel_unread > 0 or channel_has_mention:
+                            channel_data[channel_id] = {
+                                'unread_count': channel_unread,
+                                'has_mention': channel_has_mention
+                            }
+                            server_unread += channel_unread
+                            if channel_has_mention:
+                                server_has_mention = True
+                    
+                    if server_unread > 0 or server_has_mention:
+                        unread_data['server_counts'][server_id] = {
+                            'unread_count': server_unread,
+                            'has_mention': server_has_mention,
+                            'channels': channel_data
+                        }
+                
+                return unread_data
+        except Exception as e:
+            print(f"Error getting unread counts: {e}")
+            return unread_data
+    
+    # Scheduled messages operations
+    def create_scheduled_message(self, server_id: str, channel_id: str, username: str, content: str, scheduled_for: datetime) -> int:
+        """Create a scheduled message."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO scheduled_messages (server_id, channel_id, username, content, scheduled_for)
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING id
+                ''', (server_id, channel_id, username, content, scheduled_for))
+                result = cursor.fetchone()
+                return result['id'] if result else None
+        except Exception as e:
+            print(f"Error creating scheduled message: {e}")
+            return None
+    
+    def get_scheduled_messages(self, server_id: str) -> List[Dict]:
+        """Get all scheduled messages for a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT * FROM scheduled_messages
+                    WHERE server_id = %s AND sent = FALSE
+                    ORDER BY scheduled_for ASC
+                ''', (server_id,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting scheduled messages: {e}")
+            return []
+    
+    def get_pending_scheduled_messages(self) -> List[Dict]:
+        """Get all pending scheduled messages that are due to be sent."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT * FROM scheduled_messages
+                    WHERE sent = FALSE AND scheduled_for <= %s
+                    ORDER BY scheduled_for ASC
+                ''', (datetime.now(),))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting pending scheduled messages: {e}")
+            return []
+    
+    def mark_scheduled_message_sent(self, message_id: int):
+        """Mark a scheduled message as sent."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE scheduled_messages
+                    SET sent = TRUE, sent_at = %s
+                    WHERE id = %s
+                ''', (datetime.now(), message_id))
+        except Exception as e:
+            print(f"Error marking scheduled message as sent: {e}")
+    
+    def delete_scheduled_message(self, message_id: int, username: str) -> bool:
+        """Delete a scheduled message (only if created by username or server owner)."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # Check if user is the creator or server owner
+                cursor.execute('''
+                    SELECT sm.username, s.owner
+                    FROM scheduled_messages sm
+                    JOIN servers s ON sm.server_id = s.server_id
+                    WHERE sm.id = %s
+                ''', (message_id,))
+                result = cursor.fetchone()
+                if result and (result['username'] == username or result['owner'] == username):
+                    cursor.execute('DELETE FROM scheduled_messages WHERE id = %s', (message_id,))
+                    return True
+                return False
+        except Exception as e:
+            print(f"Error deleting scheduled message: {e}")
+            return False
+    
+    # Polls operations
+    def create_poll(self, poll_id: str, server_id: str, channel_id: str, creator: str, question: str, 
+                   options: List[str], allow_multiple: bool = False, expires_at: datetime = None) -> bool:
+        """Create a poll with options."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # Insert poll
+                cursor.execute('''
+                    INSERT INTO polls (poll_id, server_id, channel_id, creator, question, allow_multiple, expires_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ''', (poll_id, server_id, channel_id, creator, question, allow_multiple, expires_at))
+                
+                # Insert options
+                for i, option_text in enumerate(options):
+                    option_id = f"{poll_id}_opt{i}"
+                    cursor.execute('''
+                        INSERT INTO poll_options (option_id, poll_id, option_text, position)
+                        VALUES (%s, %s, %s, %s)
+                    ''', (option_id, poll_id, option_text, i))
+                
+                return True
+        except Exception as e:
+            print(f"Error creating poll: {e}")
+            return False
+    
+    def get_poll(self, poll_id: str) -> Optional[Dict]:
+        """Get a poll with its options and vote counts."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # Get poll data
+                cursor.execute('SELECT * FROM polls WHERE poll_id = %s', (poll_id,))
+                poll = cursor.fetchone()
+                if not poll:
+                    return None
+                
+                poll_dict = dict(poll)
+                
+                # Get options with vote counts
+                cursor.execute('''
+                    SELECT po.option_id, po.option_text, po.position,
+                           COUNT(pv.username) as vote_count
+                    FROM poll_options po
+                    LEFT JOIN poll_votes pv ON po.option_id = pv.option_id
+                    WHERE po.poll_id = %s
+                    GROUP BY po.option_id, po.option_text, po.position
+                    ORDER BY po.position
+                ''', (poll_id,))
+                
+                poll_dict['options'] = [dict(row) for row in cursor.fetchall()]
+                
+                # Get total vote count
+                cursor.execute('''
+                    SELECT COUNT(DISTINCT username) as voter_count
+                    FROM poll_votes
+                    WHERE poll_id = %s
+                ''', (poll_id,))
+                poll_dict['voter_count'] = cursor.fetchone()['voter_count']
+                
+                return poll_dict
+        except Exception as e:
+            print(f"Error getting poll: {e}")
+            return None
+    
+    def vote_poll(self, poll_id: str, option_id: str, username: str) -> bool:
+        """Vote on a poll option."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # Check if poll allows multiple votes
+                cursor.execute('SELECT allow_multiple, closed FROM polls WHERE poll_id = %s', (poll_id,))
+                poll = cursor.fetchone()
+                if not poll or poll['closed']:
+                    return False
+                
+                # If single choice, remove previous votes
+                if not poll['allow_multiple']:
+                    cursor.execute('''
+                        DELETE FROM poll_votes
+                        WHERE poll_id = %s AND username = %s
+                    ''', (poll_id, username))
+                
+                # Add vote
+                cursor.execute('''
+                    INSERT INTO poll_votes (poll_id, option_id, username)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                ''', (poll_id, option_id, username))
+                
+                return True
+        except Exception as e:
+            print(f"Error voting on poll: {e}")
+            return False
+    
+    def get_user_poll_votes(self, poll_id: str, username: str) -> List[str]:
+        """Get the option IDs a user has voted for in a poll."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT option_id FROM poll_votes
+                    WHERE poll_id = %s AND username = %s
+                ''', (poll_id, username))
+                return [row['option_id'] for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting user poll votes: {e}")
+            return []
+    
+    def close_poll(self, poll_id: str, username: str) -> bool:
+        """Close a poll (only creator or server owner can close)."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT p.creator, s.owner
+                    FROM polls p
+                    JOIN servers s ON p.server_id = s.server_id
+                    WHERE p.poll_id = %s
+                ''', (poll_id,))
+                result = cursor.fetchone()
+                if result and (result['creator'] == username or result['owner'] == username):
+                    cursor.execute('UPDATE polls SET closed = TRUE WHERE poll_id = %s', (poll_id,))
+                    return True
+                return False
+        except Exception as e:
+            print(f"Error closing poll: {e}")
+            return False
+    
+    # Welcome messages operations
+    def set_welcome_message(self, server_id: str, enabled: bool, message: str, channel_id: str = None) -> bool:
+        """Set or update welcome message for a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO welcome_messages (server_id, enabled, message, channel_id, updated_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (server_id) DO UPDATE
+                    SET enabled = EXCLUDED.enabled,
+                        message = EXCLUDED.message,
+                        channel_id = EXCLUDED.channel_id,
+                        updated_at = EXCLUDED.updated_at
+                ''', (server_id, enabled, message, channel_id, datetime.now()))
+                return True
+        except Exception as e:
+            print(f"Error setting welcome message: {e}")
+            return False
+    
+    def get_welcome_message(self, server_id: str) -> Optional[Dict]:
+        """Get welcome message settings for a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM welcome_messages WHERE server_id = %s', (server_id,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            print(f"Error getting welcome message: {e}")
+            return None
+    
+    def delete_welcome_message(self, server_id: str) -> bool:
+        """Delete welcome message for a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM welcome_messages WHERE server_id = %s', (server_id,))
+                return True
+        except Exception as e:
+            print(f"Error deleting welcome message: {e}")
+            return False
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # Encrypt the license key before storing
+                encrypted_key = license_key
+                if license_key:
+                    try:
+                        encryption_manager = get_encryption_manager()
+                        encrypted_key = encryption_manager.encrypt(license_key)
+                    except RuntimeError as e:
+                        print(f"Error encrypting license key: {e}")
+                        return False
+                cursor.execute('''
+                    UPDATE admin_settings
+                    SET license_key = %s, license_tier = %s, license_expires_at = %s,
+                        license_customer_name = %s, license_customer_email = %s
+                    WHERE id = 1
+                ''', (encrypted_key, tier, expires_at, customer_name, customer_email))
+                return True
+        except Exception as e:
+            print(f"Error saving license key: {e}")
+            return False
+
+    def get_license_key(self) -> dict:
+        """Get license key and associated metadata from admin settings."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT license_key, license_tier, license_expires_at,
+                           license_customer_name, license_customer_email
+                    FROM admin_settings WHERE id = 1
+                ''')
+                row = cursor.fetchone()
+                if row:
+                    result = dict(row)
+                    # Decrypt the license key if present
+                    if result.get('license_key'):
+                        try:
+                            encryption_manager = get_encryption_manager()
+                            result['license_key'] = encryption_manager.decrypt(result['license_key'])
+                        except RuntimeError as e:
+                            print(f"Error decrypting license key: {e}")
+                            result['license_key'] = ''
+                    return {
+                        'license_key': result.get('license_key', ''),
+                        'tier': result.get('license_tier', 'community'),
+                        'expires_at': result.get('license_expires_at'),
+                        'customer_name': result.get('license_customer_name', ''),
+                        'customer_email': result.get('license_customer_email', '')
+                    }
+                return {}
+        except Exception as e:
+            print(f"Error getting license key: {e}")
+            return {}
+
+    def clear_license(self) -> bool:
+        """Clear all license data from admin settings."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE admin_settings
+                    SET license_key = '', license_tier = 'community', license_expires_at = NULL,
+                        license_customer_name = '', license_customer_email = ''
+                    WHERE id = 1
+                ''')
+                return True
+        except Exception as e:
+            print(f"Error clearing license: {e}")
+            return False

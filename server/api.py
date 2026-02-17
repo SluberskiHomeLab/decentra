@@ -10,6 +10,7 @@ import base64
 import re
 from aiohttp import web
 import bcrypt
+from license_validator import check_limit
 
 # Database instance will be set by setup_api_routes
 db = None
@@ -296,6 +297,66 @@ async def api_dms(request):
         }, status=500)
 
 
+async def api_search_messages(request):
+    """
+    GET /api/search-messages?username=<username>&query=<query>&limit=<limit>
+    Search messages for a user across all their accessible chats
+    
+    Parameters:
+    - username: username of the user performing the search
+    - query: search query string
+    - limit: number of results to return (default: 50, max: 100)
+    
+    Response: {
+        "success": true,
+        "results": [
+            {
+                "id": number,
+                "username": "string",
+                "content": "string",
+                "timestamp": "ISO 8601 string",
+                "context_type": "server|dm",
+                "context_id": "string",
+                "avatar": "string",
+                "avatar_type": "emoji|image",
+                "avatar_data": "string|null"
+            }
+        ]
+    }
+    """
+    try:
+        username = request.query.get('username')
+        query = request.query.get('query', '').strip()
+        limit = int(request.query.get('limit', 50))
+        
+        if not username:
+            return web.json_response({
+                'success': False,
+                'error': 'Username parameter is required'
+            }, status=400)
+        
+        if not query:
+            return web.json_response({
+                'success': True,
+                'results': []
+            })
+        
+        # Limit to max 100 results
+        limit = min(limit, 100)
+        
+        results = db.search_messages(username, query, limit)
+        
+        return web.json_response({
+            'success': True,
+            'results': results
+        })
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
 async def api_upload_attachment(request):
     """
     POST /api/upload-attachment
@@ -394,6 +455,12 @@ async def api_upload_attachment(request):
         
         # Check file size
         max_size_mb = admin_settings.get('max_attachment_size_mb', 10)
+
+        # Apply license ceiling for file size
+        license_max_size = check_limit('max_file_size_mb')
+        if license_max_size != -1:
+            max_size_mb = min(max_size_mb, license_max_size) if max_size_mb > 0 else license_max_size
+
         max_size_bytes = max_size_mb * 1024 * 1024
         file_size = len(file_data)
         
@@ -403,20 +470,22 @@ async def api_upload_attachment(request):
                 'error': f'File size exceeds maximum of {max_size_mb}MB'
             }, status=413)
         
-        # Get message by ID
-        message = db.get_message(message_id)
-        
-        if not message:
-            return web.json_response({
-                'success': False,
-                'error': 'Message not found'
-            }, status=404)
-        
-        if message['username'] != username:
-            return web.json_response({
-                'success': False,
-                'error': 'You can only attach files to your own messages'
-            }, status=403)
+        # Get message by ID (allow 0 for embedding without message association)
+        message = None
+        if message_id != 0:
+            message = db.get_message(message_id)
+            
+            if not message:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Message not found'
+                }, status=404)
+            
+            if message['username'] != username:
+                return web.json_response({
+                    'success': False,
+                    'error': 'You can only attach files to your own messages'
+                }, status=403)
         
         # Generate attachment ID
         attachment_id = f"att_{uuid.uuid4().hex[:16]}"
@@ -454,8 +523,10 @@ async def api_upload_attachment(request):
 
 async def api_download_attachment(request):
     """
-    GET /api/download-attachment/<attachment_id>
+    GET /api/download-attachment/<attachment_id>[/<filename>]
     Download a file attachment
+    
+    Optional filename parameter for URL clarity and extension-based embed detection
     
     Response: Binary file data with appropriate content-type
     """
@@ -637,8 +708,10 @@ def setup_api_routes(app, database, jwt_verify_func):
     app.router.add_post('/api/reset-password', api_reset_password)
     app.router.add_get('/api/servers', api_servers)
     app.router.add_get('/api/messages', api_messages)
+    app.router.add_get('/api/search-messages', api_search_messages)
     app.router.add_get('/api/friends', api_friends)
     app.router.add_get('/api/dms', api_dms)
     app.router.add_post('/api/upload-attachment', api_upload_attachment)
     app.router.add_get('/api/download-attachment/{attachment_id}', api_download_attachment)
+    app.router.add_get('/api/download-attachment/{attachment_id}/{filename}', api_download_attachment)
     app.router.add_get('/api/message-attachments/{message_id}', api_get_message_attachments)

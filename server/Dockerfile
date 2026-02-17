@@ -11,8 +11,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copy all application files in one layer
-COPY server.py database.py api.py encryption_utils.py email_utils.py ssl_utils.py ./
-COPY static/ ./static/
+COPY server.py database.py api.py encryption_utils.py email_utils.py ssl_utils.py license_validator.py instance_fingerprint.py license_public_key.pem ./
 
 # Expose WebSocket port
 EXPOSE 8765
