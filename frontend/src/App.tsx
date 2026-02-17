@@ -1480,6 +1480,27 @@ function ChatPage() {
     }
   }, [])
 
+  // Connect and authenticate with stored token on mount
+  useEffect(() => {
+    if (!authToken) return
+
+    const ws = wsClient.connect()
+    
+    const sendAuth = () => {
+      wsClient.authenticateWithToken({ type: 'token', token: authToken })
+    }
+
+    if (ws.readyState === WebSocket.OPEN) {
+      sendAuth()
+    } else {
+      ws.addEventListener('open', sendAuth)
+    }
+
+    return () => {
+      ws.removeEventListener('open', sendAuth)
+    }
+  }, [authToken])
+
   useEffect(() => {
     const unsubscribe = wsClient.onMessage((msg: WsMessage) => {
       if (msg.type === 'auth_error') {
@@ -1607,6 +1628,21 @@ function ChatPage() {
         if (lowerMsg.includes('username')) {
           setUsernameChangeStatus({ type: 'error', message })
         }
+      }
+
+      if (msg.type === 'channel_history') {
+        const serverId = msg.server_id
+        const channelId = msg.channel_id
+        const messages = msg.messages || []
+        const ctx: ChatContext = { kind: 'server', serverId, channelId }
+        setMessagesForContext(ctx, messages)
+      }
+
+      if (msg.type === 'dm_history') {
+        const dmId = msg.dm_id
+        const messages = msg.messages || []
+        const ctx: ChatContext = { kind: 'dm', dmId }
+        setMessagesForContext(ctx, messages)
       }
 
       if (msg.type === 'category_created') {
