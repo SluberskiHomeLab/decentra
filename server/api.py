@@ -1329,13 +1329,14 @@ async def api_execute_instance_webhook(request):
                 await send_to_user_func(user, json.dumps(msg_obj))
                 
                 # Also notify the user about the new DM if they don't have it yet
-                user_avatar = get_avatar_data_func('__webhook__')
                 dm_notification = {
                     'type': 'dm_started',
                     'dm': {
                         'id': dm_id,
-                        'username': '__webhook__',
-                        **user_avatar
+                        'username': display_name,
+                        'avatar': webhook.get('avatar', '📢'),
+                        'avatar_type': 'emoji',
+                        'avatar_data': None
                     }
                 }
                 await send_to_user_func(user, json.dumps(dm_notification))
