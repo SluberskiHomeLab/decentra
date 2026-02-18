@@ -1238,10 +1238,12 @@ function ChatPage() {
   const [isDmSidebarOpen, setIsDmSidebarOpen] = useState(false)
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null)
   const [isServerSettingsOpen, setIsServerSettingsOpen] = useState(false)
+  const [serverSettingsTab, setServerSettingsTab] = useState<'overview' | 'channels' | 'roles' | 'customization' | 'automations'>('overview')
   const [isMembersSidebarOpen, setIsMembersSidebarOpen] = useState(true)
   const [serverMembers, setServerMembers] = useState<Record<string, ServerMember[]>>({})
   const [isAccountSettingsOpen, setIsAccountSettingsOpen] = useState(false)
   const [isAdminMode, setIsAdminMode] = useState(false)
+  const [adminSettingsTab, setAdminSettingsTab] = useState<'general' | 'email' | 'announcements' | 'license' | 'webhooks' | 'users'>('general')
   const [adminSettings, setAdminSettings] = useState<Record<string, any>>({})
   const [isSavingSettings, setIsSavingSettings] = useState(false)
   const [isTestingSMTP, setIsTestingSMTP] = useState(false)
@@ -3813,7 +3815,7 @@ function ChatPage() {
         {isDmSidebarOpen && (
           <aside className="w-[240px] shrink-0 border-r border-white/10 bg-slate-900/30">
             <div className="flex h-full flex-col">
-              <div className="border-b border-white/10 px-4 py-3">
+              <div className="border-b border-white/10 px-4 py-4">
                 <div className="text-sm font-semibold text-white">Direct Messages</div>
               </div>
               
@@ -3878,7 +3880,7 @@ function ChatPage() {
                 )}
               </div>
 
-              <div className="border-t border-white/10 p-3">
+              <div className="border-t border-white/10 px-4 py-4">
                 <div className="text-xs font-medium text-slate-400 mb-2">Start DM</div>
                 <div className="flex gap-2">
                   <input
@@ -3906,7 +3908,7 @@ function ChatPage() {
           <aside className="w-[240px] shrink-0 border-r border-white/10 bg-slate-900/30">
             <div className="flex h-full flex-col">
               {/* Server header */}
-              <div className="border-b border-white/10 px-4 py-3">
+              <div className="border-b border-white/10 px-4 py-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 flex-1 min-w-0">
                     <span className="text-lg">{selectedServerObj.icon ?? '🏠'}</span>
@@ -4105,7 +4107,7 @@ function ChatPage() {
                 <img
                   src={adminSettings.server_logo || '/decentra-blurple.png'}
                   alt="Server Logo"
-                  className="h-10 w-10 object-contain"
+                  className="h-12 w-12 object-contain"
                   onError={(e) => {
                     const target = e.target as HTMLImageElement
                     target.src = '/decentra-blurple.png'
@@ -4984,8 +4986,8 @@ function ChatPage() {
                     )}
                   </div>
                 ) : (
-                  <div className="space-y-4 overflow-y-auto max-h-[calc(100vh-200px)]">
-                    <div className="flex items-center justify-between">
+                  <div className="flex flex-col max-h-[calc(100vh-200px)]">
+                    <div className="flex shrink-0 items-center justify-between px-6 py-4 border-b border-white/10">
                       <div className="text-lg font-semibold text-white">Admin Configuration</div>
                       <button
                         type="button"
@@ -4997,6 +4999,80 @@ function ChatPage() {
                       </button>
                     </div>
 
+                    {/* Tabs */}
+                    <div className="border-b border-white/10 px-6 flex flex-wrap gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('general')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'general'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        General
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('email')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'email'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Email & SMTP
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('announcements')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'announcements'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Announcements
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('license')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'license'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        License
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('webhooks')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'webhooks'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Webhooks
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('users')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'users'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Users
+                      </button>
+                    </div>
+
+                    <div className="overflow-y-auto flex-1 p-6 space-y-4">
+                      {/* General Tab */}
+                      {adminSettingsTab === 'general' && (
+                        <>
                     {/* General Settings */}
                     <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                       <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">General</h3>
@@ -5117,7 +5193,12 @@ function ChatPage() {
                         </label>
                       </div>
                     </section>
+                      </>
+                    )}
 
+                    {/* Email Tab */}
+                    {adminSettingsTab === 'email' && (
+                      <>
                     {/* Email/SMTP Settings */}
                     <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                       <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Email & SMTP Settings</h3>
@@ -5243,7 +5324,12 @@ function ChatPage() {
                         </div>
                       </div>
                     </section>
+                      </>
+                    )}
 
+                    {/* Announcements Tab */}
+                    {adminSettingsTab === 'announcements' && (
+                      <>
                     {/* Announcements */}
                     <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                       <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Announcements</h3>
@@ -5283,24 +5369,42 @@ function ChatPage() {
                         </label>
                       </div>
                     </section>
+                      </>
+                    )}
 
+                    {/* License Tab */}
+                    {adminSettingsTab === 'license' && (
+                      <>
                     {/* License Management */}
                     <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                       <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">License Management</h3>
                       <LicensePanel />
                     </section>
+                      </>
+                    )}
 
+                    {/* Webhooks Tab */}
+                    {adminSettingsTab === 'webhooks' && (
+                      <>
                     {/* Instance Webhooks */}
                     <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                       <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Instance Webhooks</h3>
                       <WebhookPanel isAdmin={true} />
                     </section>
+                      </>
+                    )}
 
+                    {/* Users Tab */}
+                    {adminSettingsTab === 'users' && (
+                      <>
                     {/* Registered Users */}
                     <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                       <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">👥 Registered Users</h3>
                       <UsersPanel />
                     </section>
+                      </>
+                    )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -5801,8 +5905,78 @@ function ChatPage() {
                 </button>
               </div>
 
+              {/* Tabs */}
+              <div className="border-b border-white/10 px-6 flex flex-wrap gap-2 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setServerSettingsTab('overview')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'overview'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Overview
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setServerSettingsTab('channels')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'channels'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Channels
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setServerSettingsTab('roles')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'roles'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Roles & Permissions
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setServerSettingsTab('customization')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'customization'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Customization
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setServerSettingsTab('automations')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'automations'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Automations
+                </button>
+              </div>
+
               <div className="p-6 overflow-y-auto flex-1">
                 <div className="space-y-6">
+                  {/* Overview Tab */}
+                  {serverSettingsTab === 'overview' && (
+                    <>
+                      {/* Server Icon & Invite sections will go here - to be implemented */}
+                      <div className="text-sm text-slate-400">Server overview settings coming soon...</div>
+                    </>
+                  )}
+
+                  {/* Channels Tab */}
+                  {serverSettingsTab === 'channels' && (
+                    <>
                   {/* Category Management Section */}
                   <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                     <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Categories</h3>
@@ -6904,6 +7078,29 @@ function ChatPage() {
                     <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">🔗 Webhooks</h3>
                     <WebhookPanel serverId={selectedServerId || undefined} />
                   </section>
+                    </>
+                  )}
+
+                  {/* Roles Tab */}
+                  {serverSettingsTab === 'roles' && (
+                    <>
+                      <div className="text-sm text-slate-400">Roles & permissions settings coming soon...</div>
+                    </>
+                  )}
+
+                  {/* Customization Tab */}
+                  {serverSettingsTab === 'customization' && (
+                    <>
+                      <div className="text-sm text-slate-400">Customization settings coming soon...</div>
+                    </>
+                  )}
+
+                  {/* Automations Tab */}
+                  {serverSettingsTab === 'automations' && (
+                    <>
+                      <div className="text-sm text-slate-400">Automation settings coming soon...</div>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
