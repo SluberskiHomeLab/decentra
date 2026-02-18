@@ -1341,7 +1341,6 @@ function ChatPage() {
   const [welcomeEnabled, setWelcomeEnabled] = useState(false)
   const [welcomeMessage, setWelcomeMessage] = useState('Welcome {user} to the server!')
   const [welcomeChannel, setWelcomeChannel] = useState('')
-  const [isViewingAutomations, setIsViewingAutomations] = useState(false)
 
   const pushToast = useToastStore((s) => s.push)
 
@@ -5964,13 +5963,121 @@ function ChatPage() {
                 </button>
               </div>
 
-              <div className="p-6 overflow-y-auto flex-1">
+              <div className="p-6 overflow-y-auto flex-1 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                 <div className="space-y-6">
                   {/* Overview Tab */}
                   {serverSettingsTab === 'overview' && (
                     <>
-                      {/* Server Icon & Invite sections will go here - to be implemented */}
-                      <div className="text-sm text-slate-400">Server overview settings coming soon...</div>
+                  {/* Server Icon Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Server Icon</h3>
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-4">
+                        <div className="flex h-16 w-16 items-center justify-center rounded-xl border border-white/10 bg-slate-950/40 text-3xl overflow-hidden">
+                          {selectedServerObj.icon_type === 'image' && selectedServerObj.icon_data ? (
+                            <img src={selectedServerObj.icon_data} alt="Server icon" className="h-full w-full object-cover" />
+                          ) : (
+                            <>{selectedServerObj.icon ?? '🏠'}</>
+                          )}
+                        </div>
+                        <div className="flex-1">
+                          <label className="block">
+                            <div className="mb-1 text-sm text-slate-200">Upload Image (.png, .jpg, .gif)</div>
+                            <input
+                              type="file"
+                              accept=".png,.jpg,.jpeg,.gif"
+                              onChange={(e) => {
+                                const file = e.target.files?.[0]
+                                if (file && selectedServerId) {
+                                  uploadServerIcon(selectedServerId, file)
+                                  e.target.value = ''
+                                }
+                              }}
+                              className="w-full text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-sky-500 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-slate-950 hover:file:bg-sky-400"
+                            />
+                          </label>
+                        </div>
+                      </div>
+                      <div className="text-sm text-slate-400">
+                        Or pick an emoji:
+                      </div>
+                      <div className="grid grid-cols-10 gap-2">
+                        {['🏠', '🎮', '💬', '🎨', '🎵', '📚', '⚔️', '🌟', '🔥', '💎'].map((emoji) => (
+                          <button
+                            key={emoji}
+                            type="button"
+                            onClick={() => selectedServerId && setServerIconEmoji(selectedServerId, emoji)}
+                            className="text-2xl hover:bg-white/10 rounded-lg p-2 transition"
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </section>
+
+                  {/* Server Invite Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Server Invite</h3>
+                    <div className="space-y-3">
+                      {lastInviteCode && (
+                        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3">
+                          <div className="text-xs font-medium text-emerald-200 mb-1">Invite Code</div>
+                          <div className="font-mono text-sm text-emerald-100">{lastInviteCode}</div>
+                        </div>
+                      )}
+                      
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            wsClient.generateServerInvite({ type: 'generate_server_invite', server_id: selectedServerId })
+                          }
+                        }}
+                        disabled={wsClient.readyState !== WebSocket.OPEN}
+                        className="w-full rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                      >
+                        Generate New Invite Code
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            loadInviteUsage(selectedServerId)
+                          }
+                        }}
+                        disabled={isLoadingInviteUsage || wsClient.readyState !== WebSocket.OPEN}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5 disabled:opacity-60"
+                      >
+                        {isLoadingInviteUsage ? 'Loading...' : 'View Invite Usage'}
+                      </button>
+
+                      {inviteUsageLogs && inviteUsageServerId === selectedServerId && (
+                        <div className="mt-3 rounded-xl border border-white/10 bg-slate-950/40 p-3 max-h-48 overflow-auto">
+                          <div className="text-xs font-medium text-slate-400 mb-2">Invite Usage History</div>
+                          {inviteUsageLogs.length === 0 ? (
+                            <div className="text-xs text-slate-500">No invites used yet</div>
+                          ) : (
+                            <div className="space-y-2">
+                              {inviteUsageLogs.map((log, idx) => (
+                                <div key={idx} className="text-xs border-b border-white/5 pb-2 last:border-0">
+                                  <div className="text-slate-200 font-medium">{log.invite_code}</div>
+                                  <div className="text-slate-400">Used {log.use_count} time(s)</div>
+                                  {log.last_used && (
+                                    <div className="text-slate-500">{new Date(log.last_used).toLocaleString()}</div>
+                                  )}
+                                  {log.users && log.users.length > 0 && (
+                                    <div className="text-slate-400">Users: {log.users.join(', ')}</div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </section>
                     </>
                   )}
 
@@ -6382,176 +6489,12 @@ function ChatPage() {
                       )}
                     </div>
                   </section>
+                    </>
+                  )}
 
-                  {/* Server Invite Section */}
-                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Server Invite</h3>
-                    <div className="space-y-3">
-                      {lastInviteCode && (
-                        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3">
-                          <div className="text-xs font-medium text-emerald-200 mb-1">Invite Code</div>
-                          <div className="font-mono text-sm text-emerald-100">{lastInviteCode}</div>
-                        </div>
-                      )}
-                      
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (selectedServerId) {
-                            wsClient.generateServerInvite({ type: 'generate_server_invite', server_id: selectedServerId })
-                          }
-                        }}
-                        disabled={wsClient.readyState !== WebSocket.OPEN}
-                        className="w-full rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
-                      >
-                        Generate New Invite Code
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (selectedServerId) {
-                            loadInviteUsage(selectedServerId)
-                          }
-                        }}
-                        disabled={isLoadingInviteUsage || wsClient.readyState !== WebSocket.OPEN}
-                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5 disabled:opacity-60"
-                      >
-                        {isLoadingInviteUsage ? 'Loading...' : 'View Invite Usage'}
-                      </button>
-
-                      {inviteUsageLogs && inviteUsageServerId === selectedServerId && (
-                        <div className="mt-3 rounded-xl border border-white/10 bg-slate-950/40 p-3 max-h-48 overflow-auto">
-                          <div className="text-xs font-medium text-slate-400 mb-2">Invite Usage History</div>
-                          {inviteUsageLogs.length === 0 ? (
-                            <div className="text-xs text-slate-500">No invites used yet</div>
-                          ) : (
-                            <div className="space-y-2">
-                              {inviteUsageLogs.map((log, idx) => (
-                                <div key={idx} className="text-xs border-b border-white/5 pb-2 last:border-0">
-                                  <div className="text-slate-200 font-medium">{log.invite_code}</div>
-                                  <div className="text-slate-400">Used {log.use_count} time(s)</div>
-                                  {log.last_used && (
-                                    <div className="text-slate-500">{new Date(log.last_used).toLocaleString()}</div>
-                                  )}
-                                  {log.users && log.users.length > 0 && (
-                                    <div className="text-slate-400">Users: {log.users.join(', ')}</div>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </section>
-
-                  {/* Server Icon Section */}
-                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Server Icon</h3>
-                    <div className="space-y-3">
-                      <div className="flex items-center gap-4">
-                        <div className="flex h-16 w-16 items-center justify-center rounded-xl border border-white/10 bg-slate-950/40 text-3xl overflow-hidden">
-                          {selectedServerObj.icon_type === 'image' && selectedServerObj.icon_data ? (
-                            <img src={selectedServerObj.icon_data} alt="Server icon" className="h-full w-full object-cover" />
-                          ) : (
-                            <>{selectedServerObj.icon ?? '🏠'}</>
-                          )}
-                        </div>
-                        <div className="flex-1">
-                          <label className="block">
-                            <div className="mb-1 text-sm text-slate-200">Upload Image (.png, .jpg, .gif)</div>
-                            <input
-                              type="file"
-                              accept=".png,.jpg,.jpeg,.gif"
-                              onChange={(e) => {
-                                const file = e.target.files?.[0]
-                                if (file && selectedServerId) {
-                                  uploadServerIcon(selectedServerId, file)
-                                  e.target.value = ''
-                                }
-                              }}
-                              className="w-full text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-sky-500 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-slate-950 hover:file:bg-sky-400"
-                            />
-                          </label>
-                        </div>
-                      </div>
-                      <div className="text-sm text-slate-400">
-                        Or pick an emoji:
-                      </div>
-                      <div className="grid grid-cols-10 gap-2">
-                        {['🏠', '🎮', '💬', '🎨', '🎵', '📚', '⚔️', '🌟', '🔥', '💎'].map((emoji) => (
-                          <button
-                            key={emoji}
-                            type="button"
-                            onClick={() => selectedServerId && setServerIconEmoji(selectedServerId, emoji)}
-                            className="text-2xl hover:bg-white/10 rounded-lg p-2 transition"
-                          >
-                            {emoji}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </section>
-
-                  {/* Server Emojis Section */}
-                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Server Emojis</h3>
-                    <div className="space-y-3">
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={emojiName}
-                          onChange={(e) => setEmojiName(e.target.value)}
-                          placeholder="Emoji name (e.g., coolcat)"
-                          className="flex-1 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        />
-                        <input
-                          type="file"
-                          accept=".png,.jpg,.jpeg,.gif,.webp"
-                          onChange={(e) => setEmojiFile(e.target.files?.[0] || null)}
-                          className="hidden"
-                          id="emoji-upload"
-                        />
-                        <label
-                          htmlFor="emoji-upload"
-                          className="cursor-pointer rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
-                        >
-                          {emojiFile ? emojiFile.name : 'Choose File'}
-                        </label>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (emojiName && emojiFile && selectedServerId) {
-                              uploadServerEmoji(selectedServerId, emojiName, emojiFile)
-                            }
-                          }}
-                          disabled={!emojiName || !emojiFile}
-                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
-                        >
-                          Upload
-                        </button>
-                      </div>
-                      {selectedServerId && serverEmojis[selectedServerId]?.length > 0 && (
-                        <div className="grid grid-cols-8 gap-2 max-h-48 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
-                          {serverEmojis[selectedServerId].map((emoji: any) => (
-                            <div key={emoji.emoji_id} className="group relative">
-                              <img src={emoji.image_data} alt={emoji.name} className="w-8 h-8 object-contain" title={emoji.name} />
-                              <button
-                                type="button"
-                                onClick={() => deleteServerEmoji(emoji.emoji_id)}
-                                className="absolute -top-1 -right-1 hidden group-hover:block text-xs bg-rose-500 text-white rounded-full w-4 h-4 leading-none"
-                                title="Delete"
-                              >
-                                ×
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </section>
-
+                  {/* Roles Tab */}
+                  {serverSettingsTab === 'roles' && (
+                    <>
                   {/* Roles & Permissions Section */}
                   <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                     <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Roles & Permissions</h3>
@@ -6819,255 +6762,301 @@ function ChatPage() {
                       )}
                     </div>
                   </section>
+                    </>
+                  )}
 
-                  {/* Automations Section */}
+                  {/* Customization Tab */}
+                  {serverSettingsTab === 'customization' && (
+                    <>
+                  {/* Server Emojis Section */}
                   <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">🤖 Automations</h3>
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Server Emojis</h3>
                     <div className="space-y-3">
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={emojiName}
+                          onChange={(e) => setEmojiName(e.target.value)}
+                          placeholder="Emoji name (e.g., coolcat)"
+                          className="flex-1 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                        <input
+                          type="file"
+                          accept=".png,.jpg,.jpeg,.gif,.webp"
+                          onChange={(e) => setEmojiFile(e.target.files?.[0] || null)}
+                          className="hidden"
+                          id="emoji-upload"
+                        />
+                        <label
+                          htmlFor="emoji-upload"
+                          className="cursor-pointer rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                        >
+                          {emojiFile ? emojiFile.name : 'Choose File'}
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (emojiName && emojiFile && selectedServerId) {
+                              uploadServerEmoji(selectedServerId, emojiName, emojiFile)
+                            }
+                          }}
+                          disabled={!emojiName || !emojiFile}
+                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                        >
+                          Upload
+                        </button>
+                      </div>
+                      {selectedServerId && serverEmojis[selectedServerId]?.length > 0 && (
+                        <div className="grid grid-cols-8 gap-2 max-h-48 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                          {serverEmojis[selectedServerId].map((emoji: any) => (
+                            <div key={emoji.emoji_id} className="group relative">
+                              <img src={emoji.image_data} alt={emoji.name} className="w-8 h-8 object-contain" title={emoji.name} />
+                              <button
+                                type="button"
+                                onClick={() => deleteServerEmoji(emoji.emoji_id)}
+                                className="absolute -top-1 -right-1 hidden group-hover:block text-xs bg-rose-500 text-white rounded-full w-4 h-4 leading-none"
+                                title="Delete"
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                    </>
+                  )}
+
+                  {/* Automations Tab */}
+                  {serverSettingsTab === 'automations' && (
+                    <>
+                  {/* Scheduled Messages Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">📅 Scheduled Messages</h3>
+                    <div className="space-y-3">
+                      <select
+                        value={scheduleChannel}
+                        onChange={(e) => setScheduleChannel(e.target.value)}
+                        className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      >
+                        <option value="">Select Channel</option>
+                        {(selectedServerObj?.channels ?? []).filter((ch: any) => ch.type === 'text').map((ch: any) => (
+                          <option key={ch.id} value={ch.id}>
+                            # {ch.name}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="datetime-local"
+                        value={scheduleDateTime}
+                        onChange={(e) => setScheduleDateTime(e.target.value)}
+                        className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      />
+                      <textarea
+                        value={scheduleContent}
+                        onChange={(e) => setScheduleContent(e.target.value)}
+                        placeholder="Message to send later..."
+                        rows={3}
+                        className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40 resize-none"
+                      />
                       <button
                         type="button"
                         onClick={() => {
-                          setIsViewingAutomations(!isViewingAutomations)
-                          if (!isViewingAutomations && selectedServerId) {
-                            // Load automations data
-                            wsClient.send({ type: 'get_scheduled_messages', server_id: selectedServerId })
-                            wsClient.send({ type: 'get_welcome_message', server_id: selectedServerId })
+                          if (selectedServerId && scheduleChannel && scheduleDateTime && scheduleContent.trim()) {
+                            wsClient.send({
+                              type: 'create_scheduled_message',
+                              server_id: selectedServerId,
+                              channel_id: scheduleChannel,
+                              content: scheduleContent,
+                              scheduled_for: new Date(scheduleDateTime).toISOString()
+                            })
+                            setScheduleContent('')
+                            setScheduleDateTime('')
+                            pushToast({ kind: 'success', message: 'Message scheduled!' })
                           }
                         }}
-                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                        disabled={!scheduleChannel || !scheduleDateTime || !scheduleContent.trim()}
+                        className="w-full rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
                       >
-                        {isViewingAutomations ? 'Hide Automations' : 'Manage Automations'}
+                        Schedule Message
                       </button>
-
-                      {isViewingAutomations && (
-                        <div className="space-y-4">
-                          {/* Scheduled Messages */}
-                          <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3 space-y-3">
-                            <div className="text-sm font-semibold text-white">📅 Scheduled Messages</div>
-                            <div className="space-y-2">
-                              <select
-                                value={scheduleChannel}
-                                onChange={(e) => setScheduleChannel(e.target.value)}
-                                className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                              >
-                                <option value="">Select Channel</option>
-                                {(selectedServerObj?.channels ?? []).map((ch: any) => (
-                                  <option key={ch.id} value={ch.id}>
-                                    {ch.type === 'voice' ? '🔊' : '#'} {ch.name}
-                                  </option>
-                                ))}
-                              </select>
-                              <input
-                                type="datetime-local"
-                                value={scheduleDateTime}
-                                onChange={(e) => setScheduleDateTime(e.target.value)}
-                                className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                              />
-                              <textarea
-                                value={scheduleContent}
-                                onChange={(e) => setScheduleContent(e.target.value)}
-                                placeholder="Message to send later..."
-                                rows={2}
-                                className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500 resize-none"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (selectedServerId && scheduleChannel && scheduleDateTime && scheduleContent.trim()) {
-                                    wsClient.send({
-                                      type: 'create_scheduled_message',
-                                      server_id: selectedServerId,
-                                      channel_id: scheduleChannel,
-                                      content: scheduleContent,
-                                      scheduled_for: new Date(scheduleDateTime).toISOString()
-                                    })
-                                    setScheduleContent('')
-                                    setScheduleDateTime('')
-                                    pushToast({ kind: 'success', message: 'Message scheduled!' })
-                                  }
-                                }}
-                                disabled={!scheduleChannel || !scheduleDateTime || !scheduleContent.trim()}
-                                className="w-full rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
-                              >
-                                Schedule Message
-                              </button>
-                            </div>
-                            {scheduledMessages.length > 0 && (
-                              <div className="mt-2 space-y-1 max-h-32 overflow-y-auto">
-                                {scheduledMessages.map((msg: any) => (
-                                  <div key={msg.id} className="flex items-start justify-between text-xs bg-slate-900/60 rounded p-2">
-                                    <div className="flex-1 min-w-0">
-                                      <div className="text-slate-300 truncate">{msg.content}</div>
-                                      <div className="text-slate-500 text-[10px]">
-                                        {new Date(msg.scheduled_for).toLocaleString()}
-                                      </div>
-                                    </div>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        wsClient.send({ type: 'delete_scheduled_message', message_id: msg.id })
-                                        setScheduledMessages(prev => prev.filter(m => m.id !== msg.id))
-                                      }}
-                                      className="text-rose-400 hover:text-rose-300 ml-2"
-                                    >
-                                      ×
-                                    </button>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Create Poll */}
-                          <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3 space-y-3">
-                            <div className="text-sm font-semibold text-white">📊 Create Poll</div>
-                            <div className="space-y-2">
-                              <input
-                                type="text"
-                                value={pollQuestion}
-                                onChange={(e) => setPollQuestion(e.target.value)}
-                                placeholder="Poll question..."
-                                className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                              />
-                              {pollOptions.map((opt, idx) => (
-                                <div key={idx} className="flex gap-2">
-                                  <input
-                                    type="text"
-                                    value={opt}
-                                    onChange={(e) => {
-                                      const newOpts = [...pollOptions]
-                                      newOpts[idx] = e.target.value
-                                      setPollOptions(newOpts)
-                                    }}
-                                    placeholder={`Option ${idx + 1}`}
-                                    className="flex-1 rounded-lg border border-white/10 bg-slate-900 px-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                                  />
-                                  {pollOptions.length > 2 && (
-                                    <button
-                                      type="button"
-                                      onClick={() => setPollOptions(prev => prev.filter((_, i) => i !== idx))}
-                                      className="text-rose-400 hover:text-rose-300 px-2"
-                                    >
-                                      ×
-                                    </button>
-                                  )}
+                      {scheduledMessages.length > 0 && (
+                        <div className="mt-3 space-y-2 max-h-48 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                          <div className="text-xs font-medium text-slate-400 mb-2">Scheduled Messages</div>
+                          {scheduledMessages.map((msg: any) => (
+                            <div key={msg.id} className="flex items-start justify-between text-xs bg-slate-900/60 rounded-lg p-2">
+                              <div className="flex-1 min-w-0">
+                                <div className="text-slate-300 truncate">{msg.content}</div>
+                                <div className="text-slate-500 text-[10px] mt-1">
+                                  {new Date(msg.scheduled_for).toLocaleString()}
                                 </div>
-                              ))}
-                              <button
-                                type="button"
-                                onClick={() => setPollOptions([...pollOptions, ''])}
-                                className="text-xs text-sky-400 hover:text-sky-300"
-                              >
-                                + Add Option
-                              </button>
-                              <div className="flex items-center gap-2">
-                                <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300">
-                                  <input
-                                    type="checkbox"
-                                    checked={pollAllowMultiple}
-                                    onChange={(e) => setPollAllowMultiple(e.target.checked)}
-                                    className="rounded border-white/10 text-sky-500 focus:ring-sky-500/40"
-                                  />
-                                  Allow multiple choices
-                                </label>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <label className="text-xs text-slate-400">Expires in (hours):</label>
-                                <input
-                                  type="number"
-                                  min="1"
-                                  max="168"
-                                  value={pollExpiresHours || ''}
-                                  onChange={(e) => setPollExpiresHours(e.target.value ? parseInt(e.target.value) : null)}
-                                  placeholder="Never"
-                                  className="w-20 rounded-lg border border-white/10 bg-slate-900 px-2 py-1 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                                />
                               </div>
                               <button
                                 type="button"
                                 onClick={() => {
-                                  const validOptions = pollOptions.filter(o => o.trim())
-                                  if (selectedServerId && selectedContext?.kind === 'server' && pollQuestion.trim() && validOptions.length >= 2) {
-                                    wsClient.send({
-                                      type: 'create_poll',
-                                      server_id: selectedServerId,
-                                      channel_id: selectedContext.channelId,
-                                      question: pollQuestion,
-                                      options: validOptions,
-                                      allow_multiple: pollAllowMultiple,
-                                      expires_hours: pollExpiresHours
-                                    })
-                                    setPollQuestion('')
-                                    setPollOptions(['', ''])
-                                    setPollAllowMultiple(false)
-                                    setPollExpiresHours(null)
-                                    pushToast({ kind: 'success', message: 'Poll created!' })
-                                  }
+                                  wsClient.send({ type: 'delete_scheduled_message', message_id: msg.id })
+                                  setScheduledMessages(prev => prev.filter(m => m.id !== msg.id))
                                 }}
-                                disabled={!pollQuestion.trim() || pollOptions.filter(o => o.trim()).length < 2}
-                                className="w-full rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                                className="text-rose-400 hover:text-rose-300 ml-2 text-sm"
                               >
-                                Post Poll to Current Channel
+                                ×
                               </button>
                             </div>
-                          </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </section>
 
-                          {/* Welcome Message */}
-                          <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3 space-y-3">
-                            <div className="text-sm font-semibold text-white">👋 Welcome Message</div>
-                            <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300">
-                              <input
-                                type="checkbox"
-                                checked={welcomeEnabled}
-                                onChange={(e) => setWelcomeEnabled(e.target.checked)}
-                                className="rounded border-white/10 text-sky-500 focus:ring-sky-500/40"
-                              />
-                              Send welcome message to new members
-                            </label>
-                            {welcomeEnabled && (
-                              <div className="space-y-2">
-                                <select
-                                  value={welcomeChannel}
-                                  onChange={(e) => setWelcomeChannel(e.target.value)}
-                                  className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                                >
-                                  <option value="">First channel (default)</option>
-                                  {(selectedServerObj?.channels ?? []).filter((ch: any) => ch.type === 'text').map((ch: any) => (
-                                    <option key={ch.id} value={ch.id}>
-                                      # {ch.name}
-                                    </option>
-                                  ))}
-                                </select>
-                                <textarea
-                                  value={welcomeMessage}
-                                  onChange={(e) => setWelcomeMessage(e.target.value)}
-                                  placeholder="Welcome message (use {user} for username)"
-                                  rows={2}
-                                  className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500 resize-none"
-                                />
-                                <div className="text-[10px] text-slate-500">Use {'{user}'} to mention the new member</div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    if (selectedServerId && welcomeMessage.trim()) {
-                                      wsClient.send({
-                                        type: 'set_welcome_message',
-                                        server_id: selectedServerId,
-                                        enabled: welcomeEnabled,
-                                        message: welcomeMessage,
-                                        channel_id: welcomeChannel || null
-                                      })
-                                      pushToast({ kind: 'success', message: 'Welcome message saved!' })
-                                    }
-                                  }}
-                                  disabled={!welcomeMessage.trim()}
-                                  className="w-full rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
-                                >
-                                  Save Welcome Message
-                                </button>
-                              </div>
-                            )}
-                          </div>
+                  {/* Create Poll Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">📊 Create Poll</h3>
+                    <div className="space-y-3">
+                      <input
+                        type="text"
+                        value={pollQuestion}
+                        onChange={(e) => setPollQuestion(e.target.value)}
+                        placeholder="Poll question..."
+                        className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      />
+                      {pollOptions.map((opt, idx) => (
+                        <div key={idx} className="flex gap-2">
+                          <input
+                            type="text"
+                            value={opt}
+                            onChange={(e) => {
+                              const newOpts = [...pollOptions]
+                              newOpts[idx] = e.target.value
+                              setPollOptions(newOpts)
+                            }}
+                            placeholder={`Option ${idx + 1}`}
+                            className="flex-1 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                          {pollOptions.length > 2 && (
+                            <button
+                              type="button"
+                              onClick={() => setPollOptions(prev => prev.filter((_, i) => i !== idx))}
+                              className="text-rose-400 hover:text-rose-300 px-2"
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => setPollOptions([...pollOptions, ''])}
+                        className="text-sm text-sky-400 hover:text-sky-300"
+                      >
+                        + Add Option
+                      </button>
+                      <div className="flex items-center gap-2">
+                        <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-300">
+                          <input
+                            type="checkbox"
+                            checked={pollAllowMultiple}
+                            onChange={(e) => setPollAllowMultiple(e.target.checked)}
+                            className="rounded border-white/10 text-sky-500 focus:ring-sky-500/40"
+                          />
+                          Allow multiple choices
+                        </label>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="text-sm text-slate-400">Expires in (hours):</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="168"
+                          value={pollExpiresHours || ''}
+                          onChange={(e) => setPollExpiresHours(e.target.value ? parseInt(e.target.value) : null)}
+                          placeholder="Never"
+                          className="w-24 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const validOptions = pollOptions.filter(o => o.trim())
+                          if (selectedServerId && selectedContext?.kind === 'server' && pollQuestion.trim() && validOptions.length >= 2) {
+                            wsClient.send({
+                              type: 'create_poll',
+                              server_id: selectedServerId,
+                              channel_id: selectedContext.channelId,
+                              question: pollQuestion,
+                              options: validOptions,
+                              allow_multiple: pollAllowMultiple,
+                              expires_hours: pollExpiresHours
+                            })
+                            setPollQuestion('')
+                            setPollOptions(['', ''])
+                            setPollAllowMultiple(false)
+                            setPollExpiresHours(null)
+                            pushToast({ kind: 'success', message: 'Poll created!' })
+                          }
+                        }}
+                        disabled={!pollQuestion.trim() || pollOptions.filter(o => o.trim()).length < 2 || selectedContext?.kind !== 'server'}
+                        className="w-full rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                      >
+                        Post Poll to Current Channel
+                      </button>
+                    </div>
+                  </section>
+
+                  {/* Welcome Message Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">👋 Welcome Message</h3>
+                    <div className="space-y-3">
+                      <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={welcomeEnabled}
+                          onChange={(e) => setWelcomeEnabled(e.target.checked)}
+                          className="rounded border-white/10 text-sky-500 focus:ring-sky-500/40"
+                        />
+                        Send welcome message to new members
+                      </label>
+                      {welcomeEnabled && (
+                        <div className="space-y-3">
+                          <select
+                            value={welcomeChannel}
+                            onChange={(e) => setWelcomeChannel(e.target.value)}
+                            className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          >
+                            <option value="">First channel (default)</option>
+                            {(selectedServerObj?.channels ?? []).filter((ch: any) => ch.type === 'text').map((ch: any) => (
+                              <option key={ch.id} value={ch.id}>
+                                # {ch.name}
+                              </option>
+                            ))}
+                          </select>
+                          <textarea
+                            value={welcomeMessage}
+                            onChange={(e) => setWelcomeMessage(e.target.value)}
+                            placeholder="Welcome message (use {user} for username)"
+                            rows={3}
+                            className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40 resize-none"
+                          />
+                          <div className="text-xs text-slate-500">Use {'{user}'} to mention the new member</div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (selectedServerId && welcomeMessage.trim()) {
+                                wsClient.send({
+                                  type: 'set_welcome_message',
+                                  server_id: selectedServerId,
+                                  enabled: welcomeEnabled,
+                                  message: welcomeMessage,
+                                  channel_id: welcomeChannel || null
+                                })
+                                pushToast({ kind: 'success', message: 'Welcome message saved!' })
+                              }
+                            }}
+                            disabled={!welcomeMessage.trim()}
+                            className="w-full rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                          >
+                            Save Welcome Message
+                          </button>
                         </div>
                       )}
                     </div>
@@ -7078,27 +7067,6 @@ function ChatPage() {
                     <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">🔗 Webhooks</h3>
                     <WebhookPanel serverId={selectedServerId || undefined} />
                   </section>
-                    </>
-                  )}
-
-                  {/* Roles Tab */}
-                  {serverSettingsTab === 'roles' && (
-                    <>
-                      <div className="text-sm text-slate-400">Roles & permissions settings coming soon...</div>
-                    </>
-                  )}
-
-                  {/* Customization Tab */}
-                  {serverSettingsTab === 'customization' && (
-                    <>
-                      <div className="text-sm text-slate-400">Customization settings coming soon...</div>
-                    </>
-                  )}
-
-                  {/* Automations Tab */}
-                  {serverSettingsTab === 'automations' && (
-                    <>
-                      <div className="text-sm text-slate-400">Automation settings coming soon...</div>
                     </>
                   )}
                 </div>
