@@ -7297,7 +7297,7 @@ function ChatPage() {
             serverId={selectedServerId}
             isServerAdmin={
               selectedServerId
-                ? servers.some(s => s.server_id === selectedServerId && s.owner === init?.username)
+                ? init?.servers?.some(s => s.id === selectedServerId && s.owner === init.username) ?? false
                 : false
             }
             onPlaySound={handlePlaySoundboard}
