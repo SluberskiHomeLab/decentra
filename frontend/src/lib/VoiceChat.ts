@@ -623,6 +623,130 @@ export class VoiceChat {
     this.saveDevicePreferences()
   }
 
+  // Soundboard functionality
+  async playSoundboard(soundId: string): Promise<void> {
+    try {
+      if (!this.localStream) {
+        console.error('No local audio stream available')
+        return
+      }
+
+      // Fetch the audio file
+      const token = localStorage.getItem('token')
+      const response = await fetch(`/api/download-soundboard-sound/${soundId}?token=${token}`)
+      if (!response.ok) {
+        console.error('Failed to fetch soundboard sound')
+        return
+      }
+
+      const audioBlob = await response.blob()
+      const audioUrl = URL.createObjectURL(audioBlob)
+
+      // Create Audio Context
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
+      
+      // Fetch and decode audio data
+      const arrayBuffer = await audioBlob.arrayBuffer()
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
+
+      // Create a buffer source
+      const soundSource = audioContext.createBufferSource()
+      soundSource.buffer = audioBuffer
+
+      // Create a destination for the mixed audio
+      const destination = audioContext.createMediaStreamDestination()
+
+      // Create a gain node for the soundboard audio (to control volume)
+      const soundGain = audioContext.createGain()
+      soundGain.gain.value = 0.8 // 80% volume for soundboard
+
+      // Connect soundboard audio: source -> gain -> destination
+      soundSource.connect(soundGain)
+      soundGain.connect(destination)
+
+      // Also add microphone to the mix
+      if (this.localStream) {
+        const micSource = audioContext.createMediaStreamSource(this.localStream)
+        const micGain = audioContext.createGain()
+        micGain.gain.value = 1.0 // Keep mic at full volume
+        
+        micSource.connect(micGain)
+        micGain.connect(destination)
+      }
+
+      // Get the mixed audio track
+      const mixedTrack = destination.stream.getAudioTracks()[0]
+
+      // Replace audio track in all peer connections temporarily
+      const originalTracks: Map<RTCPeerConnection, MediaStreamTrack> = new Map()
+      
+      this.peerConnections.forEach((pc) => {
+        const senders = pc.getSenders()
+        const audioSender = senders.find((s) => s.track?.kind === 'audio')
+        if (audioSender && audioSender.track) {
+          originalTracks.set(pc, audioSender.track)
+          audioSender.replaceTrack(mixedTrack).catch((err) => {
+            console.error('Error replacing audio track:', err)
+          })
+        }
+      })
+
+      // Play the sound
+      soundSource.start(0)
+
+      // Restore original microphone track after sound ends
+      soundSource.onended = () => {
+        // Restore original tracks
+        this.peerConnections.forEach((pc) => {
+          const originalTrack = originalTracks.get(pc)
+          if (originalTrack) {
+            const senders = pc.getSenders()
+            const audioSender = senders.find((s) => s.track?.kind === 'audio')
+            if (audioSender) {
+              audioSender.replaceTrack(originalTrack).catch((err) => {
+                console.error('Error restoring audio track:', err)
+              })
+            }
+          }
+        })
+
+        // Clean up
+        URL.revokeObjectURL(audioUrl)
+        audioContext.close()
+      }
+
+    } catch (error) {
+      console.error('Error playing soundboard sound:', error)
+    }
+  }
+
+  async playRemoteSoundboard(soundId: string): Promise<void> {
+    try {
+      // Fetch the audio file
+      const token = localStorage.getItem('token')
+      const response = await fetch(`/api/download-soundboard-sound/${soundId}?token=${token}`)
+      if (!response.ok) {
+        console.error('Failed to fetch soundboard sound')
+        return
+      }
+
+      const audioBlob = await response.blob()
+      const audioUrl = URL.createObjectURL(audioBlob)
+
+      // Play the audio through default output
+      const audio = new Audio(audioUrl)
+      audio.volume = 0.8
+      
+      audio.onended = () => {
+        URL.revokeObjectURL(audioUrl)
+      }
+
+      await audio.play()
+    } catch (error) {
+      console.error('Error playing remote soundboard sound:', error)
+    }
+  }
+
   // Getters
   getIsMuted() {
     return this.isMuted

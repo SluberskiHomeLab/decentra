@@ -115,6 +115,8 @@ voice_calls = {}
 voice_states = {}
 # Store voice members per channel: {server_id/channel_id: set(usernames)}
 voice_members = {}
+# Store soundboard play cooldowns: {username: last_play_timestamp}
+soundboard_cooldowns = {}
 
 # Helper counters for IDs (load from database on startup)
 server_counter = 0
@@ -4641,6 +4643,92 @@ async def handler(websocket):
                                         'type': 'error',
                                         'message': 'You do not have permission to delete this emoji'
                                     }))
+                    
+                    # Soundboard handlers
+                    elif data.get('type') == 'play_soundboard':
+                        sound_id = data.get('sound_id', '')
+                        
+                        if not sound_id:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'sound_id is required'
+                            }))
+                            continue
+                        
+                        # Check if user is in a voice channel
+                        if username not in voice_states:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'You must be in a voice channel to play sounds'
+                            }))
+                            continue
+                        
+                        voice_state = voice_states[username]
+                        server_id = voice_state.get('server_id')
+                        channel_id = voice_state.get('channel_id')
+                        
+                        if not server_id or not channel_id:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid voice state'
+                            }))
+                            continue
+                        
+                        # Check soundboard is enabled
+                        admin_settings = db.get_admin_settings()
+                        if not admin_settings.get('allow_soundboard', False):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Soundboard is disabled'
+                            }))
+                            continue
+                        
+                        # Verify sound exists
+                        sound = db.get_soundboard_sound(sound_id)
+                        if not sound:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Sound not found'
+                            }))
+                            continue
+                        
+                        # Check cooldown (2 seconds between plays per user)
+                        current_time = time.time()
+                        if username in soundboard_cooldowns:
+                            last_play = soundboard_cooldowns[username]
+                            if current_time - last_play < 2:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Please wait before playing another sound'
+                                }))
+                                continue
+                        
+                        # Update cooldown
+                        soundboard_cooldowns[username] = current_time
+                        
+                        # Get all members in the voice channel
+                        voice_key = f"{server_id}/{channel_id}"
+                        if voice_key in voice_members:
+                            # Broadcast soundboard play to all voice channel participants
+                            soundboard_msg = json.dumps({
+                                'type': 'soundboard_play',
+                                'sound_id': sound_id,
+                                'sound_name': sound.get('name', ''),
+                                'username': username,
+                                'server_id': server_id,
+                                'channel_id': channel_id,
+                                'duration_ms': sound.get('duration_ms', 0)
+                            })
+                            
+                            for participant_username in voice_members[voice_key]:
+                                if participant_username in clients_by_username:
+                                    for client_ws in clients_by_username[participant_username]:
+                                        try:
+                                            await client_ws.send_str(soundboard_msg)
+                                        except Exception:
+                                            pass
+                            
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} played soundboard sound '{sound.get('name')}' in {channel_id}")
                     
                     # Message reaction handlers
                     elif data.get('type') == 'add_reaction':

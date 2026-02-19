@@ -39,6 +39,7 @@ DEFAULT_FEATURES: Dict[str, bool] = {
     "custom_emojis": True,
     "audit_logs": True,
     "sso": False,
+    "soundboard": True,
 }
 
 DEFAULT_LIMITS: Dict[str, int] = {
@@ -47,6 +48,9 @@ DEFAULT_LIMITS: Dict[str, int] = {
     "max_channels_per_server": 30,
     "max_file_size_mb": 10,
     "max_messages_history": -1,
+    "max_sounds_per_user": 5,
+    "max_sound_duration_seconds": 5,
+    "max_server_sounds": 10,
 }
 
 DEFAULT_QUALITIES: Dict[str, str] = {

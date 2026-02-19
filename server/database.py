@@ -343,6 +343,52 @@ class Database:
                         )
                     ''')
                     
+                    # User soundboard sounds table (personal sounds that work across all servers)
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS user_soundboard_sounds (
+                            sound_id VARCHAR(255) PRIMARY KEY,
+                            username VARCHAR(255) NOT NULL,
+                            name VARCHAR(100) NOT NULL,
+                            audio_data TEXT NOT NULL,
+                            content_type VARCHAR(100) NOT NULL,
+                            duration_ms INTEGER NOT NULL,
+                            file_size INTEGER NOT NULL,
+                            created_at TIMESTAMP NOT NULL,
+                            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE,
+                            UNIQUE (username, name)
+                        )
+                    ''')
+                    
+                    # Create index for faster user soundboard lookups
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_user_soundboard_username
+                        ON user_soundboard_sounds(username)
+                    ''')
+                    
+                    # Server soundboard sounds table (server-specific sounds for server members)
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS server_soundboard_sounds (
+                            sound_id VARCHAR(255) PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            name VARCHAR(100) NOT NULL,
+                            audio_data TEXT NOT NULL,
+                            content_type VARCHAR(100) NOT NULL,
+                            duration_ms INTEGER NOT NULL,
+                            file_size INTEGER NOT NULL,
+                            uploader VARCHAR(255) NOT NULL,
+                            created_at TIMESTAMP NOT NULL,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (uploader) REFERENCES users(username) ON DELETE CASCADE,
+                            UNIQUE (server_id, name)
+                        )
+                    ''')
+                    
+                    # Create index for faster server soundboard lookups
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_server_soundboard_server
+                        ON server_soundboard_sounds(server_id)
+                    ''')
+                    
                     # Message reactions table
                     cursor.execute('''
                         CREATE TABLE IF NOT EXISTS message_reactions (
@@ -749,6 +795,31 @@ class Database:
                                 WHERE table_name = 'admin_settings' AND column_name = 'instance_fingerprint'
                             ) THEN
                                 ALTER TABLE admin_settings ADD COLUMN instance_fingerprint TEXT;
+                            END IF;
+                            -- Soundboard settings
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'allow_soundboard'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN allow_soundboard BOOLEAN DEFAULT FALSE;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'max_sounds_per_user'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN max_sounds_per_user INTEGER DEFAULT 10;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'max_sound_duration_seconds'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN max_sound_duration_seconds INTEGER DEFAULT 10;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'max_server_sounds'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN max_server_sounds INTEGER DEFAULT 25;
                             END IF;
                         END $$;
                     ''')
@@ -2828,6 +2899,116 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM custom_emojis WHERE emoji_id = %s', (emoji_id,))
             return cursor.rowcount > 0
+    
+    # Soundboard operations
+    def save_user_soundboard_sound(self, sound_id: str, username: str, name: str,
+                                   audio_data: str, content_type: str, duration_ms: int,
+                                   file_size: int) -> bool:
+        """Save a personal soundboard sound for a user."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO user_soundboard_sounds 
+                    (sound_id, username, name, audio_data, content_type, duration_ms, file_size, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (sound_id, username, name, audio_data, content_type, duration_ms, file_size, datetime.now()))
+                return True
+        except psycopg2.IntegrityError:
+            return False
+    
+    def save_server_soundboard_sound(self, sound_id: str, server_id: str, name: str,
+                                     audio_data: str, content_type: str, duration_ms: int,
+                                     file_size: int, uploader: str) -> bool:
+        """Save a server soundboard sound."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO server_soundboard_sounds 
+                    (sound_id, server_id, name, audio_data, content_type, duration_ms, file_size, uploader, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (sound_id, server_id, name, audio_data, content_type, duration_ms, file_size, uploader, datetime.now()))
+                return True
+        except psycopg2.IntegrityError:
+            return False
+    
+    def get_user_soundboard_sounds(self, username: str) -> List[Dict]:
+        """Get all personal soundboard sounds for a user."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT sound_id, name, content_type, duration_ms, file_size, created_at::text as created_at
+                FROM user_soundboard_sounds
+                WHERE username = %s
+                ORDER BY created_at ASC
+            ''', (username,))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_server_soundboard_sounds(self, server_id: str) -> List[Dict]:
+        """Get all soundboard sounds for a server."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT sound_id, name, content_type, duration_ms, file_size, uploader, created_at::text as created_at
+                FROM server_soundboard_sounds
+                WHERE server_id = %s
+                ORDER BY created_at ASC
+            ''', (server_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_soundboard_sound(self, sound_id: str) -> Optional[Dict]:
+        """Get a specific soundboard sound (from either user or server tables)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            # Try user sounds first
+            cursor.execute('''
+                SELECT sound_id, username as owner, name, audio_data, content_type, 
+                       duration_ms, file_size, created_at::text as created_at, 'user' as sound_type
+                FROM user_soundboard_sounds
+                WHERE sound_id = %s
+            ''', (sound_id,))
+            result = cursor.fetchone()
+            if result:
+                return dict(result)
+            
+            # Try server sounds
+            cursor.execute('''
+                SELECT sound_id, server_id, uploader, name, audio_data, content_type,
+                       duration_ms, file_size, created_at::text as created_at, 'server' as sound_type
+                FROM server_soundboard_sounds
+                WHERE sound_id = %s
+            ''', (sound_id,))
+            result = cursor.fetchone()
+            return dict(result) if result else None
+    
+    def delete_soundboard_sound(self, sound_id: str) -> bool:
+        """Delete a soundboard sound (from either user or server tables)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            # Try deleting from user sounds
+            cursor.execute('DELETE FROM user_soundboard_sounds WHERE sound_id = %s', (sound_id,))
+            if cursor.rowcount > 0:
+                return True
+            # Try deleting from server sounds
+            cursor.execute('DELETE FROM server_soundboard_sounds WHERE sound_id = %s', (sound_id,))
+            return cursor.rowcount > 0
+    
+    def count_user_soundboard_sounds(self, username: str) -> int:
+        """Count how many personal soundboard sounds a user has."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) as count FROM user_soundboard_sounds WHERE username = %s', (username,))
+            result = cursor.fetchone()
+            return result['count'] if result else 0
+    
+    def count_server_soundboard_sounds(self, server_id: str) -> int:
+        """Count how many soundboard sounds a server has."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) as count FROM server_soundboard_sounds WHERE server_id = %s', (server_id,))
+            result = cursor.fetchone()
+            return result['count'] if result else 0
     
     # Message reaction operations
     def add_reaction(self, message_id: int, username: str, emoji: str, emoji_type: str = 'standard') -> bool:

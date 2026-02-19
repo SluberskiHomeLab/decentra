@@ -13,6 +13,7 @@ import { UsersPanel } from './components/admin/UsersPanel'
 import { useLicenseStore } from './store/licenseStore'
 import { notificationManager } from './utils/notifications'
 import { SearchBar, type SearchResult } from './components/SearchBar'
+import SoundboardPanel from './components/SoundboardPanel'
 import './App.css'
 
 // URL processing utilities
@@ -1276,6 +1277,9 @@ function ChatPage() {
   const [isVoiceMuted, setIsVoiceMuted] = useState(false)
   const [isVideoEnabled, setIsVideoEnabled] = useState(false)
   const [isScreenSharing, setIsScreenSharing] = useState(false)
+  
+  // Soundboard state
+  const [isSoundboardOpen, setIsSoundboardOpen] = useState(false)
 
   // Mention autocomplete state
   const [showMentionAutocomplete, setShowMentionAutocomplete] = useState(false)
@@ -2423,6 +2427,31 @@ function ChatPage() {
           voiceChat.handleICECandidate(fromUsername, msg.candidate)
         }
       }
+      
+      // Soundboard handler
+      if (msg.type === 'soundboard_play' && voiceChat) {
+        const soundId = (msg as any).sound_id
+        const soundName = (msg as any).sound_name || 'Unknown'
+        const playingUsername = (msg as any).username
+        
+        // Don't play if it's the current user (already played locally)
+        if (playingUsername && playingUsername === init?.username) {
+          return
+        }
+        
+        // Play the sound remotely
+        if (soundId) {
+          voiceChat.playRemoteSoundboard(soundId).catch((err: any) => {
+            console.error('Failed to play remote soundboard sound:', err)
+          })
+          
+          // Show toast notification
+          pushToast({ 
+            kind: 'info', 
+            message: `🔊 ${playingUsername} played: ${soundName}` 
+          })
+        }
+      }
     })
 
     return () => unsubscribe()
@@ -3527,6 +3556,16 @@ function ChatPage() {
     if (!voiceChat) return
     voiceChat.toggleScreenShare()
   }
+  
+  const handlePlaySoundboard = async (soundId: string, soundName: string) => {
+    if (!voiceChat) return
+    try {
+      await voiceChat.playSoundboard(soundId)
+      pushToast({ kind: 'info', message: `Playing: ${soundName}` })
+    } catch (error) {
+      pushToast({ kind: 'error', message: 'Failed to play sound' })
+    }
+  }
 
   /* const updateVoiceDevices = () => {
     if (!voiceChat) return
@@ -4158,6 +4197,14 @@ function ChatPage() {
                       title={isScreenSharing ? 'Stop Sharing' : 'Share Screen'}
                     >
                       🖥️ {isScreenSharing ? 'Stop Share' : 'Screen Share'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsSoundboardOpen(true)}
+                      className="rounded-xl bg-slate-800/50 border border-white/10 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700/50 transition"
+                      title="Open Soundboard"
+                    >
+                      🔊 Soundboard
                     </button>
                     <button
                       type="button"
@@ -5166,6 +5213,60 @@ function ChatPage() {
                             className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
                           />
                         </label>
+                        
+                        {/* Soundboard Settings */}
+                        <div className="mt-6 pt-6 border-t border-white/10">
+                          <h4 className="mb-3 text-sm font-semibold text-white">Soundboard Settings</h4>
+                          
+                          <label className="flex items-center gap-3 mb-4">
+                            <input
+                              type="checkbox"
+                              checked={adminSettings.allow_soundboard === true}
+                              onChange={(e) => setAdminSettings({ ...adminSettings, allow_soundboard: e.target.checked })}
+                              className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
+                            />
+                            <div className="text-sm text-slate-200">Enable Soundboard</div>
+                          </label>
+                          
+                          <label className="block mb-3">
+                            <div className="mb-1 text-sm text-slate-200">Max Personal Sounds Per User</div>
+                            <input
+                              type="number"
+                              min="1"
+                              max="100"
+                              value={adminSettings.max_sounds_per_user || 10}
+                              onChange={(e) => setAdminSettings({ ...adminSettings, max_sounds_per_user: parseInt(e.target.value) || 10 })}
+                              className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                              disabled={!adminSettings.allow_soundboard}
+                            />
+                          </label>
+                          
+                          <label className="block mb-3">
+                            <div className="mb-1 text-sm text-slate-200">Max Server Sounds</div>
+                            <input
+                              type="number"
+                              min="1"
+                              max="200"
+                              value={adminSettings.max_server_sounds || 25}
+                              onChange={(e) => setAdminSettings({ ...adminSettings, max_server_sounds: parseInt(e.target.value) || 25 })}
+                              className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                              disabled={!adminSettings.allow_soundboard}
+                            />
+                          </label>
+                          
+                          <label className="block">
+                            <div className="mb-1 text-sm text-slate-200">Max Sound Duration (seconds)</div>
+                            <input
+                              type="number"
+                              min="1"
+                              max="30"
+                              value={adminSettings.max_sound_duration_seconds || 10}
+                              onChange={(e) => setAdminSettings({ ...adminSettings, max_sound_duration_seconds: parseInt(e.target.value) || 10 })}
+                              className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                              disabled={!adminSettings.allow_soundboard}
+                            />
+                          </label>
+                        </div>
 
                         <label className="block">
                           <div className="mb-1 text-sm text-slate-200">Max Servers Per User <span className="text-xs text-slate-400">(0 = unlimited)</span></div>
@@ -7186,6 +7287,22 @@ function ChatPage() {
               </div>
             </div>
           </div>
+        )}
+        
+        {/* Soundboard Panel */}
+        {isInVoice && (
+          <SoundboardPanel
+            isOpen={isSoundboardOpen}
+            onClose={() => setIsSoundboardOpen(false)}
+            serverId={selectedServerId}
+            isServerAdmin={
+              selectedServerId
+                ? servers.some(s => s.server_id === selectedServerId && s.owner === init?.username)
+                : false
+            }
+            onPlaySound={handlePlaySoundboard}
+            sendWebSocketMessage={(msg) => wsClient.send(msg)}
+          />
         )}
       </div>
     </div>
