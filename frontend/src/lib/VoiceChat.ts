@@ -499,19 +499,6 @@ export class VoiceChat {
     const participantSet = new Set(participants)
     const inVoice = participantSet.has(this.username)
 
-    // If we just joined (pending -> confirmed), update current channel
-    if (inVoice && this.pendingVoiceServer && this.pendingVoiceChannel) {
-      if (this.currentVoiceServer !== this.pendingVoiceServer || 
-          this.currentVoiceChannel !== this.pendingVoiceChannel) {
-        this.currentVoiceServer = this.pendingVoiceServer
-        this.currentVoiceChannel = this.pendingVoiceChannel
-        console.log('Voice channel join confirmed:', this.currentVoiceServer, this.currentVoiceChannel)
-        this.notifyStateChange() // Now we can notify that we're actually in voice
-      }
-      this.pendingVoiceServer = null
-      this.pendingVoiceChannel = null
-    }
-
     // Close peer connections that are no longer in the voice member list.
     for (const [peer, pc] of this.peerConnections) {
       if (!participantSet.has(peer)) {
@@ -539,6 +526,20 @@ export class VoiceChat {
         }
       }
       this.shouldInitiateOffers = false
+    }
+
+    // If we just joined (pending -> confirmed), update current channel
+    // This is done AFTER shouldInitiateOffers is reset so getIsConnecting() returns false
+    if (inVoice && this.pendingVoiceServer && this.pendingVoiceChannel) {
+      if (this.currentVoiceServer !== this.pendingVoiceServer || 
+          this.currentVoiceChannel !== this.pendingVoiceChannel) {
+        this.currentVoiceServer = this.pendingVoiceServer
+        this.currentVoiceChannel = this.pendingVoiceChannel
+        console.log('Voice channel join confirmed:', this.currentVoiceServer, this.currentVoiceChannel)
+      }
+      this.pendingVoiceServer = null
+      this.pendingVoiceChannel = null
+      this.notifyStateChange() // Notify AFTER all state is properly updated
     }
 
     if (this.onParticipantsChange) {
