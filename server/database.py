@@ -1188,6 +1188,34 @@ class Database:
                         END $$;
                     ''')
 
+                    # Add user preferences columns (migration)
+                    # theme_mode: 'dark' (default), 'light', or 'high_contrast'
+                    # keybinds: JSON object storing custom keybinds
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'users' AND column_name = 'theme_mode'
+                            ) THEN
+                                ALTER TABLE users ADD COLUMN theme_mode VARCHAR(50) DEFAULT 'dark';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'users' AND column_name = 'keybinds'
+                            ) THEN
+                                ALTER TABLE users ADD COLUMN keybinds JSONB DEFAULT '{
+                                    "push_to_talk": "KeyV",
+                                    "toggle_mute": "KeyM",
+                                    "toggle_deafen": "KeyD",
+                                    "toggle_video": "KeyC",
+                                    "toggle_screen_share": "KeyS",
+                                    "answer_end_call": "KeyA"
+                                }'::jsonb;
+                            END IF;
+                        END $$;
+                    ''')
+
                     conn.commit()
 
                 # If we get here, connection was successful
@@ -1489,6 +1517,54 @@ class Database:
             if row:
                 return dict(row)
             return None
+    
+    def get_user_preferences(self, username: str) -> Optional[Dict]:
+        """Get user preferences (theme_mode and keybinds)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT theme_mode, keybinds 
+                FROM users 
+                WHERE username = %s
+            ''', (username,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+    
+    def update_user_theme(self, username: str, theme_mode: str) -> bool:
+        """Update user theme mode. Valid values: 'dark', 'light', 'high_contrast'."""
+        valid_themes = ['dark', 'light', 'high_contrast']
+        if theme_mode not in valid_themes:
+            return False
+        
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE users 
+                    SET theme_mode = %s
+                    WHERE username = %s
+                ''', (theme_mode, username))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error updating theme for {username}: {e}")
+            return False
+    
+    def update_user_keybinds(self, username: str, keybinds: Dict) -> bool:
+        """Update user keybinds. Expects a dict with keybind mappings."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE users 
+                    SET keybinds = %s::jsonb
+                    WHERE username = %s
+                ''', (json.dumps(keybinds), username))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error updating keybinds for {username}: {e}")
+            return False
     
     def delete_email_verification_code(self, email: str, username: str) -> bool:
         """Delete an email verification code."""

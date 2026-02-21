@@ -2,6 +2,8 @@ export type WsAuthSuccess = {
   type: 'auth_success'
   message?: string
   token: string
+  theme_mode?: 'dark' | 'light' | 'high_contrast'
+  keybinds?: Record<string, string>
 }
 
 export type Avatar = {
@@ -824,4 +826,18 @@ export interface WsInboundLicenseInfo {
 export interface WsInboundLicenseUpdated {
   type: 'license_updated'
   data: LicenseInfo
+}
+
+// ── User Preferences System ──────────────────────────────────────
+
+export type WsOutboundUpdateUserPreferences = {
+  type: 'update_user_preferences'
+  theme_mode?: 'dark' | 'light' | 'high_contrast'
+  keybinds?: Record<string, string>
+}
+
+export type WsInboundUserPreferencesUpdated = {
+  type: 'user_preferences_updated'
+  theme_mode: 'dark' | 'light' | 'high_contrast'
+  keybinds: Record<string, string>
 }

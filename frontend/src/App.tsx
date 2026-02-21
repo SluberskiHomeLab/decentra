@@ -11,7 +11,9 @@ import { LicensePanel } from './components/admin/LicensePanel'
 import { WebhookPanel } from './components/admin/WebhookPanel'
 import { UsersPanel } from './components/admin/UsersPanel'
 import { useLicenseStore } from './store/licenseStore'
+import { useSettingsStore, type Keybinds } from './store/settingsStore'
 import { notificationManager } from './utils/notifications'
+import { keybindManager } from './utils/keybindManager'
 import { SearchBar, type SearchResult } from './components/SearchBar'
 import SoundboardPanel from './components/SoundboardPanel'
 import './App.css'
@@ -1201,6 +1203,7 @@ function ResetPasswordPage() {
 
 function ChatPage() {
   const connectionStatus = useAppStore((s) => s.connectionStatus)
+  const setConnectionStatus = useAppStore((s) => s.setConnectionStatus)
   const authToken = useAppStore((s) => s.authToken)
   const authUsername = useAppStore((s) => s.authUsername)
   const init = useAppStore((s) => s.init)
@@ -1212,6 +1215,11 @@ function ChatPage() {
   const messagesByContext = useAppStore((s) => s.messagesByContext)
   const setMessagesForContext = useAppStore((s) => s.setMessagesForContext)
   const appendMessage = useAppStore((s) => s.appendMessage)
+
+  const themeMode = useSettingsStore((s) => s.themeMode)
+  const setThemeMode = useSettingsStore((s) => s.setThemeMode)
+  const keybinds = useSettingsStore((s) => s.keybinds) 
+  const loadPreferences = useSettingsStore((s) => s.loadPreferences)
 
   const [draft, setDraft] = useState('')
   const [serverName, setServerName] = useState('')
@@ -1329,6 +1337,9 @@ function ChatPage() {
   const [newUsername, setNewUsername] = useState('')
   const [usernamePassword, setUsernamePassword] = useState('')
   const [usernameChangeStatus, setUsernameChangeStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null)
+  const [accountSettingsTab, setAccountSettingsTab] = useState<'profile' | 'security' | 'notifications' | 'keybinds'>('profile')
+  const [rebindingAction, setRebindingAction] = useState<keyof Keybinds | null>(null)
+  const [rebindConflict, setRebindConflict] = useState<string | null>(null)
   
   // Reply state
   const [replyingTo, setReplyingTo] = useState<WsChatMessage | null>(null)
@@ -1493,20 +1504,44 @@ function ChatPage() {
 
     const ws = wsClient.connect()
     
+    const handleOpen = () => {
+      setConnectionStatus('connected')
+    }
+    
+    const handleClose = () => {
+      setConnectionStatus('disconnected')
+    }
+    
+    const handleError = () => {
+      setConnectionStatus('disconnected')
+    }
+    
     const sendAuth = () => {
       wsClient.authenticateWithToken({ type: 'token', token: authToken })
     }
 
+    // Set initial status
     if (ws.readyState === WebSocket.OPEN) {
+      setConnectionStatus('connected')
       sendAuth()
+    } else if (ws.readyState === WebSocket.CONNECTING) {
+      setConnectionStatus('connecting')
     } else {
-      ws.addEventListener('open', sendAuth)
+      setConnectionStatus('disconnected')
     }
 
+    ws.addEventListener('open', handleOpen)
+    ws.addEventListener('open', sendAuth)
+    ws.addEventListener('close', handleClose)
+    ws.addEventListener('error', handleError)
+
     return () => {
+      ws.removeEventListener('open', handleOpen)
       ws.removeEventListener('open', sendAuth)
+      ws.removeEventListener('close', handleClose)
+      ws.removeEventListener('error', handleError)
     }
-  }, [authToken])
+  }, [authToken, setConnectionStatus])
 
   useEffect(() => {
     const unsubscribe = wsClient.onMessage((msg: WsMessage) => {
@@ -1518,6 +1553,14 @@ function ChatPage() {
         setLastAuthError(null)
       }
       if (msg.type === 'auth_success') {
+        // Load user preferences from server
+        if (msg.theme_mode || msg.keybinds) {
+          loadPreferences(
+            msg.theme_mode || 'dark',
+            msg.keybinds || {}
+          )
+        }
+
         // Request admin settings (includes announcement info for all users)
         try {
           wsClient.send({ type: 'get_admin_settings' })
@@ -2456,6 +2499,51 @@ function ChatPage() {
 
     return () => unsubscribe()
   }, [])
+
+  // Initialize keybind manager for voice chat controls
+  useEffect(() => {
+    keybindManager.init()
+
+    // Register keybind callbacks
+    keybindManager.on('push_to_talk', () => {
+      if (voiceChat && voiceChat.getIsInVoice()) {
+        voiceChat.toggleMute()
+      }
+    })
+
+    keybindManager.on('toggle_mute', () => {
+      if (voiceChat && voiceChat.getIsInVoice()) {
+        voiceChat.toggleMute()
+      }
+    })
+
+    keybindManager.on('toggle_deafen', () => {
+      // TODO: Implement deafen functionality in VoiceChat.ts
+      console.log('Toggle deafen not yet implemented')
+    })
+
+    keybindManager.on('toggle_video', () => {
+      if (voiceChat && voiceChat.getIsInVoice()) {
+        voiceChat.toggleVideo()
+      }
+    })
+
+    keybindManager.on('toggle_screen_share', () => {
+      if (voiceChat && voiceChat.getIsInVoice()) {
+        voiceChat.toggleScreenShare()
+      }
+    })
+
+    keybindManager.on('answer_end_call', () => {
+      // TODO: Implement answer/end call functionality
+      console.log('Answer/end call not yet implemented')
+    })
+
+    // Cleanup on unmount
+    return () => {
+      keybindManager.destroy()
+    }
+  }, [voiceChat])
 
   // Populate account settings when init data is available
   useEffect(() => {
@@ -3614,6 +3702,61 @@ function ChatPage() {
       type: 'change_user_status',
       user_status: newStatus,
     })
+  }
+
+  const handleThemeChange = (theme: 'dark' | 'light' | 'high_contrast') => {
+    // Update local store immediately
+    setThemeMode(theme)
+    // Send to backend for persistence
+    wsClient.send({
+      type: 'update_user_preferences',
+      theme_mode: theme,
+    })
+  }
+
+  const handleStartRebind = (action: keyof Keybinds) => {
+    setRebindingAction(action)
+    setRebindConflict(null)
+  }
+
+  const handleCancelRebind = () => {
+    setRebindingAction(null)
+    setRebindConflict(null)
+  }
+
+  const handleKeybindCapture = (event: React.KeyboardEvent) => {
+    if (!rebindingAction) return
+    
+    event.preventDefault()
+    event.stopPropagation()
+
+    const keyCode = event.code
+
+    // Check for conflicts with other keybinds
+    const conflictingAction = Object.entries(keybinds).find(
+      ([action, key]) => key === keyCode && action !== rebindingAction
+    )?.[0]
+
+    if (conflictingAction) {
+      setRebindConflict(conflictingAction)
+      return
+    }
+
+    // Update the keybind
+    const newKeybinds = { ...keybinds, [rebindingAction]: keyCode }
+    
+    // Update local store
+    useSettingsStore.getState().setKeybind(rebindingAction, keyCode)
+    
+    // Send to backend for persistence
+    wsClient.send({
+      type: 'update_user_preferences',
+      keybinds: newKeybinds,
+    })
+
+    // Close dialog
+    setRebindingAction(null)
+    setRebindConflict(null)
   }
 
   const handleChangeEmail = () => {
@@ -5514,9 +5657,9 @@ function ChatPage() {
 
         {/* Account Settings Modal */}
         {isAccountSettingsOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 overflow-auto p-4" onClick={() => setIsAccountSettingsOpen(false)}>
-            <div className="w-full max-w-3xl max-h-[90vh] overflow-auto rounded-2xl border border-white/10 bg-slate-900 shadow-2xl my-8" onClick={(e) => e.stopPropagation()}>
-              <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-slate-900 px-6 py-4">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsAccountSettingsOpen(false)}>
+            <div className="w-full max-w-3xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-white/10 px-6 py-4 flex-shrink-0">
                 <h2 className="text-xl font-semibold text-white">Account Settings</h2>
                 <button
                   type="button"
@@ -5527,461 +5670,766 @@ function ChatPage() {
                 </button>
               </div>
 
-              <div className="p-6 space-y-6">
-                {/* Account Section */}
-                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Account</h3>
-                  <div className="space-y-4">
-                    {/* Current Username */}
-                    <div>
-                      <div className="mb-1 text-sm text-slate-200">Username</div>
-                      <div className="text-sm text-slate-400 mb-2">{init?.username}</div>
-                      <div className="space-y-2">
-                        <input
-                          type="text"
-                          value={newUsername}
-                          onChange={(e) => setNewUsername(e.target.value)}
-                          placeholder="New username"
-                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        />
-                        <input
-                          type="password"
-                          value={usernamePassword}
-                          onChange={(e) => setUsernamePassword(e.target.value)}
-                          placeholder="Confirm with password"
-                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        />
-                        <button
-                          type="button"
-                          onClick={handleChangeUsername}
-                          disabled={!newUsername.trim() || !usernamePassword}
-                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          Change Username
-                        </button>
-                        {usernameChangeStatus && (
-                          <div className={`text-sm ${usernameChangeStatus.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
-                            {usernameChangeStatus.message}
-                          </div>
-                        )}
-                      </div>
-                    </div>
+              {/* Tabs */}
+              <div className="border-b border-white/10 px-6 flex flex-wrap gap-2 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setAccountSettingsTab('profile')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    accountSettingsTab === 'profile'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Profile
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAccountSettingsTab('security')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    accountSettingsTab === 'security'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Security
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAccountSettingsTab('notifications')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    accountSettingsTab === 'notifications'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Notifications
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAccountSettingsTab('keybinds')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    accountSettingsTab === 'keybinds'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Keybinds
+                </button>
+              </div>
 
-                    {/* Divider */}
-                    <div className="border-t border-white/5" />
+              {/* Tab Content */}
+              <div className="overflow-y-auto flex-1 p-6 space-y-4">
+                {accountSettingsTab === 'profile' && (
+                  <>
+                    {/* Profile Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Profile</h3>
+                      <div className="space-y-4">
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Bio</div>
+                          <textarea
+                            value={profileBio}
+                            onChange={(e) => setProfileBio(e.target.value)}
+                            maxLength={500}
+                            rows={3}
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="Tell others about yourself..."
+                          />
+                          <div className="mt-1 text-xs text-slate-400">{profileBio.length}/500 characters</div>
+                        </label>
 
-                    {/* Current Email */}
-                    <div>
-                      <div className="mb-1 text-sm text-slate-200">Email</div>
-                      <div className="text-sm text-slate-400 mb-2">{init?.email || 'No email set'}</div>
-                      <div className="space-y-2">
-                        <input
-                          type="email"
-                          value={newEmail}
-                          onChange={(e) => setNewEmail(e.target.value)}
-                          placeholder="New email address"
-                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        />
-                        <input
-                          type="password"
-                          value={emailPassword}
-                          onChange={(e) => setEmailPassword(e.target.value)}
-                          placeholder="Confirm with password"
-                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        />
-                        <button
-                          type="button"
-                          onClick={handleChangeEmail}
-                          disabled={!newEmail.trim() || !emailPassword}
-                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          Change Email
-                        </button>
-                        {emailChangeStatus && (
-                          <div className={`text-sm ${emailChangeStatus.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
-                            {emailChangeStatus.message}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </section>
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Status Message</div>
+                          <input
+                            type="text"
+                            value={profileStatus}
+                            onChange={(e) => setProfileStatus(e.target.value)}
+                            maxLength={100}
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="What's your status?"
+                          />
+                          <div className="mt-1 text-xs text-slate-400">{profileStatus.length}/100 characters</div>
+                        </label>
 
-                {/* Profile Section */}
-                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Profile</h3>
-                  <div className="space-y-4">
-                    <label className="block">
-                      <div className="mb-1 text-sm text-slate-200">Bio</div>
-                      <textarea
-                        value={profileBio}
-                        onChange={(e) => setProfileBio(e.target.value)}
-                        maxLength={500}
-                        rows={3}
-                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        placeholder="Tell others about yourself..."
-                      />
-                      <div className="mt-1 text-xs text-slate-400">{profileBio.length}/500 characters</div>
-                    </label>
-
-                    <label className="block">
-                      <div className="mb-1 text-sm text-slate-200">Status Message</div>
-                      <input
-                        type="text"
-                        value={profileStatus}
-                        onChange={(e) => setProfileStatus(e.target.value)}
-                        maxLength={100}
-                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        placeholder="What's your status?"
-                      />
-                      <div className="mt-1 text-xs text-slate-400">{profileStatus.length}/100 characters</div>
-                    </label>
-
-                    <div>
-                      <div className="mb-2 text-sm text-slate-200">User Status</div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handleChangeStatus('online')}
-                          className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
-                            userStatus === 'online'
-                              ? 'border-green-500/50 bg-green-500/20 text-green-300'
-                              : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
-                          }`}
-                        >
-                          <span className="h-2.5 w-2.5 rounded-full bg-green-500" />
-                          Online
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleChangeStatus('away')}
-                          className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
-                            userStatus === 'away'
-                              ? 'border-yellow-500/50 bg-yellow-500/20 text-yellow-300'
-                              : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
-                          }`}
-                        >
-                          <span className="h-2.5 w-2.5 rounded-full bg-yellow-500" />
-                          Away
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleChangeStatus('busy')}
-                          className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
-                            userStatus === 'busy'
-                              ? 'border-red-500/50 bg-red-500/20 text-red-300'
-                              : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
-                          }`}
-                        >
-                          <span className="h-2.5 w-2.5 rounded-full bg-red-500" />
-                          Busy
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleChangeStatus('offline')}
-                          className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
-                            userStatus === 'offline'
-                              ? 'border-gray-500/50 bg-gray-500/20 text-gray-300'
-                              : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
-                          }`}
-                        >
-                          <span className="h-2.5 w-2.5 rounded-full bg-gray-500" />
-                          Offline
-                        </button>
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={handleUpdateProfile}
-                      className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
-                    >
-                      Update Profile
-                    </button>
-                  </div>
-                </section>
-
-                {/* Avatar Section */}
-                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Avatar</h3>
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-4">
-                      <AvatarWithStatus
-                        avatar={init?.avatar}
-                        avatar_type={init?.avatar_type}
-                        avatar_data={init?.avatar_data}
-                        user_status={init?.user_status}
-                        size="xl"
-                      />
-                      <div className="flex-1">
-                        <div className="text-sm text-slate-200 mb-2">Current Avatar</div>
-                        <div className="text-xs text-slate-400">
-                          Type: {init?.avatar_type || 'emoji'}
-                        </div>
-                        <div className="text-xs text-slate-400">
-                          Status: {init?.user_status}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="mb-2 text-sm text-slate-200">Upload Image (PNG, JPG, or GIF, max 2MB)</div>
-                      <input
-                        type="file"
-                        accept="image/png,image/jpeg,image/gif"
-                        onChange={handleAvatarFileChange}
-                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 file:mr-4 file:rounded-lg file:border-0 file:bg-sky-500/20 file:px-3 file:py-1 file:text-sm file:text-sky-200 hover:file:bg-sky-500/30"
-                      />
-                      {avatarPreview && (
-                        <div className="mt-3 flex items-center gap-4">
-                          <img src={avatarPreview} alt="Preview" className="h-20 w-20 rounded-full object-cover border border-white/10" />
-                          <button
-                            type="button"
-                            onClick={handleUploadAvatar}
-                            className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
-                          >
-                            Upload Avatar
-                          </button>
-                        </div>
-                      )}
-                    </div>
-
-                    <div>
-                      <div className="mb-2 text-sm text-slate-200">Or choose an emoji</div>
-                      <div className="flex flex-wrap gap-2">
-                        {['👤', '😀', '😎', '🤖', '👾', '🐱', '🐶', '🦊', '🐼', '🦁', '🐯', '🐻'].map((emoji) => (
-                          <button
-                            key={emoji}
-                            type="button"
-                            onClick={() => handleSetEmojiAvatar(emoji)}
-                            className="flex h-12 w-12 items-center justify-center rounded-xl border border-white/10 bg-slate-950/40 text-2xl hover:bg-white/5"
-                          >
-                            {emoji}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </section>
-
-                {/* 2FA Section */}
-                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Two-Factor Authentication</h3>
-                  {!twoFASetup ? (
-                    <div className="space-y-4">
-                      <div className="text-sm text-slate-200">
-                        Add an extra layer of security to your account.
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={handleSetup2FA}
-                          className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400"
-                        >
-                          Enable 2FA
-                        </button>
-                      </div>
-                      
-                      {/* Disable 2FA Section */}
-                      <div className="border-t border-white/10 pt-4 mt-4">
-                        <div className="text-sm text-slate-200 mb-3">
-                          If you already have 2FA enabled and want to disable it:
-                        </div>
-                        <div className="space-y-3">
-                          <label className="block">
-                            <div className="mb-1 text-sm text-slate-200">Password</div>
-                            <input
-                              type="password"
-                              value={disable2FAPassword}
-                              onChange={(e) => setDisable2FAPassword(e.target.value)}
-                              placeholder="Your password"
-                              className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                            />
-                          </label>
-                          <label className="block">
-                            <div className="mb-1 text-sm text-slate-200">2FA Code or Backup Code</div>
-                            <input
-                              type="text"
-                              value={disable2FACode}
-                              onChange={(e) => setDisable2FACode(e.target.value)}
-                              placeholder="000000"
-                              className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                            />
-                          </label>
-                          <button
-                            type="button"
-                            onClick={handleDisable2FA}
-                            disabled={!disable2FAPassword || !disable2FACode}
-                            className="rounded-xl bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-400 disabled:opacity-60"
-                          >
-                            Disable 2FA
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="text-sm text-slate-200">Scan this QR code with your authenticator app:</div>
-                      <div className="flex justify-center">
-                        <img src={twoFASetup.qr_code} alt="2FA QR Code" className="rounded-xl border border-white/10 bg-white p-2" />
-                      </div>
-                      <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
-                        <div className="text-xs font-medium text-amber-200 mb-2">Backup Codes (save these safely!):</div>
-                        <div className="font-mono text-xs text-amber-100 space-y-1">
-                          {twoFASetup.backup_codes.map((code, idx) => (
-                            <div key={idx}>{code}</div>
-                          ))}
-                        </div>
-                      </div>
-                      <label className="block">
-                        <div className="mb-1 text-sm text-slate-200">Enter code from authenticator app to verify:</div>
-                        <input
-                          type="text"
-                          value={twoFACode}
-                          onChange={(e) => setTwoFACode(e.target.value)}
-                          placeholder="000000"
-                          maxLength={6}
-                          className="w-full max-w-xs rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        />
-                      </label>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={handleVerify2FASetup}
-                          disabled={!twoFACode.trim()}
-                          className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
-                        >
-                          Verify & Enable
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setTwoFASetup(null)}
-                          className="rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </section>
-
-                {/* Notifications Section */}
-                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Notifications</h3>
-                  <div className="space-y-4">
-                    {/* Browser Notifications Permission */}
-                    <div className="rounded-xl border border-white/10 bg-slate-950/20 p-3">
-                      <label className="block mb-2">
-                        <div className="text-sm font-medium text-slate-200">Browser Notifications</div>
-                        <div className="text-xs text-slate-400 mt-1">
-                          {notificationManager.isSupported() 
-                            ? 'Get desktop notifications for mentions, replies, and messages'
-                            : 'Browser notifications are not supported in your browser'}
-                        </div>
-                      </label>
-                      {notificationManager.isSupported() && (
-                        <div className="flex items-center gap-3">
-                          <div className="text-xs text-slate-300">
-                            Status: <span className={`font-semibold ${
-                              notificationPermission === 'granted' ? 'text-emerald-400' :
-                              notificationPermission === 'denied' ? 'text-red-400' :
-                              'text-amber-400'
-                            }`}>
-                              {notificationPermission === 'granted' ? 'Enabled' :
-                               notificationPermission === 'denied' ? 'Blocked' :
-                               'Not requested'}
-                            </span>
-                          </div>
-                          {notificationPermission !== 'granted' && notificationPermission !== 'denied' && (
+                        <div>
+                          <div className="mb-2 text-sm text-slate-200">User Status</div>
+                          <div className="grid grid-cols-2 gap-2">
                             <button
                               type="button"
-                              onClick={async () => {
-                                const permission = await notificationManager.requestPermission()
-                                setNotificationPermission(permission)
-                                if (permission === 'granted') {
-                                  pushToast({ kind: 'success', message: 'Browser notifications enabled' })
-                                  // Show test notification immediately
-                                  setTimeout(() => {
-                                    notificationManager.showNotification('Notifications Enabled!', {
-                                      body: 'You will now receive desktop notifications for messages, mentions, and replies.',
-                                      icon: '/favicon.ico',
-                                    })
-                                  }, 500)
-                                } else {
-                                  pushToast({ kind: 'error', message: 'Browser notifications permission denied' })
-                                }
-                              }}
-                              className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
+                              onClick={() => handleChangeStatus('online')}
+                              className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                                userStatus === 'online'
+                                  ? 'border-green-500/50 bg-green-500/20 text-green-300'
+                                  : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                              }`}
                             >
-                              Enable Notifications
+                              <span className="h-2.5 w-2.5 rounded-full bg-green-500" />
+                              Online
                             </button>
-                          )}
-                          {notificationPermission === 'granted' && (
                             <button
                               type="button"
-                              onClick={() => {
-                                notificationManager.showNotification('Test Notification', {
-                                  body: 'This is a test notification. If you see this, notifications are working!',
-                                  icon: '/favicon.ico',
-                                })
-                                pushToast({ kind: 'info', message: 'Test notification sent - check your system tray!' })
-                              }}
-                              className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+                              onClick={() => handleChangeStatus('away')}
+                              className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                                userStatus === 'away'
+                                  ? 'border-yellow-500/50 bg-yellow-500/20 text-yellow-300'
+                                  : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                              }`}
                             >
-                              Test Notification
+                              <span className="h-2.5 w-2.5 rounded-full bg-yellow-500" />
+                              Away
                             </button>
-                          )}
-                          {notificationPermission === 'denied' && (
-                            <div className="text-xs text-red-400">
-                              Please enable notifications in your browser settings
+                            <button
+                              type="button"
+                              onClick={() => handleChangeStatus('busy')}
+                              className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                                userStatus === 'busy'
+                                  ? 'border-red-500/50 bg-red-500/20 text-red-300'
+                                  : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                              }`}
+                            >
+                              <span className="h-2.5 w-2.5 rounded-full bg-red-500" />
+                              Busy
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleChangeStatus('offline')}
+                              className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                                userStatus === 'offline'
+                                  ? 'border-gray-500/50 bg-gray-500/20 text-gray-300'
+                                  : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                              }`}
+                            >
+                              <span className="h-2.5 w-2.5 rounded-full bg-gray-500" />
+                              Offline
+                            </button>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleUpdateProfile}
+                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                        >
+                          Update Profile
+                        </button>
+                      </div>
+                    </section>
+
+                    {/* Avatar Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Avatar</h3>
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-4">
+                          <AvatarWithStatus
+                            avatar={init?.avatar}
+                            avatar_type={init?.avatar_type}
+                            avatar_data={init?.avatar_data}
+                            user_status={init?.user_status}
+                            size="xl"
+                          />
+                          <div className="flex-1">
+                            <div className="text-sm text-slate-200 mb-2">Current Avatar</div>
+                            <div className="text-xs text-slate-400">
+                              Type: {init?.avatar_type || 'emoji'}
+                            </div>
+                            <div className="text-xs text-slate-400">
+                              Status: {init?.user_status}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="mb-2 text-sm text-slate-200">Upload Image (PNG, JPG, or GIF, max 2MB)</div>
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/gif"
+                            onChange={handleAvatarFileChange}
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 file:mr-4 file:rounded-lg file:border-0 file:bg-sky-500/20 file:px-3 file:py-1 file:text-sm file:text-sky-200 hover:file:bg-sky-500/30"
+                          />
+                          {avatarPreview && (
+                            <div className="mt-3 flex items-center gap-4">
+                              <img src={avatarPreview} alt="Preview" className="h-20 w-20 rounded-full object-cover border border-white/10" />
+                              <button
+                                type="button"
+                                onClick={handleUploadAvatar}
+                                className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                              >
+                                Upload Avatar
+                              </button>
                             </div>
                           )}
                         </div>
-                      )}
-                    </div>
-                    
-                    {/* Notification Mode */}
-                    <label className="block">
-                      <div className="mb-2 text-sm text-slate-200">Notification Mode</div>
-                      <div className="text-xs text-slate-400 mb-2">
-                        Controls when you receive notifications (only works when browser notifications are enabled)
-                      </div>
-                      <select
-                        value={notificationMode}
-                        onChange={(e) => setNotificationMode(e.target.value as 'all' | 'mentions' | 'none')}
-                        className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                      >
-                        <option value="all">All messages</option>
-                        <option value="mentions">Only mentions and replies</option>
-                        <option value="none">None</option>
-                      </select>
-                    </label>
-                    <button
-                      type="button"
-                      onClick={handleSetNotificationMode}
-                      className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
-                    >
-                      Save Notification Settings
-                    </button>
-                  </div>
-                </section>
 
-                {/* Password Reset Section */}
-                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Password Reset</h3>
-                  <div className="space-y-4">
-                    <div className="text-sm text-slate-200">
-                      Request a password reset link to be sent to your registered email address.
+                        <div>
+                          <div className="mb-2 text-sm text-slate-200">Or choose an emoji</div>
+                          <div className="flex flex-wrap gap-2">
+                            {['👤', '😀', '😎', '🤖', '👾', '🐱', '🐶', '🦊', '🐼', '🦁', '🐯', '🐻'].map((emoji) => (
+                              <button
+                                key={emoji}
+                                type="button"
+                                onClick={() => handleSetEmojiAvatar(emoji)}
+                                className="flex h-12 w-12 items-center justify-center rounded-xl border border-white/10 bg-slate-950/40 text-2xl hover:bg-white/5"
+                              >
+                                {emoji}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+
+                    {/* Theme Section - NEW */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Theme</h3>
+                      <div className="space-y-4">
+                        <div className="text-sm text-slate-200 mb-3">Choose your preferred theme</div>
+                        <div className="space-y-2">
+                          <label className="flex items-center gap-3 p-3 rounded-xl border border-white/10 bg-slate-950/40 cursor-pointer hover:bg-white/5 transition">
+                            <input 
+                              type="radio" 
+                              name="theme" 
+                              value="dark"
+                              checked={themeMode === 'dark'}
+                              onChange={() => handleThemeChange('dark')}
+                              className="text-sky-500 focus:ring-sky-500" 
+                            />
+                            <div>
+                              <div className="text-sm font-medium text-slate-200">Dark</div>
+                              <div className="text-xs text-slate-400">Default dark theme</div>
+                            </div>
+                          </label>
+                          <label className="flex items-center gap-3 p-3 rounded-xl border border-white/10 bg-slate-950/40 cursor-pointer hover:bg-white/5 transition">
+                            <input 
+                              type="radio" 
+                              name="theme" 
+                              value="light"
+                              checked={themeMode === 'light'}
+                              onChange={() => handleThemeChange('light')}
+                              className="text-sky-500 focus:ring-sky-500" 
+                            />
+                            <div>
+                              <div className="text-sm font-medium text-slate-200">Light</div>
+                              <div className="text-xs text-slate-400">Light mode for daytime use</div>
+                            </div>
+                          </label>
+                          <label className="flex items-center gap-3 p-3 rounded-xl border border-white/10 bg-slate-950/40 cursor-pointer hover:bg-white/5 transition">
+                            <input 
+                              type="radio" 
+                              name="theme" 
+                              value="high_contrast"
+                              checked={themeMode === 'high_contrast'}
+                              onChange={() => handleThemeChange('high_contrast')}
+                              className="text-sky-500 focus:ring-sky-500" 
+                            />
+                            <div>
+                              <div className="text-sm font-medium text-slate-200">High Contrast</div>
+                              <div className="text-xs text-slate-400">Maximum contrast for accessibility</div>
+                            </div>
+                          </label>
+                        </div>
+                      </div>
+                    </section>
+                  </>
+                )}
+
+                {accountSettingsTab === 'security' && (
+                  <>
+                    {/* Account Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Account</h3>
+                      <div className="space-y-4">
+                        {/* Current Username */}
+                        <div>
+                          <div className="mb-1 text-sm text-slate-200">Username</div>
+                          <div className="text-sm text-slate-400 mb-2">{init?.username}</div>
+                          <div className="space-y-2">
+                            <input
+                              type="text"
+                              value={newUsername}
+                              onChange={(e) => setNewUsername(e.target.value)}
+                              placeholder="New username"
+                              className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                            <input
+                              type="password"
+                              value={usernamePassword}
+                              onChange={(e) => setUsernamePassword(e.target.value)}
+                              placeholder="Confirm with password"
+                              className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                            <button
+                              type="button"
+                              onClick={handleChangeUsername}
+                              disabled={!newUsername.trim() || !usernamePassword}
+                              className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Change Username
+                            </button>
+                            {usernameChangeStatus && (
+                              <div className={`text-sm ${usernameChangeStatus.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+                                {usernameChangeStatus.message}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Divider */}
+                        <div className="border-t border-white/5" />
+
+                        {/* Current Email */}
+                        <div>
+                          <div className="mb-1 text-sm text-slate-200">Email</div>
+                          <div className="text-sm text-slate-400 mb-2">{init?.email || 'No email set'}</div>
+                          <div className="space-y-2">
+                            <input
+                              type="email"
+                              value={newEmail}
+                              onChange={(e) => setNewEmail(e.target.value)}
+                              placeholder="New email address"
+                              className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                            <input
+                              type="password"
+                              value={emailPassword}
+                              onChange={(e) => setEmailPassword(e.target.value)}
+                              placeholder="Confirm with password"
+                              className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                            <button
+                              type="button"
+                              onClick={handleChangeEmail}
+                              disabled={!newEmail.trim() || !emailPassword}
+                              className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Change Email
+                            </button>
+                            {emailChangeStatus && (
+                              <div className={`text-sm ${emailChangeStatus.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+                                {emailChangeStatus.message}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+
+                    {/* 2FA Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Two-Factor Authentication</h3>
+                      {!twoFASetup ? (
+                        <div className="space-y-4">
+                          <div className="text-sm text-slate-200">
+                            Add an extra layer of security to your account.
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={handleSetup2FA}
+                              className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400"
+                            >
+                              Enable 2FA
+                            </button>
+                          </div>
+                          
+                          {/* Disable 2FA Section */}
+                          <div className="border-t border-white/10 pt-4 mt-4">
+                            <div className="text-sm text-slate-200 mb-3">
+                              If you already have 2FA enabled and want to disable it:
+                            </div>
+                            <div className="space-y-3">
+                              <label className="block">
+                                <div className="mb-1 text-sm text-slate-200">Password</div>
+                                <input
+                                  type="password"
+                                  value={disable2FAPassword}
+                                  onChange={(e) => setDisable2FAPassword(e.target.value)}
+                                  placeholder="Your password"
+                                  className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                                />
+                              </label>
+                              <label className="block">
+                                <div className="mb-1 text-sm text-slate-200">2FA Code or Backup Code</div>
+                                <input
+                                  type="text"
+                                  value={disable2FACode}
+                                  onChange={(e) => setDisable2FACode(e.target.value)}
+                                  placeholder="000000"
+                                  className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                                />
+                              </label>
+                              <button
+                                type="button"
+                                onClick={handleDisable2FA}
+                                disabled={!disable2FAPassword || !disable2FACode}
+                                className="rounded-xl bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-400 disabled:opacity-60"
+                              >
+                                Disable 2FA
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          <div className="text-sm text-slate-200">Scan this QR code with your authenticator app:</div>
+                          <div className="flex justify-center">
+                            <img src={twoFASetup.qr_code} alt="2FA QR Code" className="rounded-xl border border-white/10 bg-white p-2" />
+                          </div>
+                          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
+                            <div className="text-xs font-medium text-amber-200 mb-2">Backup Codes (save these safely!):</div>
+                            <div className="font-mono text-xs text-amber-100 space-y-1">
+                              {twoFASetup.backup_codes.map((code, idx) => (
+                                <div key={idx}>{code}</div>
+                              ))}
+                            </div>
+                          </div>
+                          <label className="block">
+                            <div className="mb-1 text-sm text-slate-200">Enter code from authenticator app to verify:</div>
+                            <input
+                              type="text"
+                              value={twoFACode}
+                              onChange={(e) => setTwoFACode(e.target.value)}
+                              placeholder="000000"
+                              maxLength={6}
+                              className="w-full max-w-xs rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                          </label>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={handleVerify2FASetup}
+                              disabled={!twoFACode.trim()}
+                              className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
+                            >
+                              Verify & Enable
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setTwoFASetup(null)}
+                              className="rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </section>
+
+                    {/* Password Reset Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Password Reset</h3>
+                      <div className="space-y-4">
+                        <div className="text-sm text-slate-200">
+                          Request a password reset link to be sent to your registered email address.
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleRequestPasswordReset}
+                          className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-orange-400"
+                        >
+                          Request Password Reset
+                        </button>
+                      </div>
+                    </section>
+                  </>
+                )}
+
+                {accountSettingsTab === 'notifications' && (
+                  <>
+                    {/* Notifications Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Notifications</h3>
+                      <div className="space-y-4">
+                        {/* Browser Notifications Permission */}
+                        <div className="rounded-xl border border-white/10 bg-slate-950/20 p-3">
+                          <label className="block mb-2">
+                            <div className="text-sm font-medium text-slate-200">Browser Notifications</div>
+                            <div className="text-xs text-slate-400 mt-1">
+                              {notificationManager.isSupported() 
+                                ? 'Get desktop notifications for mentions, replies, and messages'
+                                : 'Browser notifications are not supported in your browser'}
+                            </div>
+                          </label>
+                          {notificationManager.isSupported() && (
+                            <div className="flex items-center gap-3">
+                              <div className="text-xs text-slate-300">
+                                Status: <span className={`font-semibold ${
+                                  notificationPermission === 'granted' ? 'text-emerald-400' :
+                                  notificationPermission === 'denied' ? 'text-red-400' :
+                                  'text-amber-400'
+                                }`}>
+                                  {notificationPermission === 'granted' ? 'Enabled' :
+                                   notificationPermission === 'denied' ? 'Blocked' :
+                                   'Not requested'}
+                                </span>
+                              </div>
+                              {notificationPermission !== 'granted' && notificationPermission !== 'denied' && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    const permission = await notificationManager.requestPermission()
+                                    setNotificationPermission(permission)
+                                    if (permission === 'granted') {
+                                      pushToast({ kind: 'success', message: 'Browser notifications enabled' })
+                                      // Show test notification immediately
+                                      setTimeout(() => {
+                                        notificationManager.showNotification('Notifications Enabled!', {
+                                          body: 'You will now receive desktop notifications for messages, mentions, and replies.',
+                                          icon: '/favicon.ico',
+                                        })
+                                      }, 500)
+                                    } else {
+                                      pushToast({ kind: 'error', message: 'Browser notifications permission denied' })
+                                    }
+                                  }}
+                                  className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
+                                >
+                                  Enable Notifications
+                                </button>
+                              )}
+                              {notificationPermission === 'granted' && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    notificationManager.showNotification('Test Notification', {
+                                      body: 'This is a test notification. If you see this, notifications are working!',
+                                      icon: '/favicon.ico',
+                                    })
+                                    pushToast({ kind: 'info', message: 'Test notification sent - check your system tray!' })
+                                  }}
+                                  className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+                                >
+                                  Test Notification
+                                </button>
+                              )}
+                              {notificationPermission === 'denied' && (
+                                <div className="text-xs text-red-400">
+                                  Please enable notifications in your browser settings
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        
+                        {/* Notification Mode */}
+                        <label className="block">
+                          <div className="mb-2 text-sm text-slate-200">Notification Mode</div>
+                          <div className="text-xs text-slate-400 mb-2">
+                            Controls when you receive notifications (only works when browser notifications are enabled)
+                          </div>
+                          <select
+                            value={notificationMode}
+                            onChange={(e) => setNotificationMode(e.target.value as 'all' | 'mentions' | 'none')}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          >
+                            <option value="all">All messages</option>
+                            <option value="mentions">Only mentions and replies</option>
+                            <option value="none">None</option>
+                          </select>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={handleSetNotificationMode}
+                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                        >
+                          Save Notification Settings
+                        </button>
+                      </div>
+                    </section>
+                  </>
+                )}
+
+                {accountSettingsTab === 'keybinds' && (
+                  <>
+                    {/* Keybinds Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Voice Chat Keybinds</h3>
+                      <div className="space-y-3">
+                        <div className="text-sm text-slate-400 mb-4">
+                          Configure keyboard shortcuts for Voice Chat and Calls
+                        </div>
+                        
+                        {/* Push to Talk */}
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-slate-900/60 hover:bg-slate-900/80 transition">
+                          <div>
+                            <div className="text-sm font-medium text-slate-200">Push to Talk</div>
+                            <div className="text-xs text-slate-400">Hold to unmute while speaking</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <kbd className="px-3 py-1.5 text-sm font-mono font-semibold rounded bg-slate-800 text-sky-400 border border-sky-500/30">
+                              {keybinds.push_to_talk ? keybinds.push_to_talk.replace('Key', '') : 'V'}
+                            </kbd>
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 text-xs font-semibold rounded bg-sky-600 hover:bg-sky-500 text-white transition"
+                              onClick={() => handleStartRebind('push_to_talk')}
+                            >
+                              Change
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Toggle Mute */}
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-slate-900/60 hover:bg-slate-900/80 transition">
+                          <div>
+                            <div className="text-sm font-medium text-slate-200">Toggle Mute</div>
+                            <div className="text-xs text-slate-400">Mute/unmute microphone</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <kbd className="px-3 py-1.5 text-sm font-mono font-semibold rounded bg-slate-800 text-sky-400 border border-sky-500/30">
+                              {keybinds.toggle_mute ? keybinds.toggle_mute.replace('Key', '') : 'M'}
+                            </kbd>
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 text-xs font-semibold rounded bg-sky-600 hover:bg-sky-500 text-white transition"
+                              onClick={() => handleStartRebind('toggle_mute')}
+                            >
+                              Change
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Toggle Deafen */}
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-slate-900/60 hover:bg-slate-900/80 transition">
+                          <div>
+                            <div className="text-sm font-medium text-slate-200">Toggle Deafen</div>
+                            <div className="text-xs text-slate-400">Mute microphone and disable incoming audio</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <kbd className="px-3 py-1.5 text-sm font-mono font-semibold rounded bg-slate-800 text-sky-400 border border-sky-500/30">
+                              {keybinds.toggle_deafen ? keybinds.toggle_deafen.replace('Key', '') : 'D'}
+                            </kbd>
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 text-xs font-semibold rounded bg-sky-600 hover:bg-sky-500 text-white transition"
+                              onClick={() => handleStartRebind('toggle_deafen')}
+                            >
+                              Change
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Toggle Video */}
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-slate-900/60 hover:bg-slate-900/80 transition">
+                          <div>
+                            <div className="text-sm font-medium text-slate-200">Toggle Video</div>
+                            <div className="text-xs text-slate-400">Enable/disable camera</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <kbd className="px-3 py-1.5 text-sm font-mono font-semibold rounded bg-slate-800 text-sky-400 border border-sky-500/30">
+                              {keybinds.toggle_video ? keybinds.toggle_video.replace('Key', '') : 'C'}
+                            </kbd>
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 text-xs font-semibold rounded bg-sky-600 hover:bg-sky-500 text-white transition"
+                              onClick={() => handleStartRebind('toggle_video')}
+                            >
+                              Change
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Toggle Screen Share */}
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-slate-900/60 hover:bg-slate-900/80 transition">
+                          <div>
+                            <div className="text-sm font-medium text-slate-200">Toggle Screen Share</div>
+                            <div className="text-xs text-slate-400">Start/stop screen sharing</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <kbd className="px-3 py-1.5 text-sm font-mono font-semibold rounded bg-slate-800 text-sky-400 border border-sky-500/30">
+                              {keybinds.toggle_screen_share ? keybinds.toggle_screen_share.replace('Key', '') : 'S'}
+                            </kbd>
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 text-xs font-semibold rounded bg-sky-600 hover:bg-sky-500 text-white transition"
+                              onClick={() => handleStartRebind('toggle_screen_share')}
+                            >
+                              Change
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Answer/End Call */}
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-slate-900/60 hover:bg-slate-900/80 transition">
+                          <div>
+                            <div className="text-sm font-medium text-slate-200">Answer/End Call</div>
+                            <div className="text-xs text-slate-400">Answer incoming calls or end current call</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <kbd className="px-3 py-1.5 text-sm font-mono font-semibold rounded bg-slate-800 text-sky-400 border border-sky-500/30">
+                              {keybinds.answer_end_call ? keybinds.answer_end_call.replace('Key', '') : 'A'}
+                            </kbd>
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 text-xs font-semibold rounded bg-sky-600 hover:bg-sky-500 text-white transition"
+                              onClick={() => handleStartRebind('answer_end_call')}
+                            >
+                              Change
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 p-3 rounded-xl bg-sky-500/10 border border-sky-500/30">
+                          <div className="text-xs text-sky-300">
+                            💡 <span className="font-semibold">Tip:</span> Keybinds will not trigger while typing in text fields
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Keybind Rebind Dialog */}
+        {rebindingAction && (
+          <div 
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+            onClick={handleCancelRebind}
+          >
+            <div 
+              className="w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 shadow-2xl p-6"
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={handleKeybindCapture}
+              tabIndex={0}
+            >
+              <h3 className="text-xl font-semibold text-white mb-4">
+                Rebind {rebindingAction.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+              </h3>
+              
+              <div className="mb-6">
+                <div className="text-sm text-slate-300 mb-3">
+                  Press any key to set as the new keybind
+                </div>
+                
+                {rebindConflict && (
+                  <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 mb-3">
+                    <div className="text-sm text-red-300">
+                      ⚠️ This key is already bound to <span className="font-semibold">{rebindConflict.replace(/_/g, ' ')}</span>
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleRequestPasswordReset}
-                      className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-orange-400"
-                    >
-                      Request Password Reset
-                    </button>
                   </div>
-                </section>
+                )}
+                
+                <div className="p-4 rounded-xl bg-slate-800/60 border-2 border-dashed border-sky-500/50 text-center">
+                  <div className="text-3xl font-mono font-bold text-sky-400 mb-2">
+                    {keybinds[rebindingAction] ? keybinds[rebindingAction].replace('Key', '') : '?'}
+                  </div>
+                  <div className="text-xs text-slate-400">
+                    Current binding
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={handleCancelRebind}
+                  className="flex-1 px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-semibold transition"
+                >
+                  Cancel
+                </button>
               </div>
             </div>
           </div>

@@ -994,10 +994,15 @@ async def handler(websocket):
                     # Generate JWT token for the user
                     token = generate_jwt_token(username)
                     
+                    # Get user preferences
+                    prefs = db.get_user_preferences(username) or {}
+                    
                     await websocket.send_str(json.dumps({
                         'type': 'auth_success',
                         'message': 'Account created successfully',
-                        'token': token
+                        'token': token,
+                        'theme_mode': prefs.get('theme_mode', 'dark'),
+                        'keybinds': prefs.get('keybinds', {})
                     }))
                     authenticated = True
                     clients[websocket] = username
@@ -1089,10 +1094,15 @@ async def handler(websocket):
                 # Generate JWT token for the user
                 token = generate_jwt_token(username)
                 
+                # Get user preferences
+                prefs = db.get_user_preferences(username) or {}
+                
                 await websocket.send_str(json.dumps({
                     'type': 'auth_success',
                     'message': 'Account created successfully',
-                    'token': token
+                    'token': token,
+                    'theme_mode': prefs.get('theme_mode', 'dark'),
+                    'keybinds': prefs.get('keybinds', {})
                 }))
                 authenticated = True
                 clients[websocket] = username
@@ -1189,10 +1199,15 @@ async def handler(websocket):
                 # Generate JWT token for the user
                 token = generate_jwt_token(username)
                 
+                # Get user preferences
+                prefs = db.get_user_preferences(username) or {}
+                
                 await websocket.send_str(json.dumps({
                     'type': 'auth_success',
                     'message': 'Login successful',
-                    'token': token
+                    'token': token,
+                    'theme_mode': prefs.get('theme_mode', 'dark'),
+                    'keybinds': prefs.get('keybinds', {})
                 }))
                 authenticated = True
                 clients[websocket] = username
@@ -1230,10 +1245,15 @@ async def handler(websocket):
                 # Generate a new JWT token to refresh the session
                 new_token = generate_jwt_token(username)
                 
+                # Get user preferences
+                prefs = db.get_user_preferences(username) or {}
+                
                 await websocket.send_str(json.dumps({
                     'type': 'auth_success',
                     'message': 'Token authentication successful',
-                    'token': new_token
+                    'token': new_token,
+                    'theme_mode': prefs.get('theme_mode', 'dark'),
+                    'keybinds': prefs.get('keybinds', {})
                 }))
                 authenticated = True
                 clients[websocket] = username
@@ -3900,6 +3920,58 @@ async def handler(websocket):
                             'username': username,
                             'user_status': user_status
                         }))
+                    
+                    elif data.get('type') == 'update_user_preferences':
+                        # Update user preferences (theme_mode and/or keybinds)
+                        theme_mode = data.get('theme_mode')
+                        keybinds = data.get('keybinds')
+                        
+                        success = True
+                        error_message = None
+                        
+                        # Update theme if provided
+                        if theme_mode is not None:
+                            valid_themes = ['dark', 'light', 'high_contrast']
+                            if theme_mode not in valid_themes:
+                                success = False
+                                error_message = f'Invalid theme mode. Must be one of: {", ".join(valid_themes)}'
+                            elif not db.update_user_theme(username, theme_mode):
+                                success = False
+                                error_message = 'Failed to update theme mode'
+                        
+                        # Update keybinds if provided
+                        if keybinds is not None and success:
+                            # Validate keybinds structure
+                            required_keys = ['push_to_talk', 'toggle_mute', 'toggle_deafen', 
+                                           'toggle_video', 'toggle_screen_share', 'answer_end_call']
+                            if not isinstance(keybinds, dict):
+                                success = False
+                                error_message = 'Keybinds must be an object'
+                            elif not all(k in keybinds for k in required_keys):
+                                success = False
+                                error_message = f'Missing required keybind keys: {", ".join(required_keys)}'
+                            elif not db.update_user_keybinds(username, keybinds):
+                                success = False
+                                error_message = 'Failed to update keybinds'
+                        
+                        if success:
+                            # Get updated preferences
+                            prefs = db.get_user_preferences(username)
+                            await websocket.send_str(json.dumps({
+                                'type': 'user_preferences_updated',
+                                'theme_mode': prefs.get('theme_mode', 'dark'),
+                                'keybinds': prefs.get('keybinds', {})
+                            }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': error_message or 'Failed to update preferences'
+                            }))
+                    
+                    elif data.get('type') == 'change_email':
+                        new_email = data.get('new_email', '').strip()
+                        password = data.get('password', '').strip()
+                        
                         # Validate email format
                         if not new_email or not is_valid_email(new_email):
                             await websocket.send_str(json.dumps({
@@ -5603,6 +5675,11 @@ async def load_license():
     try:
         settings = db.get_admin_settings()
         last_check_at = settings.get('last_license_check_at')
+        
+        # Ensure last_check_at is timezone-aware
+        if last_check_at and last_check_at.tzinfo is None:
+            last_check_at = last_check_at.replace(tzinfo=timezone.utc)
+        
         grace_period_days = settings.get('license_check_grace_period_days', 7)
         instance_fingerprint = settings.get('instance_fingerprint')
 
