@@ -164,7 +164,7 @@ export function WebhookPanel({ serverId, isAdmin = false }: WebhookPanelProps) {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <div className="text-[#b9bbbe]">Loading webhooks...</div>
+        <div className="text-text-secondary">Loading webhooks...</div>
       </div>
     )
   }
@@ -174,10 +174,10 @@ export function WebhookPanel({ serverId, isAdmin = false }: WebhookPanelProps) {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-semibold text-white">
+          <h2 className="text-xl font-semibold text-text-primary">
             {isAdmin ? 'Instance Webhooks' : 'Server Webhooks'}
           </h2>
-          <p className="text-sm text-[#b9bbbe] mt-1">
+          <p className="text-sm text-text-secondary mt-1">
             {isAdmin
               ? 'Create incoming webhooks that broadcast messages to all instance users'
               : 'Create webhooks to send messages from external applications'}
@@ -186,7 +186,7 @@ export function WebhookPanel({ serverId, isAdmin = false }: WebhookPanelProps) {
         {!showCreateForm && (
           <button
             onClick={() => setShowCreateForm(true)}
-            className="rounded bg-[#5865f2] px-4 py-2 text-sm font-medium text-white hover:bg-[#4752c4] transition-colors"
+            className="rounded bg-accent-primary px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover transition-colors"
           >
             Create Webhook
           </button>
@@ -208,11 +208,11 @@ export function WebhookPanel({ serverId, isAdmin = false }: WebhookPanelProps) {
 
       {/* Create Form */}
       {showCreateForm && (
-        <div className="rounded-lg bg-[#2f3136] p-6 space-y-4">
-          <h3 className="text-lg font-semibold text-white">Create New Webhook</h3>
+        <div className="rounded-lg bg-bg-secondary p-6 space-y-4">
+          <h3 className="text-lg font-semibold text-text-primary">Create New Webhook</h3>
           
           <div>
-            <label className="block text-sm font-medium text-[#b9bbbe] mb-2">
+            <label className="block text-sm font-medium text-text-secondary mb-2">
               Webhook Name
             </label>
             <input
@@ -220,20 +220,20 @@ export function WebhookPanel({ serverId, isAdmin = false }: WebhookPanelProps) {
               value={newWebhook.name}
               onChange={(e) => setNewWebhook({ ...newWebhook, name: e.target.value })}
               placeholder="My Awesome Webhook"
-              className="w-full rounded bg-[#40444b] px-3 py-2 text-white placeholder-[#72767d] focus:outline-none focus:ring-2 focus:ring-[#5865f2]"
+              className="w-full rounded bg-bg-tertiary px-3 py-2 text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary"
             />
           </div>
 
           {!isAdmin && (
             <>
               <div>
-                <label className="block text-sm font-medium text-[#b9bbbe] mb-2">
+                <label className="block text-sm font-medium text-text-secondary mb-2">
                   Channel
                 </label>
                 <select
                   value={newWebhook.channel_id}
                   onChange={(e) => setNewWebhook({ ...newWebhook, channel_id: e.target.value })}
-                  className="w-full rounded bg-[#40444b] px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-[#5865f2]"
+                  className="w-full rounded bg-bg-tertiary px-3 py-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary"
                 >
                   <option value="">Select a channel</option>
                   {channels.map((channel) => (
@@ -247,18 +247,18 @@ export function WebhookPanel({ serverId, isAdmin = false }: WebhookPanelProps) {
           )}
 
           <div>
-            <label className="block text-sm font-medium text-[#b9bbbe] mb-2">
-              Avatar {isAdmin && <span className="text-xs text-[#72767d]">(emoji)</span>}
+            <label className="block text-sm font-medium text-text-secondary mb-2">
+              Avatar {isAdmin && <span className="text-xs text-text-muted">(emoji)</span>}
             </label>
             <input
               type="text"
               value={newWebhook.avatar}
               onChange={(e) => setNewWebhook({ ...newWebhook, avatar: e.target.value })}
               placeholder={isAdmin ? "📢" : "🔗"}
-              className="w-full rounded bg-[#40444b] px-3 py-2 text-white placeholder-[#72767d] focus:outline-none focus:ring-2 focus:ring-[#5865f2]"
+              className="w-full rounded bg-bg-tertiary px-3 py-2 text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary"
             />
             {isAdmin && (
-              <p className="text-xs text-[#72767d] mt-1">
+              <p className="text-xs text-text-muted mt-1">
                 This webhook can be POSTed to from external applications and will broadcast to all users
               </p>
             )}
@@ -268,7 +268,7 @@ export function WebhookPanel({ serverId, isAdmin = false }: WebhookPanelProps) {
             <button
               onClick={handleCreateWebhook}
               disabled={creating}
-              className="rounded bg-[#5865f2] px-4 py-2 text-sm font-medium text-white hover:bg-[#4752c4] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="rounded bg-accent-primary px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {creating ? 'Creating...' : 'Create'}
             </button>
@@ -277,7 +277,7 @@ export function WebhookPanel({ serverId, isAdmin = false }: WebhookPanelProps) {
                 setShowCreateForm(false)
                 setNewWebhook({ name: '', channel_id: '', avatar: isAdmin ? '📢' : '🔗' })
               }}
-              className="rounded bg-[#4f545c] px-4 py-2 text-sm font-medium text-white hover:bg-[#5d6268] transition-colors"
+              className="rounded bg-bg-tertiary px-4 py-2 text-sm font-medium text-text-primary hover:bg-bg-tertiary/70 transition-colors"
             >
               Cancel
             </button>
@@ -288,10 +288,10 @@ export function WebhookPanel({ serverId, isAdmin = false }: WebhookPanelProps) {
       {/* Webhooks List */}
       <div className="space-y-3">
         {webhooks.length === 0 ? (
-          <div className="rounded-lg bg-[#2f3136] p-8 text-center">
+          <div className="rounded-lg bg-bg-secondary p-8 text-center">
             <div className="text-4xl mb-3">🔗</div>
-            <p className="text-[#b9bbbe]">No webhooks yet</p>
-            <p className="text-sm text-[#72767d] mt-1">
+            <p className="text-text-secondary">No webhooks yet</p>
+            <p className="text-sm text-text-muted mt-1">
               Create a webhook to get started
             </p>
           </div>
@@ -299,24 +299,24 @@ export function WebhookPanel({ serverId, isAdmin = false }: WebhookPanelProps) {
           webhooks.map((webhook) => (
             <div
               key={webhook.id}
-              className="rounded-lg bg-[#2f3136] p-4 hover:bg-[#32353b] transition-colors"
+              className="rounded-lg bg-bg-secondary p-4 hover:bg-bg-secondary/80 transition-colors"
             >
               <div className="flex items-start justify-between">
                 <div className="flex items-start gap-3 flex-1">
                   <div className="text-2xl">{webhook.avatar || '🔗'}</div>
                   <div className="flex-1 min-w-0">
-                    <h4 className="text-white font-medium">{webhook.name}</h4>
-                    <p className="text-sm text-[#72767d] mt-1">
+                    <h4 className="text-text-primary font-medium">{webhook.name}</h4>
+                    <p className="text-sm text-text-muted mt-1">
                       Created by {webhook.created_by} • {new Date(webhook.created_at).toLocaleDateString()}
                     </p>
                     {webhook.url && (
                       <div className="mt-2 flex items-center gap-2">
-                        <code className="flex-1 rounded bg-[#202225] px-2 py-1 text-xs text-[#b9bbbe] font-mono overflow-x-auto">
+                        <code className="flex-1 rounded bg-bg-tertiary px-2 py-1 text-xs text-text-secondary font-mono overflow-x-auto">
                           {webhook.url}
                         </code>
                         <button
                           onClick={() => copyWebhookUrl(webhook.id, webhook.url)}
-                          className="flex-shrink-0 rounded bg-[#4f545c] px-3 py-1 text-xs text-white hover:bg-[#5d6268] transition-colors"
+                          className="flex-shrink-0 rounded bg-bg-tertiary px-3 py-1 text-xs text-text-primary hover:bg-bg-tertiary/70 transition-colors"
                         >
                           {copiedId === webhook.id ? 'Copied!' : 'Copy'}
                         </button>
@@ -326,7 +326,7 @@ export function WebhookPanel({ serverId, isAdmin = false }: WebhookPanelProps) {
                 </div>
                 <button
                   onClick={() => handleDeleteWebhook(webhook.id)}
-                  className="ml-3 rounded p-2 text-[#ed4245] hover:bg-[#ed4245]/10 transition-colors"
+                  className="ml-3 rounded p-2 text-red-500 hover:bg-red-500/10 transition-colors"
                   title="Delete webhook"
                 >
                   <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">

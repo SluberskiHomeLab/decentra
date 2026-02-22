@@ -327,7 +327,7 @@ function MessageEmbeds({ content }: { content: string }): React.ReactElement | n
     const youtubeId = getYouTubeVideoId(safeUrl)
     if (youtubeId) {
       embeds.push(
-        <div key={`embed-${index}`} className="mt-2 overflow-hidden rounded-lg border border-white/10 bg-slate-900/40">
+        <div key={`embed-${index}`} className="mt-2 overflow-hidden rounded-lg border border-border-primary bg-bg-secondary/40">
           <iframe
             src={`https://www.youtube.com/embed/${encodeURIComponent(youtubeId)}`}
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
@@ -347,7 +347,7 @@ function MessageEmbeds({ content }: { content: string }): React.ReactElement | n
               src={safeUrl}
               alt="Embedded image"
               loading="lazy"
-              className="max-w-md rounded-lg border border-white/10"
+              className="max-w-md rounded-lg border border-border-primary"
               onError={(e) => {
                 e.currentTarget.style.display = 'none'
               }}
@@ -359,7 +359,7 @@ function MessageEmbeds({ content }: { content: string }): React.ReactElement | n
     // Video embed
     else if (isVideoUrl(safeUrl)) {
       embeds.push(
-        <div key={`embed-${index}`} className="mt-2 overflow-hidden rounded-lg border border-white/10 bg-slate-900/40">
+        <div key={`embed-${index}`} className="mt-2 overflow-hidden rounded-lg border border-border-primary bg-bg-secondary/40">
           <video
             src={safeUrl}
             controls
@@ -451,7 +451,7 @@ function AvatarWithStatus({
 
   return (
     <div className="relative inline-block">
-      <span className={`flex ${sizeClasses[size]} items-center justify-center overflow-hidden rounded-full bg-slate-700`}>
+      <span className={`flex ${sizeClasses[size]} items-center justify-center overflow-hidden rounded-full bg-bg-tertiary`}>
         {avatar_type === 'image' && avatar_data ? (
           <img src={avatar_data} alt="Avatar" className="h-full w-full object-cover" />
         ) : (
@@ -460,7 +460,7 @@ function AvatarWithStatus({
       </span>
       {showStatus && user_status && (
         <span
-          className={`absolute bottom-0 right-0 ${statusSizeClasses[size]} ${statusColorClasses[user_status]} rounded-full border-2 border-slate-950`}
+          className={`absolute bottom-0 right-0 ${statusSizeClasses[size]} ${statusColorClasses[user_status]} rounded-full border-2 border-bg-primary`}
           title={user_status}
         />
       )}
@@ -482,7 +482,7 @@ function ToastHost() {
           type="button"
           onClick={() => remove(t.id)}
           className={
-            'rounded-xl border px-3 py-2 text-left text-sm shadow-lg backdrop-blur transition hover:border-slate-500/50 ' +
+            'rounded-xl border px-3 py-2 text-left text-sm shadow-lg backdrop-blur transition hover:border-border-primary/50 ' +
             (t.kind === 'error'
               ? 'border-rose-500/30 bg-rose-500/10 text-rose-50'
               : t.kind === 'success'
@@ -632,46 +632,46 @@ function LoginPage() {
   }
 
   return (
-    <div className="relative min-h-screen bg-slate-950">
+    <div className="relative min-h-screen bg-bg-primary">
       <div className="absolute inset-0 bg-cover bg-center bg-no-repeat blur-sm" style={{ backgroundImage: 'url(/login-background.png)' }} />
       <div className="relative mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4 py-10">
         <div className="w-full max-w-md">
           <div className="mb-6">
             <div className="text-xs font-medium text-sky-200/70">Decentra</div>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">Sign in</h1>
-            <p className="mt-2 text-sm text-slate-300">Dashboard UI (React + Tailwind) – migration in progress.</p>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-text-primary">Sign in</h1>
+            <p className="mt-2 text-sm text-text-secondary">Dashboard UI (React + Tailwind) – migration in progress.</p>
           </div>
 
-          <div className="rounded-2xl border border-white/10 bg-slate-900/40 p-5 shadow-xl">
+          <div className="rounded-2xl border border-border-primary bg-bg-secondary/40 p-5 shadow-xl">
             <form onSubmit={onSubmit} className="flex flex-col gap-4">
               <label className="text-sm">
-                <div className="mb-1 text-slate-200">Username</div>
+                <div className="mb-1 text-text-secondary">Username</div>
                 <input
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                  className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                   placeholder="alice"
                 />
               </label>
               <label className="text-sm">
-                <div className="mb-1 text-slate-200">Password</div>
+                <div className="mb-1 text-text-secondary">Password</div>
                 <input
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                  className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                   placeholder="••••••••"
                 />
               </label>
 
               {needs2fa && (
                 <label className="text-sm">
-                  <div className="mb-1 text-slate-200">2FA Code</div>
+                  <div className="mb-1 text-text-secondary">2FA Code</div>
                   <input
                     value={totpCode}
                     onChange={(e) => setTotpCode(e.target.value)}
                     placeholder="123456"
-                    className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                   />
                 </label>
               )}
@@ -679,26 +679,26 @@ function LoginPage() {
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="mt-1 inline-flex items-center justify-center rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+                className="mt-1 inline-flex items-center justify-center rounded-xl bg-accent-primary px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isSubmitting ? 'Signing in…' : needs2fa ? 'Verify 2FA' : 'Sign In'}
               </button>
             </form>
 
             <div className="mt-4 flex flex-wrap gap-3 text-sm">
-              <Link className="text-sky-300 hover:text-sky-200" to="/signup">
+              <Link className="text-accent-primary hover:text-accent-hover" to="/signup">
                 Create Account
               </Link>
               <button
                 type="button"
-                className="text-sky-300 hover:text-sky-200"
+                className="text-accent-primary hover:text-accent-hover"
                 onClick={() => setShowForgotPassword(true)}
               >
                 Forgot Password?
               </button>
               <button
                 type="button"
-                className="text-slate-300 hover:text-slate-200"
+                className="text-accent-primary hover:text-accent-hover"
                 onClick={() => {
                   clearStoredAuth()
                   useAppStore.getState().clearAuth()
@@ -717,8 +717,8 @@ function LoginPage() {
             ) : null}
           </div>
 
-          <div className="mt-6 text-xs text-slate-400">
-            Backend via nginx proxy: <span className="text-slate-300">/api</span> and <span className="text-slate-300">/ws</span>
+          <div className="mt-6 text-xs text-text-muted">
+            Backend via nginx proxy: <span className="text-text-secondary">/api</span> and <span className="text-text-secondary">/ws</span>
           </div>
         </div>
       </div>
@@ -734,10 +734,10 @@ function LoginPage() {
           }}
         >
           <div
-            className="w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 p-6 shadow-2xl"
+            className="w-full max-w-md rounded-2xl border border-border-primary bg-bg-secondary p-6 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 className="mb-4 text-xl font-semibold text-slate-100">Reset Password</h2>
+            <h2 className="mb-4 text-xl font-semibold text-text-primary">Reset Password</h2>
             
             {resetSuccess ? (
               <div className="space-y-4">
@@ -751,24 +751,24 @@ function LoginPage() {
                     setResetSuccess(false)
                     setResetUsername('')
                   }}
-                  className="w-full rounded-xl bg-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-100 hover:bg-slate-600"
+                  className="w-full rounded-xl bg-bg-tertiary px-4 py-2.5 text-sm font-semibold text-text-primary hover:bg-bg-tertiary/70"
                 >
                   Close
                 </button>
               </div>
             ) : (
               <form onSubmit={handlePasswordReset} className="space-y-4">
-                <p className="text-sm text-slate-300">
+                <p className="text-sm text-text-secondary">
                   Enter your username to receive a password reset link at your registered email address.
                 </p>
                 
                 <label className="block text-sm">
-                  <div className="mb-1 text-slate-200">Username</div>
+                  <div className="mb-1 text-text-secondary">Username</div>
                   <input
                     type="text"
                     value={resetUsername}
                     onChange={(e) => setResetUsername(e.target.value)}
-                    className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                     placeholder="Your username"
                     required
                   />
@@ -778,7 +778,7 @@ function LoginPage() {
                   <button
                     type="submit"
                     disabled={!resetUsername.trim()}
-                    className="flex-1 rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="flex-1 rounded-xl bg-accent-primary px-4 py-2.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     Send Reset Link
                   </button>
@@ -789,7 +789,7 @@ function LoginPage() {
                       setResetSuccess(false)
                       setResetUsername('')
                     }}
-                    className="rounded-xl bg-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-100 hover:bg-slate-600"
+                    className="rounded-xl bg-bg-tertiary px-4 py-2.5 text-sm font-semibold text-text-primary hover:bg-bg-tertiary/70"
                   >
                     Cancel
                   </button>
@@ -933,39 +933,39 @@ function SignUpPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950">
+    <div className="min-h-screen bg-bg-primary">
       <div className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4 py-10">
         <div className="w-full max-w-md">
           <div className="mb-6">
             <div className="text-xs font-medium text-sky-200/70">Decentra</div>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-text-primary">
               {needsVerification ? 'Verify Email' : 'Sign Up'}
             </h1>
-            <p className="mt-2 text-sm text-slate-300">
+            <p className="mt-2 text-sm text-text-secondary">
               {needsVerification
                 ? 'Enter the verification code sent to your email.'
                 : 'Create a new account to get started.'}
             </p>
           </div>
 
-          <div className="rounded-2xl border border-white/10 bg-slate-900/40 p-5 shadow-xl">
+          <div className="rounded-2xl border border-border-primary bg-bg-secondary/40 p-5 shadow-xl">
             <form onSubmit={onSubmit} className="flex flex-col gap-4">
               {needsVerification ? (
                 <>
                   <label className="text-sm">
-                    <div className="mb-1 text-slate-200">Username</div>
+                    <div className="mb-1 text-text-secondary">Username</div>
                     <input
                       value={username}
                       readOnly
-                      className="w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-slate-400"
+                      className="w-full rounded-xl border border-border-primary bg-bg-primary/60 px-3 py-2 text-text-muted"
                     />
                   </label>
                   <label className="text-sm">
-                    <div className="mb-1 text-slate-200">Verification Code</div>
+                    <div className="mb-1 text-text-secondary">Verification Code</div>
                     <input
                       value={verificationCode}
                       onChange={(e) => setVerificationCode(e.target.value)}
-                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                       placeholder="123456"
                       maxLength={6}
                     />
@@ -974,42 +974,42 @@ function SignUpPage() {
               ) : (
                 <>
                   <label className="text-sm">
-                    <div className="mb-1 text-slate-200">Username</div>
+                    <div className="mb-1 text-text-secondary">Username</div>
                     <input
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
-                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                       placeholder="alice"
                     />
                   </label>
                   <label className="text-sm">
-                    <div className="mb-1 text-slate-200">Password</div>
+                    <div className="mb-1 text-text-secondary">Password</div>
                     <input
                       type="password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                       placeholder="••••••••"
                     />
                   </label>
                   <label className="text-sm">
-                    <div className="mb-1 text-slate-200">Email</div>
+                    <div className="mb-1 text-text-secondary">Email</div>
                     <input
                       type="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                       placeholder="alice@example.com"
                     />
                   </label>
                   <label className="text-sm">
-                    <div className="mb-1 text-slate-200">
-                      Invite Code <span className="text-xs text-slate-400">(optional, empty for first user)</span>
+                    <div className="mb-1 text-text-secondary">
+                      Invite Code <span className="text-xs text-text-muted">(optional, empty for first user)</span>
                     </div>
                     <input
                       value={inviteCode}
                       onChange={(e) => setInviteCode(e.target.value)}
-                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                       placeholder="ABC123"
                     />
                   </label>
@@ -1019,20 +1019,20 @@ function SignUpPage() {
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="mt-1 inline-flex items-center justify-center rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+                className="mt-1 inline-flex items-center justify-center rounded-xl bg-accent-primary px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isSubmitting ? 'Processing…' : needsVerification ? 'Verify Email' : 'Create Account'}
               </button>
             </form>
 
             <div className="mt-4 flex flex-wrap gap-3 text-sm">
-              <Link className="text-sky-300 hover:text-sky-200" to="/login">
+              <Link className="text-accent-primary hover:text-accent-hover" to="/login">
                 Already have an account? Sign In
               </Link>
               {needsVerification && (
                 <button
                   type="button"
-                  className="text-slate-300 hover:text-slate-200"
+                  className="text-accent-primary hover:text-accent-hover"
                   onClick={() => {
                     setNeedsVerification(false)
                     setVerificationCode('')
@@ -1051,8 +1051,8 @@ function SignUpPage() {
             ) : null}
           </div>
 
-          <div className="mt-6 text-xs text-slate-400">
-            Backend via nginx proxy: <span className="text-slate-300">/api</span> and <span className="text-slate-300">/ws</span>
+          <div className="mt-6 text-xs text-text-muted">
+            Backend via nginx proxy: <span className="text-text-secondary">/api</span> and <span className="text-text-secondary">/ws</span>
           </div>
         </div>
       </div>
@@ -1128,12 +1128,12 @@ function ResetPasswordPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-4">
+    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-bg-primary via-bg-secondary to-bg-primary p-4">
       <div className="w-full max-w-md">
-        <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-slate-900/80 to-slate-950/80 p-8 shadow-2xl backdrop-blur-xl">
+        <div className="rounded-3xl border border-border-primary bg-gradient-to-br from-bg-secondary/80 to-bg-primary/80 p-8 shadow-2xl backdrop-blur-xl">
           <div className="mb-8 text-center">
-            <h1 className="mb-2 text-4xl font-bold text-slate-100">Reset Password</h1>
-            <p className="text-sm text-slate-400">Enter your new password below</p>
+            <h1 className="mb-2 text-4xl font-bold text-text-primary">Reset Password</h1>
+            <p className="text-sm text-text-muted">Enter your new password below</p>
           </div>
 
           <div className="space-y-6">
@@ -1148,12 +1148,12 @@ function ResetPasswordPage() {
             ) : (
               <form onSubmit={handleSubmit} className="space-y-4">
                 <label className="text-sm">
-                  <div className="mb-1 text-slate-200">New Password</div>
+                  <div className="mb-1 text-text-secondary">New Password</div>
                   <input
                     type="password"
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
-                    className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                     placeholder="At least 8 characters"
                     required
                     disabled={isSubmitting}
@@ -1161,12 +1161,12 @@ function ResetPasswordPage() {
                 </label>
 
                 <label className="text-sm">
-                  <div className="mb-1 text-slate-200">Confirm Password</div>
+                  <div className="mb-1 text-text-secondary">Confirm Password</div>
                   <input
                     type="password"
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
-                    className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                     placeholder="Re-enter your password"
                     required
                     disabled={isSubmitting}
@@ -1176,7 +1176,7 @@ function ResetPasswordPage() {
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="mt-1 w-full inline-flex items-center justify-center rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="mt-1 w-full inline-flex items-center justify-center rounded-xl bg-accent-primary px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isSubmitting ? 'Resetting Password...' : 'Reset Password'}
                 </button>
@@ -1190,7 +1190,7 @@ function ResetPasswordPage() {
             )}
 
             <div className="mt-4 text-center">
-              <Link className="text-sm text-sky-300 hover:text-sky-200" to="/login">
+              <Link className="text-sm text-accent-primary hover:text-accent-hover" to="/login">
                 Back to Sign In
               </Link>
             </div>
@@ -3430,17 +3430,17 @@ function ChatPage() {
         
         case 'code':
           return (
-            <code key={key} className="bg-slate-800/60 text-sky-300 px-1.5 py-0.5 rounded text-sm font-mono">
+            <code key={key} className="bg-bg-tertiary/60 text-sky-300 px-1.5 py-0.5 rounded text-sm font-mono">
               {token.content}
             </code>
           )
         
         case 'codeBlock':
           return (
-            <pre key={key} className="bg-slate-800/60 text-slate-200 p-3 rounded-lg overflow-x-auto my-1 border border-white/5">
+            <pre key={key} className="bg-bg-tertiary/60 text-text-secondary p-3 rounded-lg overflow-x-auto my-1 border border-white/5">
               <code className="text-sm font-mono block">
                 {token.language && (
-                  <div className="text-xs text-slate-400 mb-1">{token.language}</div>
+                  <div className="text-xs text-text-muted mb-1">{token.language}</div>
                 )}
                 {token.content}
               </code>
@@ -3458,12 +3458,12 @@ function ChatPage() {
           return (
             <span
               key={key}
-              className="bg-slate-800 text-slate-800 hover:text-slate-200 cursor-pointer px-1 rounded transition-colors select-none"
+              className="bg-bg-tertiary text-bg-tertiary hover:text-text-secondary cursor-pointer px-1 rounded transition-colors select-none"
               title="Click to reveal spoiler"
               onClick={(e) => {
                 const target = e.currentTarget
-                target.classList.toggle('text-slate-800')
-                target.classList.toggle('text-slate-200')
+                target.classList.toggle('text-bg-tertiary')
+                target.classList.toggle('text-text-secondary')
               }}
             >
               {processTextWithEmojisAndMentions(token.content, `${key}-content`)}
@@ -3472,7 +3472,7 @@ function ChatPage() {
         
         case 'quote':
           return (
-            <div key={key} className="border-l-2 border-slate-600 pl-3 py-0.5 italic text-slate-300 my-1">
+            <div key={key} className="border-l-2 border-border-secondary pl-3 py-0.5 italic text-text-secondary my-1">
               {processTextWithEmojisAndMentions(token.content, `${key}-content`)}
             </div>
           )
@@ -3898,7 +3898,7 @@ function ChatPage() {
   }
 
   return (
-    <div className="h-screen bg-slate-950 flex flex-col">
+    <div className="h-screen bg-bg-primary flex flex-col">
       {/* Announcement Banner */}
       {announcement && announcement.enabled && announcement.message && (
         <div className="relative border-b border-amber-500/30 bg-gradient-to-r from-amber-500/20 to-orange-500/20 px-4 py-2.5">
@@ -3920,14 +3920,14 @@ function ChatPage() {
       )}
       <div className="flex flex-1 min-h-0">
         {/* Left-side vertical icon bar */}
-        <aside className="w-[72px] shrink-0 flex flex-col border-r border-white/10 bg-slate-900">
+        <aside className="w-[72px] shrink-0 flex flex-col border-r border-border-primary bg-bg-secondary">
           {/* DMs button at top */}
           <div className="p-3">
             <button
               type="button"
               onClick={() => setIsDmSidebarOpen(!isDmSidebarOpen)}
               className={`relative flex h-12 w-12 items-center justify-center rounded-2xl text-2xl transition ${
-                isDmSidebarOpen ? 'bg-sky-500 text-white' : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 hover:rounded-xl'
+                isDmSidebarOpen ? 'bg-sky-500 text-white' : 'bg-bg-tertiary text-text-secondary hover:bg-bg-tertiary/60 hover:rounded-xl'
               }`}
               title="Direct Messages"
             >
@@ -3940,7 +3940,7 @@ function ChatPage() {
           </div>
 
           {/* Separator */}
-          <div className="mx-3 h-[2px] bg-slate-700/50" />
+          <div className="mx-3 h-[2px] bg-bg-tertiary/60" />
 
           {/* Server icons */}
           <div className="flex-1 overflow-auto p-3 space-y-2 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
@@ -3969,7 +3969,7 @@ function ChatPage() {
                     }
                   }}
                   className={`relative flex h-12 w-12 items-center justify-center rounded-2xl text-xl transition overflow-hidden ${
-                    selectedServerId === server.id ? 'bg-sky-500 text-white' : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 hover:rounded-xl'
+                    selectedServerId === server.id ? 'bg-sky-500 text-white' : 'bg-bg-tertiary text-text-secondary hover:bg-bg-tertiary/60 hover:rounded-xl'
                   }`}
                   title={server.name}
                 >
@@ -3980,9 +3980,9 @@ function ChatPage() {
                   )}
                   {/* Unread indicator dot */}
                   {hasMention ? (
-                    <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-red-500 border-2 border-slate-900" />
+                    <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-red-500 border-2 border-bg-secondary" />
                   ) : hasUnread ? (
-                    <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-slate-400 border-2 border-slate-900" />
+                    <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-text-muted border-2 border-bg-secondary" />
                   ) : null}
                 </button>
               )
@@ -3990,11 +3990,11 @@ function ChatPage() {
           </div>
 
           {/* Profile section at bottom */}
-          <div className="border-t border-white/10 bg-slate-900 p-3">
+          <div className="border-t border-border-primary bg-bg-secondary p-3">
             <button
               type="button"
               onClick={() => setIsUserMenuOpen(true)}
-              className="rounded-2xl bg-slate-800/50 hover:bg-slate-700/50 hover:rounded-xl transition"
+              className="rounded-2xl bg-bg-tertiary hover:bg-bg-tertiary/60 hover:rounded-xl transition"
               title={init?.username ?? 'User'}
             >
               <AvatarWithStatus
@@ -4010,15 +4010,15 @@ function ChatPage() {
 
         {/* DM Sidebar - opens when DM button is clicked */}
         {isDmSidebarOpen && (
-          <aside className="w-[240px] shrink-0 border-r border-white/10 bg-slate-900/30">
+          <aside className="w-[240px] shrink-0 border-r border-border-primary bg-bg-secondary/30">
             <div className="flex h-full flex-col">
-              <div className="border-b border-white/10 px-4 py-4">
+              <div className="border-b border-border-primary px-4 py-4">
                 <div className="text-sm font-semibold text-white">Direct Messages</div>
               </div>
               
               <div className="flex-1 overflow-auto p-2 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                 {(init?.dms ?? []).length === 0 ? (
-                  <div className="px-3 py-2 text-sm text-slate-400">No DMs yet</div>
+                  <div className="px-3 py-2 text-sm text-text-muted">No DMs yet</div>
                 ) : (
                   <div className="space-y-1">
                     {(init?.dms ?? []).map((dm) => {
@@ -4049,7 +4049,7 @@ function ChatPage() {
                             }
                           }}
                           className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition ${
-                            isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
+                            isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-text-secondary hover:bg-white/5'
                           }`}
                         >
                           <AvatarWithStatus
@@ -4077,20 +4077,20 @@ function ChatPage() {
                 )}
               </div>
 
-              <div className="border-t border-white/10 px-4 py-4">
-                <div className="text-xs font-medium text-slate-400 mb-2">Start DM</div>
+              <div className="border-t border-border-primary px-4 py-4">
+                <div className="text-xs font-medium text-text-muted mb-2">Start DM</div>
                 <div className="flex gap-2">
                   <input
                     value={dmUsername}
                     onChange={(e) => setDmUsername(e.target.value)}
                     placeholder="Username"
-                    className="flex-1 rounded-lg border border-white/10 bg-slate-950/40 px-2 py-1.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    className="flex-1 rounded-lg border border-border-primary bg-bg-primary/40 px-2 py-1.5 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-sky-500/40"
                   />
                   <button
                     type="button"
                     onClick={startDm}
                     disabled={!dmUsername.trim() || wsClient.readyState !== WebSocket.OPEN}
-                    className="shrink-0 rounded-lg bg-sky-500 px-3 py-1.5 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                    className="shrink-0 rounded-lg bg-sky-500 px-3 py-1.5 text-sm font-semibold text-bg-primary hover:bg-sky-400 disabled:opacity-60"
                   >
                     +
                   </button>
@@ -4102,10 +4102,10 @@ function ChatPage() {
 
         {/* Server Sidebar - opens when a server icon is clicked */}
         {selectedServerId && selectedServerObj && (
-          <aside className="w-[240px] shrink-0 border-r border-white/10 bg-slate-900/30">
+          <aside className="w-[240px] shrink-0 border-r border-border-primary bg-bg-secondary/30">
             <div className="flex h-full flex-col">
               {/* Server header */}
-              <div className="border-b border-white/10 px-4 py-4">
+              <div className="border-b border-border-primary px-4 py-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 flex-1 min-w-0">
                     <span className="text-lg">{selectedServerObj.icon ?? '🏠'}</span>
@@ -4114,7 +4114,7 @@ function ChatPage() {
                   <button
                     type="button"
                     onClick={() => setIsServerSettingsOpen(true)}
-                    className="shrink-0 text-slate-400 hover:text-slate-200 text-lg"
+                    className="shrink-0 text-text-muted hover:text-text-secondary text-lg"
                     title="Server Settings"
                   >
                     ⚙️
@@ -4134,7 +4134,7 @@ function ChatPage() {
 
                     return (
                       <div key={category.id} className="mb-3">
-                        <div className="px-2 text-xs font-medium text-slate-400 uppercase mb-1">{category.name}</div>
+                        <div className="px-2 text-xs font-medium text-text-muted uppercase mb-1">{category.name}</div>
                         <div className="space-y-1">
                           {categoryChannels.map((ch) => {
                             const isSelected =
@@ -4173,10 +4173,10 @@ function ChatPage() {
                                   }
                                 }}
                                 className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
-                                  isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
+                                  isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-text-secondary hover:bg-white/5'
                                 }`}
                               >
-                                <span className="text-slate-400">{ch.type === 'voice' ? '🔊' : '#'}</span>
+                                <span className="text-text-muted">{ch.type === 'voice' ? '🔊' : '#'}</span>
                                 <span className={`text-sm ${
                                   hasMention 
                                     ? 'font-bold italic text-red-400' 
@@ -4202,7 +4202,7 @@ function ChatPage() {
 
                   return (
                     <div className="mb-3">
-                      <div className="px-2 text-xs font-medium text-slate-400 uppercase mb-1">Uncategorized</div>
+                      <div className="px-2 text-xs font-medium text-text-muted uppercase mb-1">Uncategorized</div>
                       <div className="space-y-1">
                         {uncategorizedChannels.map((ch) => {
                           const isSelected =
@@ -4240,10 +4240,10 @@ function ChatPage() {
                                 }
                               }}
                               className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
-                                isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
+                                isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-text-secondary hover:bg-white/5'
                               }`}
                             >
-                              <span className="text-slate-400">{ch.type === 'voice' ? '🔊' : '#'}</span>
+                              <span className="text-text-muted">{ch.type === 'voice' ? '🔊' : '#'}</span>
                               <span className={`text-sm ${
                                 hasMention 
                                   ? 'font-bold italic text-red-400' 
@@ -4265,11 +4265,11 @@ function ChatPage() {
 
         {/* Main chat area */}
         <main className="flex min-w-0 flex-1 flex-col">
-          <header className="border-b border-white/10 bg-slate-950/60 px-6 py-4">
+          <header className="border-b border-border-primary bg-bg-primary/60 px-6 py-4">
             <div className="flex items-center justify-between gap-4">
               <div className="flex items-center gap-4 min-w-0 flex-1">
                 <div className="min-w-0">
-                  <div className="text-xs font-medium text-slate-400">
+                  <div className="text-xs font-medium text-text-muted">
                     {selectedContext.kind === 'global'
                       ? 'Global Chat'
                       : selectedContext.kind === 'dm'
@@ -4292,13 +4292,13 @@ function ChatPage() {
                   <button
                     type="button"
                     onClick={() => setIsMembersSidebarOpen(!isMembersSidebarOpen)}
-                    className="rounded-xl border border-white/10 bg-slate-950/30 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-900/50 transition"
+                    className="rounded-xl border border-border-primary bg-bg-primary/30 px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-secondary/50 transition"
                     title={isMembersSidebarOpen ? 'Hide Members' : 'Show Members'}
                   >
                     {isMembersSidebarOpen ? '👥 Hide' : '👥 Show'}
                   </button>
                 )}
-                <div className="rounded-xl border border-white/10 bg-slate-950/30 px-2 py-1 text-[11px] text-slate-300">
+                <div className="rounded-xl border border-border-primary bg-bg-primary/30 px-2 py-1 text-[11px] text-text-secondary">
                   {connectionStatus}
                 </div>
                 <img
@@ -4319,7 +4319,7 @@ function ChatPage() {
             <section className="flex-1 flex flex-col overflow-hidden">
               {/* Voice controls panel */}
               {isInVoice && (
-                <div className="border-b border-white/10 bg-slate-950/60 px-6 py-3">
+                <div className="border-b border-border-primary bg-bg-primary/60 px-6 py-3">
                   <div className="flex items-center justify-center gap-3">
                     <button
                       type="button"
@@ -4327,7 +4327,7 @@ function ChatPage() {
                       className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
                         isVoiceMuted
                           ? 'bg-rose-500/20 border border-rose-500/40 text-rose-300 hover:bg-rose-500/30'
-                          : 'bg-slate-800/50 border border-white/10 text-slate-200 hover:bg-slate-700/50'
+                          : 'bg-bg-tertiary border border-border-primary text-text-secondary hover:bg-bg-tertiary/60'
                       }`}
                       title={isVoiceMuted ? 'Unmute' : 'Mute'}
                     >
@@ -4339,7 +4339,7 @@ function ChatPage() {
                       className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
                         isVideoEnabled
                           ? 'bg-sky-500/20 border border-sky-500/40 text-sky-300 hover:bg-sky-500/30'
-                          : 'bg-slate-800/50 border border-white/10 text-slate-200 hover:bg-slate-700/50'
+                          : 'bg-bg-tertiary border border-border-primary text-text-secondary hover:bg-bg-tertiary/60'
                       }`}
                       title={isVideoEnabled ? 'Stop Video' : 'Start Video'}
                     >
@@ -4351,7 +4351,7 @@ function ChatPage() {
                       className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
                         isScreenSharing
                           ? 'bg-purple-500/20 border border-purple-500/40 text-purple-300 hover:bg-purple-500/30'
-                          : 'bg-slate-800/50 border border-white/10 text-slate-200 hover:bg-slate-700/50'
+                          : 'bg-bg-tertiary border border-border-primary text-text-secondary hover:bg-bg-tertiary/60'
                       }`}
                       title={isScreenSharing ? 'Stop Sharing' : 'Share Screen'}
                     >
@@ -4360,7 +4360,7 @@ function ChatPage() {
                     <button
                       type="button"
                       onClick={() => setIsSoundboardOpen(true)}
-                      className="rounded-xl bg-slate-800/50 border border-white/10 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700/50 transition"
+                      className="rounded-xl bg-bg-tertiary border border-border-primary px-4 py-2 text-sm font-semibold text-text-secondary hover:bg-bg-tertiary/60 transition"
                       title="Open Soundboard"
                     >
                       🔊 Soundboard
@@ -4385,7 +4385,7 @@ function ChatPage() {
                       <div className="text-center">
                         <div className="text-6xl mb-4">🔊</div>
                         <h2 className="text-2xl font-semibold text-white mb-2">{selectedTitle}</h2>
-                        <p className="text-slate-400 mb-6">
+                        <p className="text-text-muted mb-6">
                           {isVoiceConnecting ? 'Connecting to voice channel...' : 'Click join to enter this voice channel'}
                         </p>
                         <button
@@ -4424,7 +4424,7 @@ function ChatPage() {
                         return (
                           <div
                             key={participantUsername}
-                            className="relative rounded-2xl border border-white/10 bg-slate-900/40 overflow-hidden flex items-center justify-center min-h-[200px]"
+                            className="relative rounded-2xl border border-border-primary bg-bg-secondary/40 overflow-hidden flex items-center justify-center min-h-[200px]"
                           >
                             {stream && (
                               <>
@@ -4495,9 +4495,9 @@ function ChatPage() {
               {/* Regular chat UI */}
               <section className="flex-1 overflow-auto px-6 py-5">
             <div className="mx-auto max-w-5xl">
-              <div className="rounded-2xl border border-white/10 bg-slate-900/20 p-4">
+              <div className="rounded-2xl border border-border-primary bg-bg-secondary/20 p-4">
                 {messages.length === 0 ? (
-                  <div className="text-sm text-slate-400">No messages yet.</div>
+                  <div className="text-sm text-text-muted">No messages yet.</div>
                 ) : (
                   <div className="flex flex-col gap-3">
                     {messages.map((m: WsChatMessage, idx: number) => (
@@ -4514,14 +4514,14 @@ function ChatPage() {
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-baseline gap-x-2">
                             <div 
-                              className="font-semibold text-slate-100" 
+                              className="font-semibold text-text-primary" 
                               style={getUsernameStyle(m)}
                             >
                               {m.username}
                             </div>
-                            <div className="text-xs text-slate-500">
+                            <div className="text-xs text-text-muted">
                               {new Date(m.timestamp).toLocaleString()}
-                              {m.edited_at && <span className="ml-1.5 text-slate-600">(edited)</span>}
+                              {m.edited_at && <span className="ml-1.5 text-text-muted">(edited)</span>}
                             </div>
                             {/* Action buttons - show on hover */}
                             <div className="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
@@ -4531,7 +4531,7 @@ function ChatPage() {
                                   <button
                                     type="button"
                                     onClick={() => setReplyingTo(m)}
-                                    className="text-slate-400 hover:text-sky-400 text-sm px-1.5 py-0.5 rounded"
+                                    className="text-text-muted hover:text-sky-400 text-sm px-1.5 py-0.5 rounded"
                                     title="Reply"
                                   >
                                     ↩️
@@ -4540,7 +4540,7 @@ function ChatPage() {
                                   <button
                                     type="button"
                                     onClick={() => toggleReactionPicker(m.id)}
-                                    className="text-slate-400 hover:text-slate-200 text-sm px-1.5 py-0.5 rounded"
+                                    className="text-text-muted hover:text-text-secondary text-sm px-1.5 py-0.5 rounded"
                                     title="Add reaction"
                                   >
                                     😊
@@ -4550,7 +4550,7 @@ function ChatPage() {
                                     <button
                                       type="button"
                                       onClick={() => startEditMessage(m)}
-                                      className="text-slate-400 hover:text-sky-400 text-xs px-1.5 py-0.5 rounded"
+                                      className="text-text-muted hover:text-sky-400 text-xs px-1.5 py-0.5 rounded"
                                       title="Edit message"
                                     >
                                       ✏️
@@ -4561,7 +4561,7 @@ function ChatPage() {
                                     <button
                                       type="button"
                                       onClick={() => confirmDeleteMessage(m)}
-                                      className="text-slate-400 hover:text-rose-400 text-xs px-1.5 py-0.5 rounded"
+                                      className="text-text-muted hover:text-rose-400 text-xs px-1.5 py-0.5 rounded"
                                       title="Delete message"
                                     >
                                       🗑️
@@ -4574,10 +4574,10 @@ function ChatPage() {
                           
                           {/* Reply reference - show if this message is a reply */}
                           {m.reply_data && (
-                            <div className="mt-1 mb-1 pl-3 border-l-2 border-slate-600 text-xs text-slate-400">
+                            <div className="mt-1 mb-1 pl-3 border-l-2 border-border-secondary text-xs text-text-muted">
                               <div className="flex items-center gap-1">
                                 <span>↩️</span>
-                                <span className="font-medium text-slate-300">{m.reply_data.username}</span>
+                                <span className="font-medium text-text-secondary">{m.reply_data.username}</span>
                                 <span>•</span>
                                 <button
                                   type="button"
@@ -4605,7 +4605,7 @@ function ChatPage() {
                               <textarea
                                 value={editDraft}
                                 onChange={(e) => setEditDraft(e.target.value)}
-                                className="w-full rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40 resize-none"
+                                className="w-full rounded-lg border border-border-primary bg-bg-primary/40 px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-sky-500/40 resize-none"
                                 rows={3}
                                 autoFocus
                               />
@@ -4621,7 +4621,7 @@ function ChatPage() {
                                 <button
                                   type="button"
                                   onClick={cancelEditMessage}
-                                  className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-600"
+                                  className="rounded-lg bg-bg-tertiary px-3 py-1.5 text-xs font-semibold text-text-secondary hover:bg-bg-tertiary/60"
                                 >
                                   Cancel
                                 </button>
@@ -4632,7 +4632,7 @@ function ChatPage() {
                               {/* Normal message display */}
                               {m.content && (
                                 <>
-                                  <div className="mt-1 whitespace-pre-wrap text-sm text-slate-200">{linkifyText(m.content, (content) => renderMessageContent(content, m.context, m.context_id))}</div>
+                                  <div className="mt-1 whitespace-pre-wrap text-sm text-text-secondary">{linkifyText(m.content, (content) => renderMessageContent(content, m.context, m.context_id))}</div>
                                   <MessageEmbeds content={m.content} />
                                 </>
                               )}
@@ -4646,11 +4646,11 @@ function ChatPage() {
                                   key={att.attachment_id}
                                   href={`/api/download-attachment/${att.attachment_id}`}
                                   download={att.filename}
-                                  className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-slate-900/40 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800/40 hover:text-white transition w-fit"
+                                  className="inline-flex items-center gap-2 rounded-lg border border-border-primary bg-bg-secondary/40 px-3 py-2 text-sm text-text-secondary hover:bg-bg-tertiary/40 hover:text-white transition w-fit"
                                 >
                                   <span>📎</span>
                                   <span className="font-medium">{att.filename}</span>
-                                  <span className="text-xs text-slate-500">({(att.file_size / 1024).toFixed(1)}KB)</span>
+                                  <span className="text-xs text-text-muted">({(att.file_size / 1024).toFixed(1)}KB)</span>
                                 </a>
                               ))}
                             </div>
@@ -4683,7 +4683,7 @@ function ChatPage() {
                                       className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs border transition ${
                                         userReacted
                                           ? 'bg-sky-500/20 border-sky-500/40 text-sky-300'
-                                          : 'bg-slate-900/40 border-white/10 text-slate-300 hover:bg-slate-800/40'
+                                          : 'bg-bg-secondary/40 border-border-primary text-text-secondary hover:bg-bg-tertiary/40'
                                       }`}
                                       title={group.usernames.join(', ')}
                                     >
@@ -4699,15 +4699,15 @@ function ChatPage() {
                           {/* Reaction picker popup */}
                           {reactionPickerMessageId === m.id && (
                             <div className="mt-2 relative">
-                              <div className="absolute left-0 top-0 z-10 rounded-lg border border-white/10 bg-slate-900 p-3 shadow-xl max-w-xs">
-                                <div className="mb-2 text-xs font-semibold text-slate-400">Add Reaction</div>
+                              <div className="absolute left-0 top-0 z-10 rounded-lg border border-border-primary bg-bg-secondary p-3 shadow-xl max-w-xs">
+                                <div className="mb-2 text-xs font-semibold text-text-muted">Add Reaction</div>
                                 <div className="grid grid-cols-8 gap-1 max-h-32 overflow-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                                   {REACTION_EMOJIS.map(emoji => (
                                     <button
                                       key={emoji}
                                       type="button"
                                       onClick={() => addReaction(m.id, emoji)}
-                                      className="text-lg hover:bg-slate-800 rounded p-1 transition"
+                                      className="text-lg hover:bg-bg-tertiary rounded p-1 transition"
                                     >
                                       {emoji}
                                     </button>
@@ -4716,7 +4716,7 @@ function ChatPage() {
                                 <button
                                   type="button"
                                   onClick={() => setReactionPickerMessageId(null)}
-                                  className="mt-2 text-xs text-slate-400 hover:text-slate-200"
+                                  className="mt-2 text-xs text-text-muted hover:text-text-secondary"
                                 >
                                   Close
                                 </button>
@@ -4732,7 +4732,7 @@ function ChatPage() {
             </div>
           </section>
 
-          <div className="border-t border-white/10 bg-slate-950/60 px-6 py-4">
+          <div className="border-t border-border-primary bg-bg-primary/60 px-6 py-4">
             <div className="mx-auto max-w-5xl">
               {/* Selected files preview */}
               {selectedFiles.length > 0 && (
@@ -4758,8 +4758,8 @@ function ChatPage() {
 
               {/* Mention autocomplete */}
               {showMentionAutocomplete && selectedContext.kind === 'server' && (
-                <div className="mb-2 rounded-xl border border-white/10 bg-slate-900 p-2 shadow-xl max-h-48 overflow-y-auto">
-                  <div className="text-xs font-semibold text-slate-400 mb-1 px-2">Mention User</div>
+                <div className="mb-2 rounded-xl border border-border-primary bg-bg-secondary p-2 shadow-xl max-h-48 overflow-y-auto">
+                  <div className="text-xs font-semibold text-text-muted mb-1 px-2">Mention User</div>
                   {getFilteredMentionUsers().length > 0 ? (
                     getFilteredMentionUsers().map((member, index) => (
                       <button
@@ -4777,26 +4777,26 @@ function ChatPage() {
                           user_status={member.user_status}
                           size="sm"
                         />
-                        <span className="text-sm text-slate-200">{member.username}</span>
+                        <span className="text-sm text-text-secondary">{member.username}</span>
                       </button>
                     ))
                   ) : (
-                    <div className="text-xs text-slate-500 px-2 py-1">No matching users</div>
+                    <div className="text-xs text-text-muted px-2 py-1">No matching users</div>
                   )}
                 </div>
               )}
               
               {/* Replying to indicator */}
               {replyingTo && (
-                <div className="mb-2 rounded-xl border border-white/10 bg-slate-900/40 p-3 flex items-start justify-between">
+                <div className="mb-2 rounded-xl border border-border-primary bg-bg-secondary/40 p-3 flex items-start justify-between">
                   <div className="flex-1">
-                    <div className="text-xs font-semibold text-slate-400 mb-1">Replying to {replyingTo.username}</div>
-                    <div className="text-sm text-slate-300 truncate">{renderMessageContent(replyingTo.content, replyingTo.context, replyingTo.context_id)}</div>
+                    <div className="text-xs font-semibold text-text-muted mb-1">Replying to {replyingTo.username}</div>
+                    <div className="text-sm text-text-secondary truncate">{renderMessageContent(replyingTo.content, replyingTo.context, replyingTo.context_id)}</div>
                   </div>
                   <button
                     type="button"
                     onClick={() => setReplyingTo(null)}
-                    className="ml-2 text-slate-400 hover:text-slate-200 text-lg"
+                    className="ml-2 text-text-muted hover:text-text-secondary text-lg"
                     title="Cancel reply"
                   >
                     ×
@@ -4822,7 +4822,7 @@ function ChatPage() {
                   }}
                   placeholder={isDragging ? "Drop files here..." : selectedFiles.length > 0 ? "Add a message (optional)…" : "Type a message…"}
                   disabled={isUploading}
-                  className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40 disabled:opacity-50"
+                  className="w-full rounded-2xl border border-border-primary bg-bg-primary/40 px-4 py-3 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-sky-500/40 disabled:opacity-50"
                 />
                 
                 {/* Emoji picker button */}
@@ -4831,15 +4831,15 @@ function ChatPage() {
                     type="button"
                     onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
                     disabled={isUploading}
-                    className="shrink-0 rounded-2xl border border-white/10 bg-slate-900/40 px-4 py-3 text-sm font-semibold text-slate-300 hover:bg-slate-800/40 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="shrink-0 rounded-2xl border border-border-primary bg-bg-secondary/40 px-4 py-3 text-sm font-semibold text-text-secondary hover:bg-bg-tertiary/40 disabled:cursor-not-allowed disabled:opacity-50"
                     title="Insert emoji"
                   >
                     😊
                   </button>
                   
                   {isEmojiPickerOpen && (
-                    <div className="absolute bottom-full right-0 mb-2 w-64 rounded-xl border border-white/10 bg-slate-900 p-3 shadow-xl">
-                      <div className="text-xs font-semibold text-slate-300 mb-2">Basic Emojis</div>
+                    <div className="absolute bottom-full right-0 mb-2 w-64 rounded-xl border border-border-primary bg-bg-secondary p-3 shadow-xl">
+                      <div className="text-xs font-semibold text-text-secondary mb-2">Basic Emojis</div>
                       <div className="grid grid-cols-8 gap-1 max-h-48 overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                         {['😀', '😃', '😄', '😁', '😅', '😂', '🤣', '😊', '😇', '🙂', '😉', '😌', '😍', '🥰', '😘', '😗', 
                           '😙', '😚', '😋', '😛', '😝', '😜', '🤪', '🤨', '🧐', '🤓', '😎', '🥸', '🤩', '🥳', '😏', '😒',
@@ -4858,7 +4858,7 @@ function ChatPage() {
                       </div>
                       {selectedContext.kind === 'server' && serverEmojis[selectedContext.serverId]?.length > 0 && (
                         <>
-                          <div className="text-xs font-semibold text-slate-300 mt-3 mb-2">Server Emojis</div>
+                          <div className="text-xs font-semibold text-text-secondary mt-3 mb-2">Server Emojis</div>
                           <div className="grid grid-cols-6 gap-2 max-h-32 overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                             {serverEmojis[selectedContext.serverId].map((emoji: any) => (
                               <button
@@ -4890,7 +4890,7 @@ function ChatPage() {
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={isUploading || adminSettings.allow_file_attachments === false}
-                  className="shrink-0 rounded-2xl border border-white/10 bg-slate-900/40 px-4 py-3 text-sm font-semibold text-slate-300 hover:bg-slate-800/40 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="shrink-0 rounded-2xl border border-border-primary bg-bg-secondary/40 px-4 py-3 text-sm font-semibold text-text-secondary hover:bg-bg-tertiary/40 disabled:cursor-not-allowed disabled:opacity-50"
                   title="Attach file"
                 >
                   📎
@@ -4899,7 +4899,7 @@ function ChatPage() {
                 <button
                   type="submit"
                   disabled={!canSend || isUploading}
-                  className="shrink-0 rounded-2xl bg-sky-500 px-5 py-3 text-sm font-semibold text-slate-950 shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="shrink-0 rounded-2xl bg-sky-500 px-5 py-3 text-sm font-semibold text-bg-primary shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isUploading ? 'Uploading...' : 'Send'}
                 </button>
@@ -4912,18 +4912,18 @@ function ChatPage() {
 
         {/* Members Sidebar - shows when in a server */}
         {selectedServerId && isMembersSidebarOpen && (
-          <aside className="w-[240px] shrink-0 border-l border-white/10 bg-slate-900/30">
+          <aside className="w-[240px] shrink-0 border-l border-border-primary bg-bg-secondary/30">
             <div className="flex h-full flex-col">
-              <div className="border-b border-white/10 px-4 py-3">
+              <div className="border-b border-border-primary px-4 py-3">
                 <div className="text-sm font-semibold text-white">Members</div>
-                <div className="text-xs text-slate-400 mt-0.5">
+                <div className="text-xs text-text-muted mt-0.5">
                   {serverMembers[selectedServerId]?.length ?? 0} online
                 </div>
               </div>
               
               <div className="flex-1 overflow-auto p-2">
                 {(!serverMembers[selectedServerId] || serverMembers[selectedServerId].length === 0) ? (
-                  <div className="px-3 py-2 text-sm text-slate-400">No members</div>
+                  <div className="px-3 py-2 text-sm text-text-muted">No members</div>
                 ) : (
                   <div className="space-y-1">
                     {/* Organize members by role */}
@@ -4980,7 +4980,7 @@ function ChatPage() {
         {isUserMenuOpen && (
           <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={(e) => e.target === e.currentTarget && setIsUserMenuOpen(false)}>
             <div className="relative w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-              <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-6 py-4">
+              <div className="flex shrink-0 items-center justify-between border-b border-border-primary px-6 py-4">
                 <div className="flex items-center gap-3">
                   {init?.is_admin && !isAdminMode && (
                     <button
@@ -5007,7 +5007,7 @@ function ChatPage() {
                     setIsUserMenuOpen(false)
                     setIsAdminMode(false)
                   }}
-                  className="text-2xl text-slate-400 hover:text-slate-200"
+                  className="text-2xl text-text-muted hover:text-text-secondary"
                 >
                   ×
                 </button>
@@ -5017,7 +5017,7 @@ function ChatPage() {
                 {!isAdminMode ? (
                   <div className="space-y-6">
                     <div className="text-center">
-                      <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-slate-800 text-4xl overflow-hidden">
+                      <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-bg-tertiary text-4xl overflow-hidden">
                         {init?.avatar_type === 'image' && init?.avatar_data ? (
                           <img src={init.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
                         ) : (
@@ -5025,9 +5025,9 @@ function ChatPage() {
                         )}
                       </div>
                       <div className="mt-3 text-xl font-semibold text-white">{init?.username ?? 'User'}</div>
-                      {init?.bio && <div className="mt-1 text-sm text-slate-400">{init.bio}</div>}
+                      {init?.bio && <div className="mt-1 text-sm text-text-muted">{init.bio}</div>}
                       {init?.status_message && (
-                        <div className="mt-2 text-sm text-slate-300">{init.status_message}</div>
+                        <div className="mt-2 text-sm text-text-secondary">{init.status_message}</div>
                       )}
                     </div>
 
@@ -5072,8 +5072,8 @@ function ChatPage() {
                       </button>
                     </div>
 
-                    <div className="border-t border-white/10 pt-4">
-                      <div className="text-xs font-medium text-slate-400 mb-3">Create Server</div>
+                    <div className="border-t border-border-primary pt-4">
+                      <div className="text-xs font-medium text-text-muted mb-3">Create Server</div>
                       <div className="flex gap-2">
                         <input
                           value={serverName}
@@ -5095,8 +5095,8 @@ function ChatPage() {
                       </div>
                     </div>
 
-                    <div className="border-t border-white/10 pt-4">
-                      <div className="text-xs font-medium text-slate-400 mb-3">Join Server</div>
+                    <div className="border-t border-border-primary pt-4">
+                      <div className="text-xs font-medium text-text-muted mb-3">Join Server</div>
                       <div className="flex gap-2">
                         <input
                           value={joinInviteCode}

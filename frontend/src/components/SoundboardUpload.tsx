@@ -149,27 +149,27 @@ const SoundboardUpload: React.FC<SoundboardUploadProps> = ({
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-gray-800 rounded-lg p-6 w-full max-w-md">
+      <div className="bg-bg-secondary rounded-lg p-6 w-full max-w-md">
         <div className="flex justify-between items-center mb-4">
-          <h2 className="text-xl font-bold text-white">
+          <h2 className="text-xl font-bold text-text-primary">
             Upload {isServerSound ? 'Server' : 'Personal'} Sound
           </h2>
           <button
             onClick={onClose}
-            className="text-gray-400 hover:text-white"
+            className="text-text-muted hover:text-text-primary"
           >
             ✕
           </button>
         </div>
 
         <div className="mb-4">
-          <p className="text-sm text-gray-400 mb-2">
+          <p className="text-sm text-text-muted mb-2">
             {currentCount} / {maxCount === -1 ? '∞' : maxCount} sounds used
           </p>
         </div>
 
         <div className="mb-4">
-          <label className="block text-sm font-medium text-gray-300 mb-2">
+          <label className="block text-sm font-medium text-text-secondary mb-2">
             Sound Name
           </label>
           <input
@@ -178,12 +178,12 @@ const SoundboardUpload: React.FC<SoundboardUploadProps> = ({
             onChange={(e) => setSoundName(e.target.value)}
             placeholder="Enter sound name (max 30 chars)"
             maxLength={30}
-            className="w-full px-3 py-2 bg-gray-700 text-white rounded border border-gray-600 focus:border-blue-500 focus:outline-none"
+            className="w-full px-3 py-2 bg-bg-tertiary text-text-primary rounded border border-border-primary focus:border-accent-primary focus:outline-none"
           />
         </div>
 
         <div className="mb-4">
-          <label className="block text-sm font-medium text-gray-300 mb-2">
+          <label className="block text-sm font-medium text-text-secondary mb-2">
             Audio File (.mp3, .wav, .ogg)
           </label>
           <input
@@ -191,20 +191,20 @@ const SoundboardUpload: React.FC<SoundboardUploadProps> = ({
             type="file"
             accept=".mp3,.wav,.ogg,audio/mpeg,audio/wav,audio/ogg"
             onChange={handleFileSelect}
-            className="w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700"
+            className="w-full text-sm text-text-muted file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-accent-primary file:text-white hover:file:bg-accent-hover"
           />
-          <p className="text-xs text-gray-500 mt-1">
+          <p className="text-xs text-text-muted mt-1">
             Max file size: 2MB • Max duration: {maxDurationSeconds}s
           </p>
         </div>
 
         {audioPreview && (
           <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-300 mb-2">
+            <label className="block text-sm font-medium text-text-secondary mb-2">
               Preview
             </label>
             <audio controls src={audioPreview} className="w-full" />
-            <p className="text-xs text-gray-400 mt-1">
+            <p className="text-xs text-text-muted mt-1">
               Duration: {audioDuration.toFixed(1)}s
             </p>
           </div>
@@ -220,13 +220,13 @@ const SoundboardUpload: React.FC<SoundboardUploadProps> = ({
           <button
             onClick={handleUpload}
             disabled={uploading || !selectedFile || !soundName.trim()}
-            className="flex-1 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed"
+            className="flex-1 px-4 py-2 bg-accent-primary text-white rounded hover:bg-accent-hover disabled:bg-bg-tertiary disabled:cursor-not-allowed"
           >
             {uploading ? 'Uploading...' : 'Upload Sound'}
           </button>
           <button
             onClick={onClose}
-            className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700"
+            className="px-4 py-2 bg-bg-tertiary text-text-primary rounded hover:bg-bg-tertiary/70"
           >
             Cancel
           </button>

@@ -67,7 +67,7 @@ export function UsersPanel() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-8">
-        <div className="text-sm text-slate-400">Loading users...</div>
+        <div className="text-sm text-text-muted">Loading users...</div>
       </div>
     )
   }
@@ -75,7 +75,7 @@ export function UsersPanel() {
   if (users.length === 0) {
     return (
       <div className="flex items-center justify-center py-8">
-        <div className="text-sm text-slate-400">No users found.</div>
+        <div className="text-sm text-text-muted">No users found.</div>
       </div>
     )
   }
@@ -83,54 +83,54 @@ export function UsersPanel() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div className="text-sm text-slate-400">
-          Total Users: <span className="font-semibold text-slate-200">{users.length}</span>
+        <div className="text-sm text-text-muted">
+          Total Users: <span className="font-semibold text-text-secondary">      {users.length}</span>
         </div>
         <button
           type="button"
           onClick={loadUsers}
-          className="rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700"
+          className="rounded-lg bg-bg-tertiary px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-bg-tertiary/70"
         >
           🔄 Refresh
         </button>
       </div>
 
       {/* Users Table */}
-      <div className="overflow-hidden rounded-xl border border-white/10 bg-slate-950/40">
+      <div className="overflow-hidden rounded-xl border border-border-primary bg-bg-primary/40">
         <div className="overflow-x-auto">
           <table className="w-full">
-            <thead className="border-b border-white/10 bg-slate-900/60">
+            <thead className="border-b border-border-primary bg-bg-secondary/60">
               <tr>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-text-muted">
                   Username
                 </th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-text-muted">
                   Email
                 </th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-text-muted">
                   Registered
                 </th>
-                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-400">
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-text-muted">
                   Actions
                 </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-white/5">
+            <tbody className="divide-y divide-border-secondary">
               {users.map((user) => (
-                <tr key={user.username} className="hover:bg-white/5">
-                  <td className="px-4 py-3 text-sm font-medium text-slate-100">
+                <tr key={user.username} className="hover:bg-bg-secondary/30">
+                  <td className="px-4 py-3 text-sm font-medium text-text-primary">
                     {user.username}
                   </td>
-                  <td className="px-4 py-3 text-sm text-slate-300">
-                    {user.email || <span className="text-slate-500 italic">No email</span>}
+                  <td className="px-4 py-3 text-sm text-text-secondary">
+                    {user.email || <span className="text-text-muted italic">No email</span>}
                   </td>
-                  <td className="px-4 py-3 text-sm text-slate-400">
+                  <td className="px-4 py-3 text-sm text-text-muted">
                     {formatDate(user.created_at)}
                   </td>
                   <td className="px-4 py-3 text-right">
                     {confirmDelete === user.username ? (
                       <div className="flex items-center justify-end gap-2">
-                        <span className="text-xs text-slate-400">Confirm deletion?</span>
+                        <span className="text-xs text-text-muted">Confirm deletion?</span>
                         <button
                           type="button"
                           onClick={() => handleDeleteUser(user.username)}
@@ -143,7 +143,7 @@ export function UsersPanel() {
                           type="button"
                           onClick={() => setConfirmDelete(null)}
                           disabled={deletingUser === user.username}
-                          className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-600"
+                          className="rounded-lg bg-bg-tertiary px-3 py-1.5 text-xs font-semibold text-text-secondary hover:bg-bg-tertiary/70"
                         >
                           Cancel
                         </button>

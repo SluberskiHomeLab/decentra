@@ -146,12 +146,12 @@ const SoundboardPanel: React.FC<SoundboardPanelProps> = ({
   return (
     <>
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-40">
-        <div className="bg-gray-800 rounded-lg p-6 w-full max-w-2xl max-h-[80vh] flex flex-col">
+        <div className="bg-bg-secondary rounded-lg p-6 w-full max-w-2xl max-h-[80vh] flex flex-col">
           <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-bold text-white">Soundboard</h2>
+            <h2 className="text-xl font-bold text-text-primary">Soundboard</h2>
             <button
               onClick={onClose}
-              className="text-gray-400 hover:text-white text-xl"
+              className="text-text-muted hover:text-text-primary text-xl"
             >
               ✕
             </button>
@@ -163,8 +163,8 @@ const SoundboardPanel: React.FC<SoundboardPanelProps> = ({
               onClick={() => setActiveTab('personal')}
               className={`px-4 py-2 rounded ${
                 activeTab === 'personal'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  ? 'bg-accent-primary text-white'
+                  : 'bg-bg-tertiary text-text-secondary hover:bg-bg-tertiary/70'
               }`}
             >
               Personal ({personalSounds.length})
@@ -174,8 +174,8 @@ const SoundboardPanel: React.FC<SoundboardPanelProps> = ({
                 onClick={() => setActiveTab('server')}
                 className={`px-4 py-2 rounded ${
                   activeTab === 'server'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    ? 'bg-accent-primary text-white'
+                    : 'bg-bg-tertiary text-text-secondary hover:bg-bg-tertiary/70'
                 }`}
               >
                 Server ({serverSounds.length})
@@ -186,9 +186,9 @@ const SoundboardPanel: React.FC<SoundboardPanelProps> = ({
           {/* Sound Grid */}
           <div className="flex-1 overflow-y-auto mb-4">
             {loading ? (
-              <div className="text-center text-gray-400 py-8">Loading sounds...</div>
+              <div className="text-center text-text-muted py-8">Loading sounds...</div>
             ) : currentSounds.length === 0 ? (
-              <div className="text-center text-gray-400 py-8">
+              <div className="text-center text-text-muted py-8">
                 <p className="mb-2">No sounds yet.</p>
                 <p className="text-sm">Upload your first soundboard sound!</p>
               </div>
@@ -197,7 +197,7 @@ const SoundboardPanel: React.FC<SoundboardPanelProps> = ({
                 {currentSounds.map((sound) => (
                   <div
                     key={sound.sound_id}
-                    className="bg-gray-700 rounded-lg p-3 hover:bg-gray-600 transition group relative"
+                    className="bg-bg-tertiary rounded-lg p-3 hover:bg-bg-tertiary/70 transition group relative"
                   >
                     <button
                       onClick={() => handlePlaySound(sound)}
@@ -206,10 +206,10 @@ const SoundboardPanel: React.FC<SoundboardPanelProps> = ({
                       <div className="flex items-center gap-2 mb-1">
                         <span className="text-2xl">🔊</span>
                         <div className="flex-1 min-w-0">
-                          <div className="text-sm font-medium text-white truncate">
+                          <div className="text-sm font-medium text-text-primary truncate">
                             {sound.name}
                           </div>
-                          <div className="text-xs text-gray-400">
+                          <div className="text-xs text-text-muted">
                             {formatDuration(sound.duration_ms)}
                           </div>
                         </div>
@@ -236,7 +236,7 @@ const SoundboardPanel: React.FC<SoundboardPanelProps> = ({
                 (activeTab === 'server' && !isServerAdmin) ||
                 (getCurrentCount() >= getMaxCount() && getMaxCount() !== -1)
               }
-              className="flex-1 px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed"
+              className="flex-1 px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-bg-tertiary disabled:cursor-not-allowed"
             >
               {activeTab === 'server' && !isServerAdmin
                 ? 'Admin Only'
@@ -246,7 +246,7 @@ const SoundboardPanel: React.FC<SoundboardPanelProps> = ({
             </button>
             <button
               onClick={onClose}
-              className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700"
+              className="px-4 py-2 bg-bg-tertiary text-text-primary rounded hover:bg-bg-tertiary/70"
             >
               Close
             </button>
