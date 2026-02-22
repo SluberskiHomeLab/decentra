@@ -1231,9 +1231,9 @@ function ChatPage() {
   const [editingCategoryName, setEditingCategoryName] = useState('')
   const [dmUsername, setDmUsername] = useState('')
   const [joinInviteCode, setJoinInviteCode] = useState('')
-  const [lastInviteCode] = useState<string | null>(null)
+  const [lastInviteCode, setLastInviteCode] = useState<string | null>(null)
   const [inviteUsageServerId, setInviteUsageServerId] = useState<string | null>(null)
-  const [inviteUsageLogs] = useState<ServerInviteUsageLog[] | null>(null)
+  const [inviteUsageLogs, setInviteUsageLogs] = useState<ServerInviteUsageLog[] | null>(null)
   const [isLoadingInviteUsage, setIsLoadingInviteUsage] = useState(false)
   
   // File upload state
@@ -2072,6 +2072,22 @@ function ChatPage() {
       
       if (msg.type === 'welcome_message_updated') {
         pushToast({ kind: 'success', message: 'Welcome message updated' })
+      }
+      
+      // Invite code messages
+      if (msg.type === 'invite_code') {
+        setLastInviteCode(msg.code)
+        pushToast({ kind: 'success', message: msg.message || 'Invite code generated' })
+      }
+      
+      if (msg.type === 'server_invite_code') {
+        setLastInviteCode(msg.code)
+        pushToast({ kind: 'success', message: msg.message || 'Server invite code generated' })
+      }
+      
+      if (msg.type === 'server_invite_usage') {
+        setInviteUsageLogs(msg.usage_logs)
+        setIsLoadingInviteUsage(false)
       }
       
       if (msg.type === 'admin_signup_notification') {
@@ -4962,8 +4978,8 @@ function ChatPage() {
 
         {/* User menu modal - centered overlay */}
         {isUserMenuOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setIsUserMenuOpen(false)}>
-            <div className="w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={(e) => e.target === e.currentTarget && setIsUserMenuOpen(false)}>
+            <div className="relative w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
               <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-6 py-4">
                 <div className="flex items-center gap-3">
                   {init?.is_admin && !isAdminMode && (
@@ -5657,8 +5673,8 @@ function ChatPage() {
 
         {/* Account Settings Modal */}
         {isAccountSettingsOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsAccountSettingsOpen(false)}>
-            <div className="w-full max-w-3xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={(e) => e.target === e.currentTarget && setIsAccountSettingsOpen(false)}>
+            <div className="relative w-full max-w-3xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
               <div className="flex items-center justify-between border-b border-white/10 px-6 py-4 flex-shrink-0">
                 <h2 className="text-xl font-semibold text-white">Account Settings</h2>
                 <button
@@ -6386,11 +6402,11 @@ function ChatPage() {
         {/* Keybind Rebind Dialog */}
         {rebindingAction && (
           <div 
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-            onClick={handleCancelRebind}
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4"
+            onClick={(e) => e.target === e.currentTarget && handleCancelRebind()}
           >
             <div 
-              className="w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 shadow-2xl p-6"
+              className="relative w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 shadow-2xl p-6"
               onClick={(e) => e.stopPropagation()}
               onKeyDown={handleKeybindCapture}
               tabIndex={0}
@@ -6437,8 +6453,8 @@ function ChatPage() {
 
         {/* Server Settings Modal */}
         {isServerSettingsOpen && selectedServerObj && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsServerSettingsOpen(false)}>
-            <div className="w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={(e) => e.target === e.currentTarget && setIsServerSettingsOpen(false)}>
+            <div className="relative w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
               <div className="flex items-center justify-between border-b border-white/10 px-6 py-4 flex-shrink-0">
                 <div className="flex items-center gap-3">
                   <span className="text-2xl">{selectedServerObj.icon ?? '🏠'}</span>
@@ -7626,8 +7642,8 @@ function ChatPage() {
 
         {/* Create/Edit Role Modal */}
         {isCreateRoleOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsCreateRoleOpen(false)}>
-            <div className="w-full max-w-md max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={(e) => e.target === e.currentTarget && setIsCreateRoleOpen(false)}>
+            <div className="relative w-full max-w-md max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
               <div className="flex items-center justify-between border-b border-white/10 px-6 py-4 flex-shrink-0">
                 <h2 className="text-xl font-semibold text-white">{selectedRole ? 'Edit Role' : 'Create Role'}</h2>
                 <button
@@ -7713,8 +7729,8 @@ function ChatPage() {
 
         {/* Delete Message Confirmation Modal */}
         {deletingMessageId && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={cancelDeleteMessage}>
-            <div className="rounded-2xl border border-white/10 bg-slate-900 p-6 shadow-xl max-w-md" onClick={(e) => e.stopPropagation()}>
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={(e) => e.target === e.currentTarget && cancelDeleteMessage()}>
+            <div className="relative rounded-2xl border border-white/10 bg-slate-900 p-6 shadow-xl max-w-md" onClick={(e) => e.stopPropagation()}>
               <div className="text-lg font-semibold text-white mb-3">Delete Message</div>
               <div className="text-sm text-slate-300 mb-4">Are you sure you want to delete this message? This action cannot be undone.</div>
               <div className="flex gap-3 justify-end">
