@@ -986,10 +986,15 @@ async def handler(websocket):
                         # Add mutual friendship
                         db.add_friend_request(inviter_username, username)
                         db.accept_friend_request(inviter_username, username)
-                        # Log invite usage and remove used invite code
+                        # Log invite usage
                         if invite_code:
                             db.log_invite_usage(invite_code, username, invite_data.get('server_id'))
-                            db.delete_invite_code(invite_code)
+                            # Check if invite has reached max uses
+                            max_uses = invite_data.get('max_uses')
+                            if max_uses is not None:
+                                current_uses = db.get_invite_usage_count(invite_code)
+                                if current_uses >= max_uses:
+                                    db.deactivate_invite_code(invite_code)
                     
                     # Generate JWT token for the user
                     token = generate_jwt_token(username)
@@ -1084,12 +1089,17 @@ async def handler(websocket):
                     # Add mutual friendship
                     db.add_friend_request(inviter_username, username)
                     db.accept_friend_request(inviter_username, username)
-                    # Log invite usage and remove used invite code
+                    # Log invite usage
                     if pending['invite_code']:
                         invite_data = db.get_invite_code(pending['invite_code'])
                         if invite_data:
                             db.log_invite_usage(pending['invite_code'], username, invite_data.get('server_id'))
-                        db.delete_invite_code(pending['invite_code'])
+                            # Check if invite has reached max uses
+                            max_uses = invite_data.get('max_uses')
+                            if max_uses is not None:
+                                current_uses = db.get_invite_usage_count(pending['invite_code'])
+                                if current_uses >= max_uses:
+                                    db.deactivate_invite_code(pending['invite_code'])
                 
                 # Generate JWT token for the user
                 token = generate_jwt_token(username)
@@ -2352,16 +2362,109 @@ async def handler(websocket):
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} marked messages as read in {context_type}:{context_id}")
                     
                     elif data.get('type') == 'generate_invite':
-                        # Generate a new invite code
+                        # Generate a new instance invite code (admin only)
+                        first_user = db.get_first_user()
+                        is_admin = (username == first_user)
+                        
+                        if not is_admin:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Only the instance administrator can generate invite codes'
+                            }))
+                            continue
+                        
+                        max_uses = data.get('max_uses')  # None = unlimited
+                        description = data.get('description', '')
+                        
                         invite_code = generate_invite_code()
-                        db.create_invite_code(invite_code, username, 'global')
+                        db.create_invite_code(invite_code, username, 'global', max_uses=max_uses, description=description)
                         
                         await websocket.send_str(json.dumps({
                             'type': 'invite_code',
                             'code': invite_code,
+                            'max_uses': max_uses,
+                            'description': description,
                             'message': f'Invite code generated: {invite_code}'
                         }))
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} generated invite code: {invite_code}")
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} generated invite code: {invite_code} (max_uses: {max_uses})")
+                    
+                    elif data.get('type') == 'list_instance_invites':
+                        # List all instance invite codes (admin only)
+                        first_user = db.get_first_user()
+                        is_admin = (username == first_user)
+                        
+                        if not is_admin:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Only the instance administrator can view invite codes'
+                            }))
+                            continue
+                        
+                        invites = db.get_instance_invite_codes()
+                        
+                        # Convert datetime values for JSON serialization
+                        serialized_invites = []
+                        for invite in invites:
+                            item = dict(invite)
+                            if isinstance(item.get('created_at'), datetime):
+                                item['created_at'] = item['created_at'].isoformat()
+                            serialized_invites.append(item)
+                        
+                        await websocket.send_str(json.dumps({
+                            'type': 'instance_invites_list',
+                            'invites': serialized_invites
+                        }))
+                    
+                    elif data.get('type') == 'get_instance_invite_usage':
+                        # Get instance invite usage logs (admin only)
+                        first_user = db.get_first_user()
+                        is_admin = (username == first_user)
+                        
+                        if not is_admin:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Only the instance administrator can view invite usage'
+                            }))
+                            continue
+                        
+                        usage_logs = db.get_instance_invite_usage()
+                        
+                        # Convert datetime values for JSON serialization
+                        serialized_logs = []
+                        for log in usage_logs:
+                            item = dict(log)
+                            for key in ('first_used', 'last_used'):
+                                value = item.get(key)
+                                if isinstance(value, datetime):
+                                    item[key] = value.isoformat()
+                            serialized_logs.append(item)
+                        
+                        await websocket.send_str(json.dumps({
+                            'type': 'instance_invite_usage',
+                            'usage_logs': serialized_logs
+                        }))
+                    
+                    elif data.get('type') == 'revoke_instance_invite':
+                        # Revoke (deactivate) an instance invite code (admin only)
+                        first_user = db.get_first_user()
+                        is_admin = (username == first_user)
+                        
+                        if not is_admin:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Only the instance administrator can revoke invite codes'
+                            }))
+                            continue
+                        
+                        code = data.get('code', '').strip()
+                        if code:
+                            db.deactivate_invite_code(code)
+                            await websocket.send_str(json.dumps({
+                                'type': 'invite_revoked',
+                                'code': code,
+                                'message': 'Invite code has been revoked'
+                            }))
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} revoked instance invite: {code}")
                     
                     # Admin configuration handlers
                     elif data.get('type') == 'check_admin':
@@ -2780,19 +2883,23 @@ async def handler(websocket):
                     
                     elif data.get('type') == 'generate_server_invite':
                         server_id = data.get('server_id', '')
+                        max_uses = data.get('max_uses')  # None = unlimited
+                        description = data.get('description', '')
                         
                         # Check if user has permission to create invites
                         if has_permission(server_id, username, 'create_invite'):
                             invite_code = generate_invite_code()
-                            db.create_invite_code(invite_code, username, 'server', server_id)
+                            db.create_invite_code(invite_code, username, 'server', server_id, max_uses=max_uses, description=description)
                             
                             await websocket.send_str(json.dumps({
                                 'type': 'server_invite_code',
                                 'server_id': server_id,
                                 'code': invite_code,
+                                'max_uses': max_uses,
+                                'description': description,
                                 'message': f'Server invite code generated: {invite_code}'
                             }))
-                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} generated invite for server {server_id}: {invite_code}")
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} generated invite for server {server_id}: {invite_code} (max_uses: {max_uses})")
                         else:
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
@@ -2825,6 +2932,53 @@ async def handler(websocket):
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
                                 'message': 'You do not have permission to view invite usage'
+                            }))
+                    
+                    elif data.get('type') == 'list_server_invites':
+                        server_id = data.get('server_id', '')
+                        
+                        # Check if user has permission to view invites
+                        if has_permission(server_id, username, 'access_settings'):
+                            invites = db.get_server_invite_codes(server_id)
+                            
+                            # Convert datetime values for JSON serialization
+                            serialized_invites = []
+                            for invite in invites:
+                                item = dict(invite)
+                                if isinstance(item.get('created_at'), datetime):
+                                    item['created_at'] = item['created_at'].isoformat()
+                                serialized_invites.append(item)
+                            
+                            await websocket.send_str(json.dumps({
+                                'type': 'server_invites_list',
+                                'server_id': server_id,
+                                'invites': serialized_invites
+                            }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'You do not have permission to view server invites'
+                            }))
+                    
+                    elif data.get('type') == 'revoke_server_invite':
+                        server_id = data.get('server_id', '')
+                        code = data.get('code', '').strip()
+                        
+                        # Check if user has permission to manage invites
+                        if has_permission(server_id, username, 'access_settings'):
+                            if code:
+                                db.deactivate_invite_code(code)
+                                await websocket.send_str(json.dumps({
+                                    'type': 'server_invite_revoked',
+                                    'server_id': server_id,
+                                    'code': code,
+                                    'message': 'Server invite code has been revoked'
+                                }))
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} revoked server invite: {code}")
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'You do not have permission to revoke server invites'
                             }))
                     
                     elif data.get('type') == 'join_server_with_invite':
@@ -2865,9 +3019,14 @@ async def handler(websocket):
                                 # Add user to server
                                 db.add_server_member(server_id, username)
                                 
-                                # Log invite usage and remove used invite code
+                                # Log invite usage
                                 db.log_invite_usage(invite_code, username, server_id)
-                                db.delete_invite_code(invite_code)
+                                # Check if invite has reached max uses
+                                max_uses = invite_data.get('max_uses')
+                                if max_uses is not None:
+                                    current_uses = db.get_invite_usage_count(invite_code)
+                                    if current_uses >= max_uses:
+                                        db.deactivate_invite_code(invite_code)
                                 
                                 # Get channels for response
                                 channels = db.get_server_channels(server_id)
@@ -2939,6 +3098,42 @@ async def handler(websocket):
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
                                 'message': 'Invalid server invite code'
+                            }))
+                    
+                    elif data.get('type') == 'get_server_info_by_invite':
+                        # Public endpoint to preview server info before joining (no auth required)
+                        invite_code = data.get('invite_code', '').strip()
+                        
+                        # Find server with this invite code
+                        invite_data = db.get_invite_code(invite_code)
+                        if invite_data and invite_data['code_type'] == 'server':
+                            server_id = invite_data['server_id']
+                            server = db.get_server(server_id)
+                            members = db.get_server_members(server_id)
+                            
+                            if server:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'server_info_preview',
+                                    'server': {
+                                        'id': server_id,
+                                        'name': server['name'],
+                                        'icon': server.get('icon', '🏠'),
+                                        'icon_type': server.get('icon_type', 'emoji'),
+                                        'icon_data': server.get('icon_data'),
+                                        'description': server.get('description', ''),
+                                        'member_count': len(members)
+                                    },
+                                    'invite_code': invite_code
+                                }))
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Server not found'
+                                }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid or expired invite code'
                             }))
                     
                     elif data.get('type') == 'update_user_permissions':

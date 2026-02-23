@@ -10,11 +10,17 @@ import type {
   WsOutboundGenerateServerInvite,
   WsOutboundGetChannelHistory,
   WsOutboundGetDmHistory,
+  WsOutboundGetInstanceInviteUsage,
+  WsOutboundGetServerInfoByInvite,
   WsOutboundGetServerInviteUsage,
   WsOutboundGetServerMembers,
   WsOutboundJoinServerWithInvite,
+  WsOutboundListInstanceInvites,
+  WsOutboundListServerInvites,
   WsOutboundLogin,
   WsOutboundRequestPasswordReset,
+  WsOutboundRevokeInvite,
+  WsOutboundRevokeServerInvite,
   WsOutboundSendMessage,
   WsOutboundSetAvatar,
   WsOutboundSetNotificationMode,
@@ -152,6 +158,30 @@ export class WsClient {
   }
 
   getServerInviteUsage(payload: WsOutboundGetServerInviteUsage) {
+    this.send(payload)
+  }
+
+  listInstanceInvites(payload: WsOutboundListInstanceInvites = { type: 'list_instance_invites' }) {
+    this.send(payload)
+  }
+
+  listServerInvites(payload: WsOutboundListServerInvites) {
+    this.send(payload)
+  }
+
+  getInstanceInviteUsage(payload: WsOutboundGetInstanceInviteUsage = { type: 'get_instance_invite_usage' }) {
+    this.send(payload)
+  }
+
+  revokeInvite(payload: WsOutboundRevokeInvite) {
+    this.send(payload)
+  }
+
+  revokeServerInvite(payload: WsOutboundRevokeServerInvite) {
+    this.send(payload)
+  }
+
+  getServerInfoByInvite(payload: WsOutboundGetServerInfoByInvite) {
     this.send(payload)
   }
 

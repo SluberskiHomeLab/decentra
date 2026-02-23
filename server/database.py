@@ -182,10 +182,24 @@ class Database:
                             code_type VARCHAR(50) DEFAULT 'global',
                             server_id VARCHAR(255),
                             created_at TIMESTAMP NOT NULL,
+                            max_uses INTEGER,
+                            is_active BOOLEAN DEFAULT TRUE,
+                            description TEXT,
                             FOREIGN KEY (creator) REFERENCES users(username) ON DELETE CASCADE,
                             FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
                         )
                     ''')
+                    
+                    # Add new columns to existing invite_codes table if they don't exist
+                    try:
+                        cursor.execute('''
+                            ALTER TABLE invite_codes 
+                            ADD COLUMN IF NOT EXISTS max_uses INTEGER,
+                            ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE,
+                            ADD COLUMN IF NOT EXISTS description TEXT
+                        ''')
+                    except:
+                        pass  # Columns may already exist
                     
                     # Invite usage tracking table
                     cursor.execute('''
@@ -2864,15 +2878,17 @@ class Database:
             return [dict(row) for row in cursor.fetchall()]
     
     # Invite code operations
-    def create_invite_code(self, code: str, creator: str, code_type: str = 'global', server_id: Optional[str] = None) -> bool:
+    def create_invite_code(self, code: str, creator: str, code_type: str = 'global', 
+                          server_id: Optional[str] = None, max_uses: Optional[int] = None, 
+                          description: Optional[str] = None) -> bool:
         """Create an invite code."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT INTO invite_codes (code, creator, code_type, server_id, created_at)
-                    VALUES (%s, %s, %s, %s, %s)
-                ''', (code, creator, code_type, server_id, datetime.now()))
+                    INSERT INTO invite_codes (code, creator, code_type, server_id, created_at, max_uses, is_active, description)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (code, creator, code_type, server_id, datetime.now(), max_uses, True, description))
                 return True
         except psycopg2.IntegrityError:
             return False
@@ -2881,7 +2897,7 @@ class Database:
         """Get invite code data."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT * FROM invite_codes WHERE code = %s', (code,))
+            cursor.execute('SELECT * FROM invite_codes WHERE code = %s AND is_active = TRUE', (code,))
             row = cursor.fetchone()
             if row:
                 return dict(row)
@@ -2893,15 +2909,49 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM invite_codes WHERE code = %s', (code,))
     
-    def get_server_invite_codes(self, server_id: str) -> Dict[str, str]:
-        """Get all invite codes for a server."""
+    def get_server_invite_codes(self, server_id: str) -> List[Dict]:
+        """Get all invite codes for a server with usage stats."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT code, creator FROM invite_codes 
-                WHERE server_id = %s AND code_type = 'server'
+                SELECT ic.code, ic.creator, ic.created_at, ic.max_uses, ic.is_active, ic.description,
+                       COUNT(iu.id) as current_uses
+                FROM invite_codes ic
+                LEFT JOIN invite_usage iu ON ic.code = iu.invite_code
+                WHERE ic.server_id = %s AND ic.code_type = 'server'
+                GROUP BY ic.code, ic.creator, ic.created_at, ic.max_uses, ic.is_active, ic.description
+                ORDER BY ic.created_at DESC
             ''', (server_id,))
-            return {row['code']: row['creator'] for row in cursor.fetchall()}
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_instance_invite_codes(self) -> List[Dict]:
+        """Get all instance invite codes with usage stats."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT ic.code, ic.creator, ic.created_at, ic.max_uses, ic.is_active, ic.description,
+                       COUNT(iu.id) as current_uses
+                FROM invite_codes ic
+                LEFT JOIN invite_usage iu ON ic.code = iu.invite_code
+                WHERE ic.code_type = 'global' AND ic.server_id IS NULL
+                GROUP BY ic.code, ic.creator, ic.created_at, ic.max_uses, ic.is_active, ic.description
+                ORDER BY ic.created_at DESC
+            ''', ())
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def deactivate_invite_code(self, code: str):
+        """Mark an invite code as inactive."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('UPDATE invite_codes SET is_active = FALSE WHERE code = %s', (code,))
+    
+    def get_invite_usage_count(self, code: str) -> int:
+        """Get the number of times an invite code has been used."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) as count FROM invite_usage WHERE invite_code = %s', (code,))
+            row = cursor.fetchone()
+            return row['count'] if row else 0
     
     def log_invite_usage(self, invite_code: str, used_by: str, server_id: Optional[str] = None):
         """Log when an invite code is used."""
@@ -2928,6 +2978,24 @@ class Database:
                 GROUP BY invite_code
                 ORDER BY last_used DESC
             ''', (server_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_instance_invite_usage(self) -> List[Dict]:
+        """Get invite usage logs for instance invites, grouped by invite code with usage counts."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT 
+                    invite_code,
+                    COUNT(*) as use_count,
+                    MIN(used_at) as first_used,
+                    MAX(used_at) as last_used,
+                    ARRAY_AGG(used_by ORDER BY used_at DESC) as users
+                FROM invite_usage
+                WHERE server_id IS NULL
+                GROUP BY invite_code
+                ORDER BY last_used DESC
+            ''', ())
             return [dict(row) for row in cursor.fetchall()]
     
     # Custom emoji operations

@@ -805,6 +805,7 @@ function LoginPage() {
 
 function SignUpPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const setAuth = useAppStore((s) => s.setAuth)
   const setInit = useAppStore((s) => s.setInit)
   const setLastAuthError = useAppStore((s) => s.setLastAuthError)
@@ -817,6 +818,14 @@ function SignUpPage() {
   const [verificationCode, setVerificationCode] = useState('')
   const [needsVerification, setNeedsVerification] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
+
+  // Auto-fill invite code from URL parameter
+  useEffect(() => {
+    const inviteParam = searchParams.get('invite')
+    if (inviteParam) {
+      setInviteCode(inviteParam)
+    }
+  }, [searchParams])
 
   useEffect(() => {
     const unsubscribe = wsClient.onMessage((msg: WsMessage) => {
@@ -1202,6 +1211,7 @@ function ResetPasswordPage() {
 }
 
 function ChatPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const connectionStatus = useAppStore((s) => s.connectionStatus)
   const setConnectionStatus = useAppStore((s) => s.setConnectionStatus)
   const authToken = useAppStore((s) => s.authToken)
@@ -1230,11 +1240,30 @@ function ChatPage() {
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null)
   const [editingCategoryName, setEditingCategoryName] = useState('')
   const [dmUsername, setDmUsername] = useState('')
-  const [joinInviteCode, setJoinInviteCode] = useState('')
   const [lastInviteCode, setLastInviteCode] = useState<string | null>(null)
   const [inviteUsageServerId, setInviteUsageServerId] = useState<string | null>(null)
   const [inviteUsageLogs, setInviteUsageLogs] = useState<ServerInviteUsageLog[] | null>(null)
   const [isLoadingInviteUsage, setIsLoadingInviteUsage] = useState(false)
+  const [serverInviteMaxUses, setServerInviteMaxUses] = useState<number | null>(null)
+  const [instanceInviteMaxUses, setInstanceInviteMaxUses] = useState<number | null>(null)
+  const [instanceInvitesList, setInstanceInvitesList] = useState<any[] | null>(null)
+  const [showInstanceInvitesList, setShowInstanceInvitesList] = useState(false)
+  
+  // Server invite modal state
+  const [showServerInviteModal, setShowServerInviteModal] = useState(false)
+  const [serverInviteInfo, setServerInviteInfo] = useState<{
+    code: string
+    server: {
+      id: string
+      name: string
+      icon?: string
+      icon_type?: string
+      icon_data?: string
+      description?: string
+      member_count: number
+    }
+  } | null>(null)
+  const [isJoiningServer, setIsJoiningServer] = useState(false)
   
   // File upload state
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
@@ -1542,6 +1571,17 @@ function ChatPage() {
       ws.removeEventListener('error', handleError)
     }
   }, [authToken, setConnectionStatus])
+
+  // Check for server invite in URL parameters
+  useEffect(() => {
+    const serverInviteCode = searchParams.get('server_invite')
+    if (serverInviteCode && connectionStatus === 'connected') {
+      // Request server info
+      wsClient.getServerInfoByInvite({ type: 'get_server_info_by_invite', invite_code: serverInviteCode })
+      // Clear the URL parameter
+      setSearchParams({})
+    }
+  }, [searchParams, setSearchParams, connectionStatus])
 
   useEffect(() => {
     const unsubscribe = wsClient.onMessage((msg: WsMessage) => {
@@ -2080,9 +2120,25 @@ function ChatPage() {
         pushToast({ kind: 'success', message: msg.message || 'Invite code generated' })
       }
       
+      if (msg.type === 'instance_invites_list') {
+        setInstanceInvitesList(msg.invites)
+      }
+      
+      if (msg.type === 'invite_revoked') {
+        pushToast({ kind: 'success', message: 'Invite revoked' })
+      }
+      
       if (msg.type === 'server_invite_code') {
         setLastInviteCode(msg.code)
         pushToast({ kind: 'success', message: msg.message || 'Server invite code generated' })
+      }
+      
+      if (msg.type === 'server_info_preview') {
+        setServerInviteInfo({
+          code: msg.invite_code,
+          server: msg.server
+        })
+        setShowServerInviteModal(true)
       }
       
       if (msg.type === 'server_invite_usage') {
@@ -3030,41 +3086,11 @@ function ChatPage() {
     setDmUsername('')
   }
 
-  const generateServerInvite = () => {
-    if (!contextServerId) return
-    wsClient.generateServerInvite({ type: 'generate_server_invite', server_id: contextServerId })
-  }
-
-  const joinServerWithInvite = () => {
-    const code = joinInviteCode.trim()
-    if (!code) return
-    wsClient.joinServerWithInvite({ type: 'join_server_with_invite', invite_code: code })
-    setJoinInviteCode('')
-  }
-
   const loadInviteUsage = (serverId: string) => {
     setIsLoadingInviteUsage(true)
     setInviteUsageServerId(serverId)
     wsClient.getServerInviteUsage({ type: 'get_server_invite_usage', server_id: serverId })
   }
-
-  const copyLastInvite = () => {
-    if (!lastInviteCode) return
-    navigator.clipboard.writeText(lastInviteCode)
-    pushToast({ kind: 'success', message: 'Invite code copied to clipboard' })
-  }
-
-                        <label className="block">
-                          <div className="mb-1 text-sm text-slate-200">Announcement Message</div>
-                          <input
-                            type="text"
-                            maxLength={500}
-                            value={adminSettings.announcement_message || ''}
-                            onChange={(e) => setAdminSettings({ ...adminSettings, announcement_message: e.target.value })}
-                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                            placeholder="Enter announcement message"
-                          />
-                        </label>
 
   const loadAdminSettings = () => {
     if (wsClient.readyState !== WebSocket.OPEN) return
@@ -5094,101 +5120,6 @@ function ChatPage() {
                         </button>
                       </div>
                     </div>
-
-                    <div className="border-t border-border-primary pt-4">
-                      <div className="text-xs font-medium text-text-muted mb-3">Join Server</div>
-                      <div className="flex gap-2">
-                        <input
-                          value={joinInviteCode}
-                          onChange={(e) => setJoinInviteCode(e.target.value)}
-                          placeholder="Enter invite code"
-                          className="flex-1 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            joinServerWithInvite()
-                            setIsUserMenuOpen(false)
-                          }}
-                          disabled={!joinInviteCode.trim() || wsClient.readyState !== WebSocket.OPEN}
-                          className="shrink-0 rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
-                        >
-                          Join
-                        </button>
-                      </div>
-                    </div>
-
-                    {contextServerId && (
-                      <div className="border-t border-white/10 pt-4">
-                        <div className="text-xs font-medium text-slate-400 mb-3">Server Invite</div>
-                        <div className="flex flex-wrap gap-2 mb-3">
-                          <button
-                            type="button"
-                            onClick={generateServerInvite}
-                            disabled={wsClient.readyState !== WebSocket.OPEN}
-                            className="rounded-xl bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
-                          >
-                            Generate
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => contextServerId && loadInviteUsage(contextServerId)}
-                            disabled={wsClient.readyState !== WebSocket.OPEN || isLoadingInviteUsage || !contextServerId}
-                            className="rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm font-semibold text-slate-100 hover:border-white/20 disabled:opacity-60"
-                          >
-                            {isLoadingInviteUsage ? 'Loading…' : 'Usage'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={copyLastInvite}
-                            disabled={!lastInviteCode}
-                            className="rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm font-semibold text-slate-100 hover:border-white/20 disabled:opacity-60"
-                          >
-                            Copy
-                          </button>
-                        </div>
-                        {lastInviteCode && (
-                          <div className="rounded-xl border border-white/10 bg-slate-950/30 px-3 py-2 text-xs text-slate-200">
-                            <div className="text-[11px] text-slate-400">Last code</div>
-                            <div className="mt-1 break-all font-mono">{lastInviteCode}</div>
-                          </div>
-                        )}
-                        {contextServerId && inviteUsageServerId === contextServerId && inviteUsageLogs && (
-                          <div className="mt-3">
-                            <div className="mb-2 text-[11px] font-medium text-slate-400">Invite usage</div>
-                            {inviteUsageLogs.length === 0 ? (
-                              <div className="text-xs text-slate-400">No invite usage yet.</div>
-                            ) : (
-                              <div className="space-y-2 max-h-48 overflow-auto">
-                                {inviteUsageLogs.map((log) => {
-                                  const firstUsed = log.first_used ? new Date(log.first_used).toLocaleString() : ''
-                                  const lastUsed = log.last_used ? new Date(log.last_used).toLocaleString() : ''
-                                  const users = (log.users ?? []).slice(0, 6).join(', ')
-                                  return (
-                                    <div key={log.invite_code} className="rounded-xl border border-white/10 bg-slate-950/30 p-2">
-                                      <div className="flex items-start justify-between gap-2">
-                                        <div className="break-all font-mono text-xs text-slate-100">{log.invite_code}</div>
-                                        <div className="text-xs font-semibold text-slate-200">{log.use_count} uses</div>
-                                      </div>
-                                      <div className="mt-1 text-[11px] text-slate-400">
-                                        {lastUsed ? `Last: ${lastUsed}` : 'Last: —'}
-                                        {firstUsed ? ` · First: ${firstUsed}` : ''}
-                                      </div>
-                                      {users && (
-                                        <div className="mt-1 text-[11px] text-slate-400">
-                                          Users: {users}
-                                          {(log.users?.length ?? 0) > 6 ? '…' : ''}
-                                        </div>
-                                      )}
-                                    </div>
-                                  )
-                                })}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )}
                   </div>
                 ) : (
                   <div className="flex flex-col max-h-[calc(100vh-200px)]">
@@ -5372,6 +5303,120 @@ function ChatPage() {
                             className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
                           />
                         </label>
+                        
+                        {/* Invite Management */}
+                        <div className="mt-6 pt-6 border-t border-white/10">
+                          <h4 className="mb-3 text-sm font-semibold text-white">Instance Invite Management</h4>
+                          
+                          {lastInviteCode && (
+                            <div className="mb-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3">
+                              <div className="text-xs font-medium text-emerald-200 mb-1">Invite Link</div>
+                              <div className="font-mono text-xs text-emerald-100 break-all mb-2">
+                                {`${window.location.origin}/signup?invite=${lastInviteCode}`}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(`${window.location.origin}/signup?invite=${lastInviteCode}`)
+                                  pushToast({ kind: 'success', message: 'Invite link copied!' })
+                                }}
+                                className="w-full rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+                              >
+                                Copy Link
+                              </button>
+                            </div>
+                          )}
+                          
+                          <label className="block mb-3">
+                            <div className="mb-1 text-xs text-slate-300">Max Uses (leave empty for unlimited)</div>
+                            <input
+                              type="number"
+                              min="1"
+                              placeholder="Unlimited"
+                              value={instanceInviteMaxUses ?? ''}
+                              onChange={(e) => setInstanceInviteMaxUses(e.target.value ? parseInt(e.target.value) : null)}
+                              className="w-full max-w-md rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+                            />
+                          </label>
+                          
+                          <button
+                            type="button"
+                            onClick={() => {
+                              wsClient.generateInvite({ 
+                                type: 'generate_invite',
+                                max_uses: instanceInviteMaxUses
+                              })
+                            }}
+                            disabled={wsClient.readyState !== WebSocket.OPEN}
+                            className="w-full mb-3 rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                          >
+                            Generate Instance Invite Link
+                          </button>
+                          
+                          <button
+                            type="button"
+                            onClick={() => {
+                              wsClient.listInstanceInvites()
+                              setShowInstanceInvitesList(true)
+                            }}
+                            disabled={wsClient.readyState !== WebSocket.OPEN}
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5 disabled:opacity-60"
+                          >
+                            View All Invites
+                          </button>
+                          
+                          {showInstanceInvitesList && instanceInvitesList && (
+                            <div className="mt-3 rounded-xl border border-white/10 bg-slate-950/40 p-3 max-h-64 overflow-auto">
+                              <div className="flex items-center justify-between mb-2">
+                                <div className="text-xs font-medium text-slate-400">Active Invites</div>
+                                <button
+                                  type="button"
+                                  onClick={() => setShowInstanceInvitesList(false)}
+                                  className="text-slate-400 hover:text-slate-200"
+                                >
+                                  ×
+                                </button>
+                              </div>
+                              {instanceInvitesList.length === 0 ? (
+                                <div className="text-xs text-slate-500">No invites generated yet</div>
+                              ) : (
+                                <div className="space-y-2">
+                                  {instanceInvitesList.map((invite) => (
+                                    <div key={invite.code} className="text-xs border border-white/5 rounded-lg p-2 bg-slate-950/40">
+                                      <div className="flex items-center justify-between mb-1">
+                                        <div className="font-mono text-slate-200">{invite.code}</div>
+                                        <div className={`px-2 py-0.5 rounded text-xs ${
+                                          invite.is_active ? 'bg-green-500/20 text-green-300' : 'bg-red-500/20 text-red-300'
+                                        }`}>
+                                          {invite.is_active ? 'Active' : 'Inactive'}
+                                        </div>
+                                      </div>
+                                      <div className="text-slate-400">
+                                        Uses: {invite.current_uses} / {invite.max_uses ?? '∞'}
+                                      </div>
+                                      <div className="text-slate-500 text-[10px]">
+                                        Created: {new Date(invite.created_at).toLocaleString()}
+                                      </div>
+                                      {invite.is_active && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            wsClient.revokeInvite({ type: 'revoke_instance_invite', code: invite.code })
+                                            // Refresh list after a delay
+                                            setTimeout(() => wsClient.listInstanceInvites(), 500)
+                                          }}
+                                          className="mt-1 w-full rounded bg-red-500/20 px-2 py-1 text-xs text-red-300 hover:bg-red-500/30"
+                                        >
+                                          Revoke
+                                        </button>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
                         
                         {/* Soundboard Settings */}
                         <div className="mt-6 pt-6 border-t border-white/10">
@@ -6587,22 +6632,52 @@ function ChatPage() {
                     <div className="space-y-3">
                       {lastInviteCode && (
                         <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3">
-                          <div className="text-xs font-medium text-emerald-200 mb-1">Invite Code</div>
-                          <div className="font-mono text-sm text-emerald-100">{lastInviteCode}</div>
+                          <div className="text-xs font-medium text-emerald-200 mb-1">Invite Link</div>
+                          <div className="font-mono text-xs text-emerald-100 break-all mb-2">
+                            {`${window.location.origin}/chat?server_invite=${lastInviteCode}`}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(`${window.location.origin}/chat?server_invite=${lastInviteCode}`)
+                              pushToast({ kind: 'success', message: 'Invite link copied!' })
+                            }}
+                            className="w-full rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+                          >
+                            Copy Link
+                          </button>
                         </div>
                       )}
                       
+                      <div>
+                        <label className="block text-xs text-slate-300 mb-1">
+                          Max Uses (leave empty for unlimited)
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          placeholder="Unlimited"
+                          value={serverInviteMaxUses ?? ''}
+                          onChange={(e) => setServerInviteMaxUses(e.target.value ? parseInt(e.target.value) : null)}
+                          className="w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+                        />
+                      </div>
+
                       <button
                         type="button"
                         onClick={() => {
                           if (selectedServerId) {
-                            wsClient.generateServerInvite({ type: 'generate_server_invite', server_id: selectedServerId })
+                            wsClient.generateServerInvite({ 
+                              type: 'generate_server_invite', 
+                              server_id: selectedServerId,
+                              max_uses: serverInviteMaxUses
+                            })
                           }
                         }}
                         disabled={wsClient.readyState !== WebSocket.OPEN}
                         className="w-full rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
                       >
-                        Generate New Invite Code
+                        Generate New Invite Link
                       </button>
 
                       <button
@@ -6630,10 +6705,12 @@ function ChatPage() {
                                   <div className="text-slate-200 font-medium">{log.invite_code}</div>
                                   <div className="text-slate-400">Used {log.use_count} time(s)</div>
                                   {log.last_used && (
-                                    <div className="text-slate-500">{new Date(log.last_used).toLocaleString()}</div>
+                                    <div className="text-slate-500">Last: {new Date(log.last_used).toLocaleString()}</div>
                                   )}
                                   {log.users && log.users.length > 0 && (
-                                    <div className="text-slate-400">Users: {log.users.join(', ')}</div>
+                                    <div className="text-slate-400">
+                                      Users: {log.users.slice(0, 6).join(', ')}{log.users.length > 6 ? ` +${log.users.length - 6} more` : ''}
+                                    </div>
                                   )}
                                 </div>
                               ))}
@@ -7767,6 +7844,82 @@ function ChatPage() {
             onPlaySound={handlePlaySoundboard}
             sendWebSocketMessage={(msg) => wsClient.send(msg)}
           />
+        )}
+
+        {/* Server Invite Confirmation Modal */}
+        {showServerInviteModal && serverInviteInfo && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4" onClick={() => setShowServerInviteModal(false)}>
+            <div className="relative w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 shadow-2xl p-6" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                onClick={() => setShowServerInviteModal(false)}
+                className="absolute right-4 top-4 text-2xl text-slate-400 hover:text-slate-200"
+              >
+                ×
+              </button>
+              
+              <h2 className="text-2xl font-bold text-white mb-4">Join Server?</h2>
+              
+              <div className="flex items-center gap-4 mb-4">
+                {serverInviteInfo.server.icon_type === 'image' && serverInviteInfo.server.icon_data ? (
+                  <img 
+                    src={serverInviteInfo.server.icon_data} 
+                    alt={serverInviteInfo.server.name}
+                    className="h-16 w-16 rounded-xl object-cover"
+                  />
+                ) : (
+                  <div className="flex h-16 w-16 items-center justify-center rounded-xl bg-slate-800 text-3xl">
+                    {serverInviteInfo.server.icon || '🏠'}
+                  </div>
+                )}
+                
+                <div className="flex-1">
+                  <h3 className="text-xl font-semibold text-white">{serverInviteInfo.server.name}</h3>
+                  <p className="text-sm text-slate-400">{serverInviteInfo.server.member_count} members</p>
+                </div>
+              </div>
+              
+              {serverInviteInfo.server.description && (
+                <p className="text-sm text-slate-300 mb-4">{serverInviteInfo.server.description}</p>
+              )}
+              
+              <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 mb-4">
+                <p className="text-sm text-yellow-200">
+                  ⚠️ By clicking "Join", you will become a member of this server and be able to see all channels and messages.
+                </p>
+              </div>
+              
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowServerInviteModal(false)}
+                  className="flex-1 rounded-lg bg-slate-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-600"
+                  disabled={isJoiningServer}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsJoiningServer(true)
+                    wsClient.joinServerWithInvite({ 
+                      type: 'join_server_with_invite', 
+                      invite_code: serverInviteInfo.code 
+                    })
+                    // The modal will close when we receive server_joined message
+                    setTimeout(() => {
+                      setShowServerInviteModal(false)
+                      setIsJoiningServer(false)
+                    }, 2000)
+                  }}
+                  className="flex-1 rounded-lg bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                  disabled={isJoiningServer}
+                >
+                  {isJoiningServer ? 'Joining...' : 'Join Server'}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>

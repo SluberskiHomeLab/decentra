@@ -196,6 +196,8 @@ export type WsServerJoined = {
 export type WsInviteCode = {
   type: 'invite_code'
   code: string
+  max_uses?: number | null
+  description?: string
   message?: string
 }
 
@@ -203,6 +205,8 @@ export type WsServerInviteCode = {
   type: 'server_invite_code'
   server_id: string
   code: string
+  max_uses?: number | null
+  description?: string
   message?: string
 }
 
@@ -218,6 +222,59 @@ export type WsServerInviteUsage = {
   type: 'server_invite_usage'
   server_id: string
   usage_logs: ServerInviteUsageLog[]
+}
+
+export type InviteListItem = {
+  code: string
+  creator: string
+  created_at: string
+  max_uses?: number | null
+  is_active: boolean
+  description?: string
+  current_uses: number
+}
+
+export type WsInstanceInvitesList = {
+  type: 'instance_invites_list'
+  invites: InviteListItem[]
+}
+
+export type WsServerInvitesList = {
+  type: 'server_invites_list'
+  server_id: string
+  invites: InviteListItem[]
+}
+
+export type WsInstanceInviteUsage = {
+  type: 'instance_invite_usage'
+  usage_logs: ServerInviteUsageLog[]
+}
+
+export type WsInviteRevoked = {
+  type: 'invite_revoked'
+  code: string
+  message?: string
+}
+
+export type WsServerInviteRevoked = {
+  type: 'server_invite_revoked'
+  server_id: string
+  code: string
+  message?: string
+}
+
+export type WsServerInfoPreview = {
+  type: 'server_info_preview'
+  server: {
+    id: string
+    name: string
+    icon?: string
+    icon_type?: string
+    icon_data?: string
+    description?: string
+    member_count: number
+  }
+  invite_code: string
 }
 
 export type WsChannelCreated = {
@@ -386,6 +443,12 @@ export type WsMessage =
   | WsInviteCode
   | WsServerInviteCode
   | WsServerInviteUsage
+  | WsInstanceInvitesList
+  | WsServerInvitesList
+  | WsInstanceInviteUsage
+  | WsInviteRevoked
+  | WsServerInviteRevoked
+  | WsServerInfoPreview
   | Ws2FASetup
   | Ws2FAEnabled
   | Ws2FADisabled
@@ -502,11 +565,15 @@ export type WsOutboundStartDm = {
 
 export type WsOutboundGenerateInvite = {
   type: 'generate_invite'
+  max_uses?: number | null
+  description?: string
 }
 
 export type WsOutboundGenerateServerInvite = {
   type: 'generate_server_invite'
   server_id: string
+  max_uses?: number | null
+  description?: string
 }
 
 export type WsOutboundJoinServerWithInvite = {
@@ -517,6 +584,35 @@ export type WsOutboundJoinServerWithInvite = {
 export type WsOutboundGetServerInviteUsage = {
   type: 'get_server_invite_usage'
   server_id: string
+}
+
+export type WsOutboundListInstanceInvites = {
+  type: 'list_instance_invites'
+}
+
+export type WsOutboundListServerInvites = {
+  type: 'list_server_invites'
+  server_id: string
+}
+
+export type WsOutboundGetInstanceInviteUsage = {
+  type: 'get_instance_invite_usage'
+}
+
+export type WsOutboundRevokeInvite = {
+  type: 'revoke_instance_invite'
+  code: string
+}
+
+export type WsOutboundRevokeServerInvite = {
+  type: 'revoke_server_invite'
+  server_id: string
+  code: string
+}
+
+export type WsOutboundGetServerInfoByInvite = {
+  type: 'get_server_info_by_invite'
+  invite_code: string
 }
 
 export type WsOutboundGetServerMembers = {
