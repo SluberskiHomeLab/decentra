@@ -2127,6 +2127,9 @@ async def handler(websocket):
                                 tm['attachments'] = db.get_message_attachments(tm['id'])
                                 tm['mentions'] = mentions_map.get(tm['id'], [])
                                 tm['user_status'] = get_user_status(tm['username'])
+                                hist_role_color = get_highest_role_color(s_id, tm['username'])
+                                if hist_role_color:
+                                    tm['role_color'] = hist_role_color
 
                         await websocket.send_str(json.dumps({
                             'type': 'thread_history',
@@ -2238,6 +2241,10 @@ async def handler(websocket):
                         if th_nonce:
                             th_msg_obj['nonce'] = th_nonce
                         th_msg_obj['thread_id'] = t_id
+                        th_msg_obj['server_id'] = s_id
+                        thread_role_color = get_highest_role_color(s_id, username)
+                        if thread_role_color:
+                            th_msg_obj['role_color'] = thread_role_color
 
                         thread_msg_payload = json.dumps(th_msg_obj)
                         if thread['is_private']:

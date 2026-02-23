@@ -123,9 +123,8 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => {
       let ctx: ChatContext
       if (message.context === 'thread' && typeof message.context_id === 'string') {
-        // context_id for thread messages is the thread_id itself
-        // server_id is encoded in thread_id prefix or not needed for key
-        ctx = { kind: 'thread', serverId: message.thread_id?.split('_')[0] ?? '', threadId: message.context_id, threadName: '' }
+        // server_id is now sent explicitly in the thread message payload
+        ctx = { kind: 'thread', serverId: (message as any).server_id ?? '', threadId: message.context_id, threadName: '' }
       } else if (message.context === 'server' && typeof message.context_id === 'string' && message.context_id.includes('/')) {
         const [serverId, channelId] = message.context_id.split('/', 2)
         ctx = { kind: 'server', serverId, channelId }
