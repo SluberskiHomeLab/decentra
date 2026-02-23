@@ -118,12 +118,16 @@ voice_members = {}
 # Store soundboard play cooldowns: {username: last_play_timestamp}
 soundboard_cooldowns = {}
 
+# Typing indicators: {context_key: {username: asyncio.TimerHandle}}
+typing_states: dict = {}
+
 # Helper counters for IDs (load from database on startup)
 server_counter = 0
 channel_counter = 0
 category_counter = 0
 dm_counter = 0
 role_counter = 0
+thread_counter = 0
 
 
 def hash_password(password):
@@ -314,6 +318,13 @@ def get_next_role_id():
     return f"role_{role_counter}"
 
 
+def get_next_thread_id():
+    """Get next thread ID."""
+    global thread_counter
+    thread_counter += 1
+    return f"thread_{thread_counter}"
+
+
 def get_next_dm_id():
     """Get next DM ID."""
     global dm_counter
@@ -439,6 +450,16 @@ def init_counters_from_db():
                 elif len(parts) > 2 and parts[-1].isdigit():
                     max_role = max(max_role, int(parts[-1]))
             role_counter = max_role
+
+    # Get highest thread ID
+    global thread_counter
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT thread_id FROM threads')
+        t_ids = [row['thread_id'] for row in cursor.fetchall()]
+        if t_ids:
+            max_thread = max([int(t.split('_')[1]) for t in t_ids if len(t.split('_')) == 2 and t.split('_')[1].isdigit()] + [0])
+            thread_counter = max_thread
 
 
 def get_next_call_id():
@@ -1555,6 +1576,7 @@ async def handler(websocket):
                         message_key = data.get('messageKey')  # Extract messageKey for file attachment correlation
                         mentions = data.get('mentions', [])  # Extract mentions
                         reply_to = data.get('reply_to')  # Extract reply_to message ID
+                        nonce = data.get('nonce')  # Extract nonce for delivery confirmation
                         
                         # Get admin settings and enforce max message length
                         admin_settings = db.get_admin_settings()
@@ -1646,6 +1668,10 @@ async def handler(websocket):
                                         if mentions:
                                             msg_obj['mentions'] = [m for m in mentions if m in member_usernames]
                                         
+                                        # Add nonce for delivery confirmation (only sender sees it)
+                                        if nonce:
+                                            msg_obj['nonce'] = nonce
+                                        
                                         # Broadcast to server members
                                         await broadcast_to_server(server_id, json.dumps(msg_obj))
                                         print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} sent message in {server_id}/{channel_id}")
@@ -1711,6 +1737,10 @@ async def handler(websocket):
                                 # Add mentions to message object
                                 if mentions and participants:
                                     msg_obj['mentions'] = [m for m in mentions if m in participants]
+                                
+                                # Add nonce for delivery confirmation (only sender sees it)
+                                if nonce:
+                                    msg_obj['nonce'] = nonce
                                 
                                 # Send to both participants
                                 for participant in participants:
@@ -1890,7 +1920,439 @@ async def handler(websocket):
                                 'dm_id': dm_id,
                                 'messages': dm_messages
                             }))
-                    
+
+                    # ── Typing indicators ──────────────────────────────────────────
+                    elif data.get('type') == 'typing_start':
+                        t_context = data.get('context', 'global')
+                        t_context_id = data.get('context_id')
+                        ctx_key = f"{t_context}:{t_context_id}" if t_context_id else t_context
+
+                        # Determine recipients to notify
+                        if t_context == 'server' and t_context_id and '/' in t_context_id:
+                            t_server_id = t_context_id.split('/')[0]
+                            server_members_data = db.get_server_members(t_server_id)
+                            recipients = {m['username'] for m in server_members_data} - {username}
+                        elif t_context == 'dm' and t_context_id:
+                            dm_list = db.get_user_dms(username)
+                            recipients = set()
+                            for dm in dm_list:
+                                if dm['dm_id'] == t_context_id:
+                                    recipients = {dm['user1'], dm['user2']} - {username}
+                                    break
+                        else:
+                            recipients = set()
+
+                        # Cancel existing expiry timer for this user+context
+                        timer_key = (username, ctx_key)
+                        if timer_key in typing_states:
+                            old_handle = typing_states[timer_key]
+                            if old_handle:
+                                old_handle.cancel()
+
+                        user_avatar = get_avatar_data(username)
+                        typing_payload = json.dumps({
+                            'type': 'user_typing',
+                            'username': username,
+                            'context': t_context,
+                            'context_id': t_context_id,
+                            **user_avatar
+                        })
+
+                        async def expire_typing(u=username, ck=ctx_key, recip=recipients,
+                                                 tc=t_context, tcid=t_context_id):
+                            await asyncio.sleep(5)
+                            typing_states.pop((u, ck), None)
+                            stop_payload = json.dumps({
+                                'type': 'user_stopped_typing',
+                                'username': u,
+                                'context': tc,
+                                'context_id': tcid
+                            })
+                            for r in recip:
+                                await send_to_user(r, stop_payload)
+
+                        task = asyncio.ensure_future(expire_typing())
+                        typing_states[timer_key] = task
+
+                        for r in recipients:
+                            await send_to_user(r, typing_payload)
+
+                    elif data.get('type') == 'typing_stop':
+                        t_context = data.get('context', 'global')
+                        t_context_id = data.get('context_id')
+                        ctx_key = f"{t_context}:{t_context_id}" if t_context_id else t_context
+                        timer_key = (username, ctx_key)
+                        if timer_key in typing_states:
+                            old_handle = typing_states.pop(timer_key, None)
+                            if old_handle:
+                                old_handle.cancel()
+                        # Determine recipients to notify
+                        if t_context == 'server' and t_context_id and '/' in t_context_id:
+                            t_server_id = t_context_id.split('/')[0]
+                            server_members_data = db.get_server_members(t_server_id)
+                            recipients = {m['username'] for m in server_members_data} - {username}
+                        elif t_context == 'dm' and t_context_id:
+                            dm_list = db.get_user_dms(username)
+                            recipients = set()
+                            for dm in dm_list:
+                                if dm['dm_id'] == t_context_id:
+                                    recipients = {dm['user1'], dm['user2']} - {username}
+                                    break
+                        else:
+                            recipients = set()
+                        stop_payload = json.dumps({
+                            'type': 'user_stopped_typing',
+                            'username': username,
+                            'context': t_context,
+                            'context_id': t_context_id
+                        })
+                        for r in recipients:
+                            await send_to_user(r, stop_payload)
+
+                    # ── Threads ────────────────────────────────────────────────────
+                    elif data.get('type') == 'create_thread':
+                        s_id = data.get('server_id', '')
+                        parent_msg_id = data.get('parent_message_id')
+                        thread_name = data.get('name', '').strip()
+                        is_private = bool(data.get('is_private', False))
+                        invited_users = data.get('invited_users', [])
+
+                        if not s_id or not thread_name:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'server_id and name are required'}))
+                            continue
+
+                        # Verify user is member of server
+                        if not db.is_server_member(username, s_id):
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Not a server member'}))
+                            continue
+
+                        new_thread_id = get_next_thread_id()
+                        if not db.create_thread(new_thread_id, s_id, parent_msg_id, thread_name, is_private, username):
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Failed to create thread'}))
+                            continue
+
+                        # Seed thread members for private threads
+                        if is_private:
+                            db.add_thread_member(new_thread_id, username, username)
+                            for inv_user in invited_users:
+                                if db.is_server_member(inv_user, s_id):
+                                    db.add_thread_member(new_thread_id, inv_user, username)
+                            # Always allow admins
+                            server_data = db.get_server(s_id)
+                            if server_data and server_data['owner'] != username:
+                                db.add_thread_member(new_thread_id, server_data['owner'], username)
+
+                        # Derive channel_id from parent message context
+                        channel_id = None
+                        if parent_msg_id:
+                            parent_msg = db.get_message(parent_msg_id)
+                            if parent_msg and parent_msg.get('context_id') and '/' in parent_msg['context_id']:
+                                channel_id = parent_msg['context_id'].split('/')[-1]
+
+                        thread_obj = {
+                            'thread_id': new_thread_id,
+                            'server_id': s_id,
+                            'channel_id': channel_id,
+                            'parent_message_id': parent_msg_id,
+                            'name': thread_name,
+                            'is_private': is_private,
+                            'created_by': username,
+                            'is_closed': False,
+                        }
+                        thread_created_payload = json.dumps({'type': 'thread_created', 'thread': thread_obj})
+
+                        if is_private:
+                            members_to_notify = db.get_thread_members(new_thread_id)
+                            for tuser in members_to_notify:
+                                await send_to_user(tuser, thread_created_payload)
+                        else:
+                            await broadcast_to_server(s_id, thread_created_payload)
+
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} created thread {new_thread_id} in {s_id}")
+
+                    elif data.get('type') == 'close_thread':
+                        t_id = data.get('thread_id', '')
+                        thread = db.get_thread(t_id)
+                        if not thread:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Thread not found'}))
+                            continue
+
+                        # Only creator or server admin/owner can close
+                        s_id = thread['server_id']
+                        server_data = db.get_server(s_id)
+                        can_close = (thread['created_by'] == username or
+                                     (server_data and server_data['owner'] == username) or
+                                     has_permission(s_id, username, 'administrator'))
+                        if not can_close:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'No permission to close thread'}))
+                            continue
+
+                        db.close_thread(t_id)
+                        close_payload = json.dumps({'type': 'thread_closed', 'thread_id': t_id, 'server_id': s_id})
+
+                        if thread['is_private']:
+                            for tuser in db.get_thread_members(t_id):
+                                await send_to_user(tuser, close_payload)
+                        else:
+                            await broadcast_to_server(s_id, close_payload)
+
+                    elif data.get('type') == 'get_thread_history':
+                        t_id = data.get('thread_id', '')
+                        thread = db.get_thread(t_id)
+                        if not thread:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Thread not found'}))
+                            continue
+
+                        s_id = thread['server_id']
+                        # Access check
+                        if thread['is_private']:
+                            if not db.is_thread_member(t_id, username):
+                                # Check if admin/owner
+                                server_data = db.get_server(s_id)
+                                if not (server_data and server_data['owner'] == username) and not has_permission(s_id, username, 'administrator'):
+                                    await websocket.send_str(json.dumps({'type': 'error', 'message': 'No access to this private thread'}))
+                                    continue
+                        else:
+                            if not db.is_server_member(username, s_id):
+                                await websocket.send_str(json.dumps({'type': 'error', 'message': 'Not a server member'}))
+                                continue
+
+                        th_messages = db.get_messages('thread', t_id, MAX_HISTORY)
+                        if th_messages:
+                            msg_ids = [m['id'] for m in th_messages]
+                            reactions_map = db.get_reactions_for_messages(msg_ids)
+                            mentions_map = db.get_mentions_for_messages(msg_ids)
+                            for tm in th_messages:
+                                tm['reactions'] = reactions_map.get(tm['id'], [])
+                                tm['attachments'] = db.get_message_attachments(tm['id'])
+                                tm['mentions'] = mentions_map.get(tm['id'], [])
+                                tm['user_status'] = get_user_status(tm['username'])
+
+                        await websocket.send_str(json.dumps({
+                            'type': 'thread_history',
+                            'thread_id': t_id,
+                            'thread': {
+                                'thread_id': t_id,
+                                'server_id': s_id,
+                                'parent_message_id': thread['parent_message_id'],
+                                'name': thread['name'],
+                                'is_private': thread['is_private'],
+                                'created_by': thread['created_by'],
+                                'is_closed': thread['is_closed'],
+                            },
+                            'messages': th_messages
+                        }))
+
+                    elif data.get('type') == 'list_threads':
+                        s_id = data.get('server_id', '')
+                        if not db.is_server_member(username, s_id):
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Not a server member'}))
+                            continue
+                        all_threads = db.get_open_threads_for_server(s_id)
+                        # Filter private threads: only show those the user is a member of
+                        visible = []
+                        for th in all_threads:
+                            if th['is_private']:
+                                if db.is_thread_member(th['thread_id'], username):
+                                    visible.append(th)
+                                else:
+                                    server_data = db.get_server(s_id)
+                                    if server_data and server_data['owner'] == username:
+                                        visible.append(th)
+                            else:
+                                visible.append(th)
+                        # Serialize datetime fields
+                        for th in visible:
+                            if hasattr(th.get('created_at'), 'isoformat'):
+                                th['created_at'] = th['created_at'].isoformat()
+                        await websocket.send_str(json.dumps({'type': 'threads_list', 'server_id': s_id, 'threads': visible}))
+
+                    elif data.get('type') == 'add_thread_member':
+                        t_id = data.get('thread_id', '')
+                        new_member = data.get('username', '')
+                        thread = db.get_thread(t_id)
+                        if not thread or not thread['is_private']:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Thread not found or not private'}))
+                            continue
+                        s_id = thread['server_id']
+                        # Only thread creator or admin/owner can add members
+                        server_data = db.get_server(s_id)
+                        can_add = (thread['created_by'] == username or
+                                   (server_data and server_data['owner'] == username) or
+                                   has_permission(s_id, username, 'administrator'))
+                        if not can_add:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'No permission'}))
+                            continue
+                        if db.is_server_member(new_member, s_id):
+                            db.add_thread_member(t_id, new_member, username)
+                            await send_to_user(new_member, json.dumps({
+                                'type': 'thread_created',
+                                'thread': {
+                                    'thread_id': t_id,
+                                    'server_id': s_id,
+                                    'parent_message_id': thread['parent_message_id'],
+                                    'name': thread['name'],
+                                    'is_private': True,
+                                    'created_by': thread['created_by'],
+                                    'is_closed': thread['is_closed'],
+                                }}))
+
+                    # ── Thread messages ────────────────────────────────────────────
+                    elif data.get('type') == 'thread_message':
+                        t_id = data.get('thread_id', '')
+                        th_content = data.get('content', '').strip()
+                        th_nonce = data.get('nonce')
+                        thread = db.get_thread(t_id)
+                        if not thread or thread['is_closed']:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Thread not found or closed'}))
+                            continue
+                        s_id = thread['server_id']
+                        if not th_content:
+                            continue
+                        # Access check
+                        if thread['is_private']:
+                            if not db.is_thread_member(t_id, username):
+                                await websocket.send_str(json.dumps({'type': 'error', 'message': 'No access'}))
+                                continue
+                        else:
+                            if not db.is_server_member(username, s_id):
+                                await websocket.send_str(json.dumps({'type': 'error', 'message': 'Not a server member'}))
+                                continue
+
+                        admin_settings = db.get_admin_settings()
+                        max_length = admin_settings.get('max_message_length', 2000)
+                        if len(th_content) > max_length:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': f'Message too long (max {max_length})'}))
+                            continue
+
+                        user_profile = db.get_user(username)
+                        th_msg_id = db.save_message(username, th_content, 'thread', t_id)
+                        th_msg_obj = create_message_object(
+                            username=username,
+                            msg_content=th_content,
+                            context='thread',
+                            context_id=t_id,
+                            user_profile=user_profile,
+                            message_id=th_msg_id
+                        )
+                        if th_nonce:
+                            th_msg_obj['nonce'] = th_nonce
+                        th_msg_obj['thread_id'] = t_id
+
+                        thread_msg_payload = json.dumps(th_msg_obj)
+                        if thread['is_private']:
+                            for tuser in db.get_thread_members(t_id):
+                                await send_to_user(tuser, thread_msg_payload)
+                        else:
+                            await broadcast_to_server(s_id, thread_msg_payload)
+
+                    # ── Pin / Unpin ────────────────────────────────────────────────
+                    elif data.get('type') == 'pin_message':
+                        pin_msg_id = data.get('message_id')
+                        if not pin_msg_id:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'message_id required'}))
+                            continue
+                        message_row = db.get_message(pin_msg_id)
+                        if not message_row:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Message not found'}))
+                            continue
+                        # Permission: server member can pin in server; DM participant can pin in DM
+                        ctx_type = message_row['context_type']
+                        ctx_id = message_row['context_id']
+                        if ctx_type == 'server':
+                            s_id = ctx_id.split('/')[0]
+                            if not db.is_server_member(username, s_id):
+                                await websocket.send_str(json.dumps({'type': 'error', 'message': 'Not a server member'}))
+                                continue
+                        elif ctx_type == 'dm':
+                            user_dms = db.get_user_dms(username)
+                            dm_ids = [d['dm_id'] for d in user_dms]
+                            if ctx_id not in dm_ids:
+                                await websocket.send_str(json.dumps({'type': 'error', 'message': 'Not a DM participant'}))
+                                continue
+                        if db.pin_message(pin_msg_id, username):
+                            pin_payload = json.dumps({
+                                'type': 'message_pinned',
+                                'message_id': pin_msg_id,
+                                'pinned_by': username,
+                                'context_type': ctx_type,
+                                'context_id': ctx_id
+                            })
+                            if ctx_type == 'server':
+                                await broadcast_to_server(ctx_id.split('/')[0], pin_payload)
+                            elif ctx_type == 'dm':
+                                await broadcast_to_dm_participants(username, ctx_id, pin_payload)
+                            else:
+                                await websocket.send_str(pin_payload)
+
+                    elif data.get('type') == 'unpin_message':
+                        unpin_msg_id = data.get('message_id')
+                        if not unpin_msg_id:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'message_id required'}))
+                            continue
+                        message_row = db.get_message(unpin_msg_id)
+                        if not message_row:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Message not found'}))
+                            continue
+                        ctx_type = message_row['context_type']
+                        ctx_id = message_row['context_id']
+                        if ctx_type == 'server':
+                            s_id = ctx_id.split('/')[0]
+                            if not db.is_server_member(username, s_id):
+                                await websocket.send_str(json.dumps({'type': 'error', 'message': 'Not a server member'}))
+                                continue
+                        elif ctx_type == 'dm':
+                            user_dms = db.get_user_dms(username)
+                            dm_ids = [d['dm_id'] for d in user_dms]
+                            if ctx_id not in dm_ids:
+                                await websocket.send_str(json.dumps({'type': 'error', 'message': 'Not a DM participant'}))
+                                continue
+                        if db.unpin_message(unpin_msg_id):
+                            unpin_payload = json.dumps({
+                                'type': 'message_unpinned',
+                                'message_id': unpin_msg_id,
+                                'context_type': ctx_type,
+                                'context_id': ctx_id
+                            })
+                            if ctx_type == 'server':
+                                await broadcast_to_server(ctx_id.split('/')[0], unpin_payload)
+                            elif ctx_type == 'dm':
+                                await broadcast_to_dm_participants(username, ctx_id, unpin_payload)
+                            else:
+                                await websocket.send_str(unpin_payload)
+
+                    elif data.get('type') == 'get_pinned_messages':
+                        pin_ctx_type = data.get('context_type', '')
+                        pin_ctx_id = data.get('context_id', '')
+                        # Permission check
+                        can_view = False
+                        if pin_ctx_type == 'server':
+                            s_id = pin_ctx_id.split('/')[0]
+                            can_view = db.is_server_member(username, s_id)
+                        elif pin_ctx_type == 'dm':
+                            user_dms = db.get_user_dms(username)
+                            dm_ids = [d['dm_id'] for d in user_dms]
+                            can_view = pin_ctx_id in dm_ids
+                        elif pin_ctx_type == 'global':
+                            can_view = True
+                        if not can_view:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'No access'}))
+                            continue
+                        pinned = db.get_pinned_messages(pin_ctx_type, pin_ctx_id)
+                        # Enrich with attachments and reactions
+                        if pinned:
+                            p_ids = [p['id'] for p in pinned]
+                            reactions_map = db.get_reactions_for_messages(p_ids)
+                            for pm in pinned:
+                                pm['reactions'] = reactions_map.get(pm['id'], [])
+                                pm['attachments'] = db.get_message_attachments(pm['id'])
+                        await websocket.send_str(json.dumps({
+                            'type': 'pinned_messages',
+                            'context_type': pin_ctx_type,
+                            'context_id': pin_ctx_id,
+                            'messages': pinned
+                        }))
+
                     elif data.get('type') == 'edit_message':
                         message_id = data.get('message_id')
                         new_content = data.get('content', '').strip()

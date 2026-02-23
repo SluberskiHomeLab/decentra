@@ -1,12 +1,12 @@
 import { Link, Navigate, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom'
-import { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { wsClient } from './api/wsClient'
 import { clearStoredAuth, getStoredAuth, setStoredAuth } from './auth/storage'
 import { contextKey, useAppStore } from './store/appStore'
 import { useToastStore } from './store/toastStore'
 import { VoiceChat } from './lib/VoiceChat'
-import type { ChatContext } from './store/appStore'
-import type { Attachment, CustomEmoji, Reaction, Server, ServerInviteUsageLog, ServerMember, WsChatMessage, WsMessage } from './types/protocol'
+import type { ChatContext, TypingUser } from './store/appStore'
+import type { Attachment, CustomEmoji, Reaction, Server, ServerInviteUsageLog, ServerMember, Thread, WsChatMessage, WsMessage } from './types/protocol'
 import { LicensePanel } from './components/admin/LicensePanel'
 import { WebhookPanel } from './components/admin/WebhookPanel'
 import { UsersPanel } from './components/admin/UsersPanel'
@@ -1232,6 +1232,17 @@ function ChatPage() {
   const messagesByContext = useAppStore((s) => s.messagesByContext)
   const setMessagesForContext = useAppStore((s) => s.setMessagesForContext)
   const appendMessage = useAppStore((s) => s.appendMessage)
+  const pinnedByContext = useAppStore((s) => s.pinnedByContext)
+  const setPinnedMessages = useAppStore((s) => s.setPinnedMessages)
+  const addPinnedMessage = useAppStore((s) => s.addPinnedMessage)
+  const removePinnedMessage = useAppStore((s) => s.removePinnedMessage)
+  const typingUsers = useAppStore((s) => s.typingUsers)
+  const addTypingUser = useAppStore((s) => s.addTypingUser)
+  const removeTypingUser = useAppStore((s) => s.removeTypingUser)
+  const threadsByServer = useAppStore((s) => s.threadsByServer)
+  const addThread = useAppStore((s) => s.addThread)
+  const closeThreadInStore = useAppStore((s) => s.closeThread)
+  const setThreadsForServer = useAppStore((s) => s.setThreadsForServer)
 
   const themeMode = useSettingsStore((s) => s.themeMode)
   const setThemeMode = useSettingsStore((s) => s.setThemeMode)
@@ -1380,6 +1391,32 @@ function ChatPage() {
   // Reply state
   const [replyingTo, setReplyingTo] = useState<WsChatMessage | null>(null)
 
+  // Typing indicator state
+  const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const isTypingRef = useRef(false)
+
+  // Delivery state: use ref so the useEffect closure always sees fresh data
+  const pendingNoncesRef = useRef<Set<string>>(new Set())
+  const [deliveredMessageId, setDeliveredMessageId] = useState<number | null>(null)
+
+  // Pins panel state
+  const [showPinsPanel, setShowPinsPanel] = useState(false)
+
+  // Thread state
+  const [showCreateThreadModal, setShowCreateThreadModal] = useState(false)
+  const [createThreadParentMsg, setCreateThreadParentMsg] = useState<WsChatMessage | null>(null)
+  const [createThreadName, setCreateThreadName] = useState('')
+  const [createThreadPrivate, setCreateThreadPrivate] = useState(false)
+  const [createThreadInvited, setCreateThreadInvited] = useState<string[]>([])
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null)
+  const [activeThread, setActiveThread] = useState<Thread | null>(null)
+
+  // Channel mention autocomplete state
+  const [showChannelMentionAutocomplete, setShowChannelMentionAutocomplete] = useState(false)
+  const [channelMentionSearch, setChannelMentionSearch] = useState('')
+  const [channelMentionStartPos, setChannelMentionStartPos] = useState(0)
+  const [selectedChannelMentionIndex, setSelectedChannelMentionIndex] = useState(0)
+
   // Automation state
   const [scheduledMessages, setScheduledMessages] = useState<any[]>([])
   const [scheduleContent, setScheduleContent] = useState('')
@@ -1407,6 +1444,8 @@ function ChatPage() {
       loadServerEmojis(ctx.serverId)
     } else if (ctx.kind === 'dm') {
       wsClient.getDmHistory({ type: 'get_dm_history', dm_id: ctx.dmId })
+    } else if (ctx.kind === 'thread') {
+      wsClient.getThreadHistory({ type: 'get_thread_history', thread_id: ctx.threadId })
     }
   }
 
@@ -2493,6 +2532,112 @@ function ChatPage() {
         })
       }
 
+      // ── Typing indicators ────────────────────────────────────────────
+      if (msg.type === 'user_typing') {
+        const { username, context, context_id } = msg as any
+        const currentUsername = useAppStore.getState().init?.username
+        if (username === currentUsername) return
+        const ctxKey = context === 'dm' && context_id ? `dm:${context_id}` : context === 'server' && context_id ? `server:${context_id}` : 'global'
+        addTypingUser(ctxKey, {
+          username,
+          avatar: (msg as any).avatar,
+          avatar_type: (msg as any).avatar_type,
+          avatar_data: (msg as any).avatar_data,
+        } as TypingUser)
+        // Auto-remove after 7s in case stop event is missed
+        setTimeout(() => removeTypingUser(ctxKey, username), 7000)
+      }
+
+      if (msg.type === 'user_stopped_typing') {
+        const { username, context, context_id } = msg as any
+        const ctxKey = context === 'dm' && context_id ? `dm:${context_id}` : context === 'server' && context_id ? `server:${context_id}` : 'global'
+        removeTypingUser(ctxKey, username)
+      }
+
+      // ── Delivery state (nonce echo) ───────────────────────────────────
+      if (msg.type === 'message') {
+        const chatMsg = msg as WsChatMessage
+        if (chatMsg.nonce && chatMsg.id && pendingNoncesRef.current.has(chatMsg.nonce)) {
+          pendingNoncesRef.current.delete(chatMsg.nonce)
+          setDeliveredMessageId(chatMsg.id)
+        }
+      }
+
+      // ── Threads ───────────────────────────────────────────────────────
+      if (msg.type === 'thread_created') {
+        const thread: Thread = (msg as any).thread
+        addThread(thread.server_id, thread)
+        // Re-fetch threads list so channel_id is populated
+        if (thread.server_id && wsClient.readyState === WebSocket.OPEN) {
+          wsClient.listThreads({ type: 'list_threads', server_id: thread.server_id })
+        }
+        pushToast({ kind: 'success', message: `Thread created: ${thread.name}` })
+      }
+
+      if (msg.type === 'thread_closed') {
+        const { thread_id, server_id } = msg as any
+        closeThreadInStore(server_id, thread_id)
+        pushToast({ kind: 'info', message: 'Thread closed' })
+        // If currently viewing the closed thread, go back to server channel
+        const currentCtx = useAppStore.getState().selectedContext
+        if (currentCtx.kind === 'thread' && currentCtx.threadId === thread_id) {
+          const server = useAppStore.getState().init?.servers?.find((s) => s.id === server_id)
+          const firstChannel = server?.channels?.[0]
+          if (firstChannel) {
+            selectContext({ kind: 'server', serverId: server_id, channelId: firstChannel.id })
+          }
+        }
+        if (activeThreadId === thread_id) {
+          setActiveThreadId(null)
+          setActiveThread(null)
+        }
+      }
+
+      if (msg.type === 'thread_history') {
+        const { thread_id, thread, messages: threadMessages } = msg as any
+        setActiveThread(thread as Thread)
+        const ctxKey = `thread:${thread.server_id}/${thread_id}`
+        useAppStore.setState((state) => ({
+          messagesByContext: { ...state.messagesByContext, [ctxKey]: threadMessages }
+        }))
+      }
+
+      if (msg.type === 'threads_list') {
+        const { server_id, threads } = msg as any
+        setThreadsForServer(server_id, threads as Thread[])
+      }
+
+      // Thread messages arrive as type 'message' with context='thread', handled by appendMessage
+
+      // ── Pinned messages ───────────────────────────────────────────────
+      if (msg.type === 'pinned_messages') {
+        const { context_type, context_id, messages: pinned } = msg as any
+        const ctxKey = context_type === 'dm' && context_id ? `dm:${context_id}` : context_type === 'server' && context_id ? `server:${context_id}` : 'global'
+        setPinnedMessages(ctxKey, pinned)
+      }
+
+      if (msg.type === 'message_pinned') {
+        const { message_id, pinned_by, context_type, context_id } = msg as any
+        const ctxKey = context_type === 'dm' && context_id ? `dm:${context_id}` : context_type === 'server' && context_id ? `server:${context_id}` : 'global'
+        addPinnedMessage(ctxKey, message_id, pinned_by, new Date().toISOString())
+        pushToast({ kind: 'success', message: `📌 Message pinned` })
+        // Refresh pinned panel if it's open
+        if (context_type && context_id) {
+          wsClient.getPinnedMessages({ type: 'get_pinned_messages', context_type, context_id })
+        }
+      }
+
+      if (msg.type === 'message_unpinned') {
+        const { message_id, context_type, context_id } = msg as any
+        const ctxKey = context_type === 'dm' && context_id ? `dm:${context_id}` : context_type === 'server' && context_id ? `server:${context_id}` : 'global'
+        removePinnedMessage(ctxKey, message_id)
+        pushToast({ kind: 'info', message: '📌 Message unpinned' })
+        // Refresh pinned panel if it's open
+        if (context_type && context_id) {
+          wsClient.getPinnedMessages({ type: 'get_pinned_messages', context_type, context_id })
+        }
+      }
+
       // Voice/Video chat handlers
       if (msg.type === 'voice_channel_joined' && voiceChat) {
         voiceChat.handleVoiceJoined(msg.participants)
@@ -2682,6 +2827,13 @@ function ChatPage() {
     console.log('serverEmojis updated:', Object.keys(serverEmojis).map(key => ({ [key]: serverEmojis[key]?.length || 0 })))
   }, [serverEmojis])
 
+  // Load threads when the selected server changes
+  useEffect(() => {
+    if (selectedServerId && wsClient.readyState === WebSocket.OPEN) {
+      wsClient.listThreads({ type: 'list_threads', server_id: selectedServerId })
+    }
+  }, [selectedServerId])
+
   // Load server roles when server settings modal is opened
   useEffect(() => {
     if (isServerSettingsOpen && selectedServerId && wsClient.readyState === WebSocket.OPEN) {
@@ -2777,11 +2929,13 @@ function ChatPage() {
       ? 'Global'
       : selectedContext.kind === 'dm'
         ? selectedContext.username
-        : (() => {
-            const server = init?.servers?.find((s) => s.id === selectedContext.serverId)
-            const channel = server?.channels?.find((c) => c.id === selectedContext.channelId)
-            return server && channel ? `${server.name} / ${channel.name}` : 'Channel'
-          })()
+        : selectedContext.kind === 'thread'
+          ? `🧵 ${selectedContext.threadName || activeThread?.name || selectedContext.threadId}`
+          : (() => {
+              const server = init?.servers?.find((s) => s.id === selectedContext.serverId)
+              const channel = server?.channels?.find((c) => c.id === selectedContext.channelId)
+              return server && channel ? `${server.name} / ${channel.name}` : 'Channel'
+            })()
 
   const canSend = wsClient.readyState === WebSocket.OPEN && (draft.trim().length > 0 || selectedFiles.length > 0)
 
@@ -2795,18 +2949,36 @@ function ChatPage() {
     // Get reply_to ID if replying
     const reply_to = replyingTo?.id || undefined
 
+    // Stop typing indicator
+    if (isTypingRef.current) {
+      isTypingRef.current = false
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current)
+      let context = 'global'
+      let context_id: string | null = null
+      if (selectedContext.kind === 'server') { context = 'server'; context_id = `${selectedContext.serverId}/${selectedContext.channelId}` }
+      else if (selectedContext.kind === 'dm') { context = 'dm'; context_id = selectedContext.dmId }
+      try { wsClient.sendTypingStop({ type: 'typing_stop', context, context_id }) } catch { /* ignore */ }
+    }
+
+    // Generate nonce for delivery tracking
+    const nonce = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`
+
     // If there are files, send message first, then upload files
     if (selectedFiles.length > 0) {
       await sendMessageWithFiles(content || '', mentions, reply_to)
     } else {
       // Just send text message
-      if (selectedContext.kind === 'server') {
-        wsClient.sendMessage({ type: 'message', content, context: 'server', context_id: `${selectedContext.serverId}/${selectedContext.channelId}`, mentions, reply_to })
+      if (selectedContext.kind === 'thread') {
+        // Send as thread message
+        wsClient.sendThreadMessage({ type: 'thread_message', thread_id: selectedContext.threadId, content, nonce })
+      } else if (selectedContext.kind === 'server') {
+        wsClient.sendMessage({ type: 'message', content, context: 'server', context_id: `${selectedContext.serverId}/${selectedContext.channelId}`, mentions, reply_to, nonce })
       } else if (selectedContext.kind === 'dm') {
-        wsClient.sendMessage({ type: 'message', content, context: 'dm', context_id: selectedContext.dmId, mentions, reply_to })
+        wsClient.sendMessage({ type: 'message', content, context: 'dm', context_id: selectedContext.dmId, mentions, reply_to, nonce })
       } else {
-        wsClient.sendMessage({ type: 'message', content, context: 'global', context_id: null, mentions, reply_to })
+        wsClient.sendMessage({ type: 'message', content, context: 'global', context_id: null, mentions, reply_to, nonce })
       }
+      pendingNoncesRef.current.add(nonce)
       setDraft('')
       setReplyingTo(null)
     }
@@ -3347,6 +3519,52 @@ function ChatPage() {
 
   const handleDraftChange = (newDraft: string) => {
     setDraft(newDraft)
+
+    // ── Typing indicator ──────────────────────────────────────────────
+    if (wsClient.readyState === WebSocket.OPEN) {
+      let context = 'global'
+      let context_id: string | null = null
+      if (selectedContext.kind === 'server') {
+        context = 'server'
+        context_id = `${selectedContext.serverId}/${selectedContext.channelId}`
+      } else if (selectedContext.kind === 'dm') {
+        context = 'dm'
+        context_id = selectedContext.dmId
+      }
+
+      if (newDraft.trim()) {
+        if (!isTypingRef.current) {
+          isTypingRef.current = true
+          try { wsClient.sendTypingStart({ type: 'typing_start', context, context_id }) } catch { /* ignore */ }
+        }
+        // Reset the stop timer
+        if (typingTimerRef.current) clearTimeout(typingTimerRef.current)
+        typingTimerRef.current = setTimeout(() => {
+          isTypingRef.current = false
+          try { wsClient.sendTypingStop({ type: 'typing_stop', context, context_id }) } catch { /* ignore */ }
+        }, 4000)
+      } else {
+        if (isTypingRef.current) {
+          isTypingRef.current = false
+          if (typingTimerRef.current) clearTimeout(typingTimerRef.current)
+          try { wsClient.sendTypingStop({ type: 'typing_stop', context, context_id }) } catch { /* ignore */ }
+        }
+      }
+    }
+
+    // ── Channel mention autocomplete ('#') ────────────────────────────
+    const cursorPos = newDraft.length
+    const textBeforeCursor = newDraft.slice(0, cursorPos)
+    const hashMatch = textBeforeCursor.match(/#([\w-]*)$/)
+    if (hashMatch && selectedContext.kind === 'server') {
+      setShowChannelMentionAutocomplete(true)
+      setChannelMentionSearch(hashMatch[1])
+      setChannelMentionStartPos(hashMatch.index!)
+      setSelectedChannelMentionIndex(0)
+    } else {
+      setShowChannelMentionAutocomplete(false)
+      setChannelMentionSearch('')
+    }
   }
 
   const insertMention = (username: string) => {
@@ -3355,6 +3573,23 @@ function ChatPage() {
     setDraft(`${before}@${username} ${after}`)
     setShowMentionAutocomplete(false)
     setMentionSearch('')
+  }
+
+  const insertChannelMention = (channelName: string, channelId: string) => {
+    const before = draft.slice(0, channelMentionStartPos)
+    const after = draft.slice(channelMentionStartPos + channelMentionSearch.length + 1)
+    setDraft(`${before}#[${channelName}|${channelId}] ${after}`)
+    setShowChannelMentionAutocomplete(false)
+    setChannelMentionSearch('')
+  }
+
+  const getFilteredChannelMentions = () => {
+    if (selectedContext.kind !== 'server') return []
+    const server = init?.servers?.find((s) => s.id === selectedContext.serverId)
+    if (!server?.channels) return []
+    const textChannels = server.channels.filter((ch) => (ch.type ?? 'text') === 'text')
+    if (!channelMentionSearch) return textChannels.slice(0, 10)
+    return textChannels.filter((ch) => ch.name.toLowerCase().includes(channelMentionSearch.toLowerCase())).slice(0, 10)
   }
 
   const getFilteredMentionUsers = () => {
@@ -3394,10 +3629,35 @@ function ChatPage() {
 
     // Helper function to process mentions and custom emojis within text
     const processTextWithEmojisAndMentions = (text: string, keyPrefix: string): React.ReactNode[] => {
-      const parts = text.split(/(@\w+|:\w+:)/g)
+      const parts = text.split(/(@\w+|:\w+:|#\[[^\|\]]+\|[^\]]+\])/g)
       console.log('🔍 processTextWithEmojisAndMentions:', { text: text.substring(0, 50), partsCount: parts.length, parts: parts.slice(0, 10), availableEmojiCount: availableEmojis.length })
       return parts.map((part, index) => {
         const key = `${keyPrefix}-${index}`
+
+        // Handle channel mentions: #[channelName|channelId]
+        const channelMentionMatch = part.match(/^#\[([^\|\]]+)\|([^\]]+)\]$/)
+        if (channelMentionMatch) {
+          const [, chName, chId] = channelMentionMatch
+          // Find what server this channel belongs to
+          const server = init?.servers?.find((s) => s.channels?.some((ch) => ch.id === chId))
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => {
+                if (server) {
+                  const ctx: ChatContext = { kind: 'server', serverId: server.id, channelId: chId }
+                  selectContext(ctx)
+                  requestHistoryFor(ctx)
+                }
+              }}
+              className="inline-flex items-center gap-0.5 bg-sky-500/20 text-sky-300 hover:bg-sky-500/30 hover:text-sky-200 px-1.5 py-0.5 rounded font-medium text-sm transition cursor-pointer"
+              title={`Go to #${chName}`}
+            >
+              #{chName}
+            </button>
+          )
+        }
         
         // Handle mentions
         if (part.match(/^@\w+$/)) {
@@ -3536,6 +3796,34 @@ function ChatPage() {
   }
 
   const handleMentionKeyDown = (e: React.KeyboardEvent) => {
+    // Handle channel mention autocomplete first
+    if (showChannelMentionAutocomplete) {
+      const filteredChannels = getFilteredChannelMentions()
+      if (filteredChannels.length > 0) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault()
+          setSelectedChannelMentionIndex((prev) => prev < filteredChannels.length - 1 ? prev + 1 : 0)
+          return true
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault()
+          setSelectedChannelMentionIndex((prev) => prev > 0 ? prev - 1 : filteredChannels.length - 1)
+          return true
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          e.preventDefault()
+          const ch = filteredChannels[selectedChannelMentionIndex]
+          insertChannelMention(ch.name, ch.id)
+          return true
+        }
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setShowChannelMentionAutocomplete(false)
+        return true
+      }
+    }
+
     if (!showMentionAutocomplete) return false
     
     const filteredUsers = getFilteredMentionUsers()
@@ -4193,8 +4481,8 @@ function ChatPage() {
                             const hasMention = channelUnread?.has_mention ?? false
                             
                             return (
+                              <React.Fragment key={ch.id}>
                               <button
-                                key={ch.id}
                                 type="button"
                                 onClick={() => {
                                   const next: ChatContext = { kind: 'server', serverId: selectedServerId, channelId: ch.id }
@@ -4232,6 +4520,37 @@ function ChatPage() {
                                       : 'font-medium'
                                 }`}>{ch.name}</span>
                               </button>
+                              {/* Thread sub-channels below this channel */}
+                              {(threadsByServer[selectedServerId!] ?? [])
+                                .filter(t => t.channel_id === ch.id)
+                                .map(thread => {
+                                  const isThreadSelected = selectedContext.kind === 'thread' && selectedContext.threadId === thread.thread_id
+                                  return (
+                                    <button
+                                      key={thread.thread_id}
+                                      type="button"
+                                      onClick={() => {
+                                        const next: ChatContext = {
+                                          kind: 'thread',
+                                          serverId: selectedServerId!,
+                                          channelId: ch.id,
+                                          threadId: thread.thread_id,
+                                          threadName: thread.name,
+                                        }
+                                        selectContext(next)
+                                        requestHistoryFor(next)
+                                      }}
+                                      className={`flex w-full items-center gap-1.5 rounded-lg pl-5 pr-2 py-1 text-left transition ${
+                                        isThreadSelected ? 'bg-sky-500/10 text-sky-200' : 'text-text-muted hover:bg-white/5 hover:text-text-secondary'
+                                      }`}
+                                    >
+                                      <span className="text-xs shrink-0 opacity-40">└</span>
+                                      <span className="text-xs font-medium truncate">{thread.name}</span>
+                                      {thread.is_private && <span className="text-[10px] shrink-0 opacity-50">🔒</span>}
+                                    </button>
+                                  )
+                                })}
+                              </React.Fragment>
                             )
                           })}
                         </div>
@@ -4261,8 +4580,8 @@ function ChatPage() {
                           const hasMention = channelUnread?.has_mention ?? false
                           
                           return (
+                            <React.Fragment key={ch.id}>
                             <button
-                              key={ch.id}
                               type="button"
                               onClick={() => {
                                 const next: ChatContext = { kind: 'server', serverId: selectedServerId, channelId: ch.id }
@@ -4299,6 +4618,37 @@ function ChatPage() {
                                     : 'font-medium'
                               }`}>{ch.name}</span>
                             </button>
+                            {/* Thread sub-channels below this channel */}
+                            {(threadsByServer[selectedServerId!] ?? [])
+                              .filter(t => t.channel_id === ch.id)
+                              .map(thread => {
+                                const isThreadSelected = selectedContext.kind === 'thread' && selectedContext.threadId === thread.thread_id
+                                return (
+                                  <button
+                                    key={thread.thread_id}
+                                    type="button"
+                                    onClick={() => {
+                                      const next: ChatContext = {
+                                        kind: 'thread',
+                                        serverId: selectedServerId!,
+                                        channelId: ch.id,
+                                        threadId: thread.thread_id,
+                                        threadName: thread.name,
+                                      }
+                                      selectContext(next)
+                                      requestHistoryFor(next)
+                                    }}
+                                    className={`flex w-full items-center gap-1.5 rounded-lg pl-5 pr-2 py-1 text-left transition ${
+                                      isThreadSelected ? 'bg-sky-500/10 text-sky-200' : 'text-text-muted hover:bg-white/5 hover:text-text-secondary'
+                                    }`}
+                                  >
+                                    <span className="text-xs shrink-0 opacity-40">└</span>
+                                    <span className="text-xs font-medium truncate">{thread.name}</span>
+                                    {thread.is_private && <span className="text-[10px] shrink-0 opacity-50">🔒</span>}
+                                  </button>
+                                )
+                              })}
+                            </React.Fragment>
                           )
                         })}
                       </div>
@@ -4335,7 +4685,39 @@ function ChatPage() {
                 </div>
               </div>
               <div className="flex items-center gap-3">
-                {selectedServerId && !isVoiceChannel && (
+                {/* Thread navigation */}
+                {selectedContext.kind === 'thread' && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Go back to the parent server channel
+                        const thread = activeThread ?? threadsByServer[selectedContext.serverId]?.find((t) => t.thread_id === selectedContext.threadId)
+                        const server = init?.servers?.find((s) => s.id === selectedContext.serverId)
+                        const firstCh = server?.channels?.find((ch) => (ch.type ?? 'text') === 'text')
+                        if (firstCh) {
+                          const ctx: ChatContext = { kind: 'server', serverId: selectedContext.serverId, channelId: firstCh.id }
+                          selectContext(ctx)
+                          requestHistoryFor(ctx)
+                        }
+                        void thread
+                      }}
+                      className="rounded-xl border border-border-primary bg-bg-primary/30 px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-secondary/50 transition"
+                    >
+                      ← Back
+                    </button>
+                    {(activeThread?.created_by === init?.username || init?.is_admin) && !activeThread?.is_closed && (
+                      <button
+                        type="button"
+                        onClick={() => wsClient.closeThread({ type: 'close_thread', thread_id: selectedContext.threadId })}
+                        className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-300 hover:bg-rose-500/20 transition"
+                      >
+                        Close Thread
+                      </button>
+                    )}
+                  </>
+                )}
+                {selectedServerId && !isVoiceChannel && selectedContext.kind !== 'thread' && (
                   <button
                     type="button"
                     onClick={() => setIsMembersSidebarOpen(!isMembersSidebarOpen)}
@@ -4343,6 +4725,26 @@ function ChatPage() {
                     title={isMembersSidebarOpen ? 'Hide Members' : 'Show Members'}
                   >
                     {isMembersSidebarOpen ? '👥 Hide' : '👥 Show'}
+                  </button>
+                )}
+                {(selectedContext.kind === 'server' || selectedContext.kind === 'dm') && !isVoiceChannel && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowPinsPanel((prev) => !prev)
+                      if (!showPinsPanel) {
+                        // Load pinned messages for current context
+                        const ctxType = selectedContext.kind === 'dm' ? 'dm' : 'server'
+                        const ctxId = selectedContext.kind === 'dm'
+                          ? selectedContext.dmId
+                          : `${selectedContext.serverId}/${selectedContext.channelId}`
+                        wsClient.getPinnedMessages({ type: 'get_pinned_messages', context_type: ctxType, context_id: ctxId })
+                      }
+                    }}
+                    className={`rounded-xl border border-border-primary px-3 py-1.5 text-xs transition ${showPinsPanel ? 'bg-yellow-500/20 border-yellow-500/40 text-yellow-300' : 'bg-bg-primary/30 text-text-secondary hover:bg-bg-secondary/50'}`}
+                    title="Pinned messages"
+                  >
+                    📌 Pins
                   </button>
                 )}
                 <div className="rounded-xl border border-border-primary bg-bg-primary/30 px-2 py-1 text-[11px] text-text-secondary">
@@ -4614,6 +5016,41 @@ function ChatPage() {
                                       🗑️
                                     </button>
                                   )}
+                                  {/* Pin/Unpin button */}
+                                  {(selectedContext.kind === 'server' || selectedContext.kind === 'dm') && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (!m.id) return
+                                        if (m.pinned) {
+                                          wsClient.unpinMessage({ type: 'unpin_message', message_id: m.id })
+                                        } else {
+                                          wsClient.pinMessage({ type: 'pin_message', message_id: m.id })
+                                        }
+                                      }}
+                                      className={`text-xs px-1.5 py-0.5 rounded ${m.pinned ? 'text-yellow-400 hover:text-yellow-300' : 'text-text-muted hover:text-yellow-400'}`}
+                                      title={m.pinned ? 'Unpin message' : 'Pin message'}
+                                    >
+                                      📌
+                                    </button>
+                                  )}
+                                  {/* Start Thread button - only in server text channels */}
+                                  {selectedContext.kind === 'server' && m.id && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setCreateThreadParentMsg(m)
+                                        setCreateThreadName('')
+                                        setCreateThreadPrivate(false)
+                                        setCreateThreadInvited([])
+                                        setShowCreateThreadModal(true)
+                                      }}
+                                      className="text-text-muted hover:text-emerald-400 text-xs px-1.5 py-0.5 rounded"
+                                      title="Start thread"
+                                    >
+                                      🧵
+                                    </button>
+                                  )}
                                 </>
                               )}
                             </div>
@@ -4682,6 +5119,17 @@ function ChatPage() {
                                   <div className="mt-1 whitespace-pre-wrap text-sm text-text-secondary">{linkifyText(m.content, (content) => renderMessageContent(content, m.context, m.context_id))}</div>
                                   <MessageEmbeds content={m.content} />
                                 </>
+                              )}
+                              {/* Delivery state indicator */}
+                              {m.id === deliveredMessageId && m.username === init?.username && (
+                                <div className="mt-0.5 text-[10px] text-text-muted text-right">✓ Delivered</div>
+                              )}
+                              {/* Pinned indicator */}
+                              {m.pinned && (
+                                <div className="mt-0.5 text-[10px] text-yellow-400/70 flex items-center gap-1">
+                                  <span>📌</span>
+                                  <span>Pinned by {m.pinned_by}</span>
+                                </div>
                               )}
                             </>
                           )}
@@ -4832,6 +5280,65 @@ function ChatPage() {
                   )}
                 </div>
               )}
+
+              {/* Channel mention autocomplete (#) */}
+              {showChannelMentionAutocomplete && selectedContext.kind === 'server' && (
+                <div className="mb-2 rounded-xl border border-border-primary bg-bg-secondary p-2 shadow-xl max-h-48 overflow-y-auto">
+                  <div className="text-xs font-semibold text-text-muted mb-1 px-2">Jump to Channel</div>
+                  {getFilteredChannelMentions().length > 0 ? (
+                    getFilteredChannelMentions().map((channel, index) => (
+                      <button
+                        key={channel.id}
+                        type="button"
+                        onClick={() => insertChannelMention(channel.name, channel.id)}
+                        className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition ${
+                          index === selectedChannelMentionIndex ? 'bg-sky-500/20' : 'hover:bg-white/5'
+                        }`}
+                      >
+                        <span className="text-sky-400 font-medium">#</span>
+                        <span className="text-sm text-text-secondary">{channel.name}</span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="text-xs text-text-muted px-2 py-1">No matching channels</div>
+                  )}
+                </div>
+              )}
+
+              {/* Typing indicator */}
+              {(() => {
+                const ctxTypers = typingUsers[selectedKey] ?? []
+                if (ctxTypers.length === 0) return null
+                const names = ctxTypers.map((u) => u.username)
+                const label = names.length === 1
+                  ? `${names[0]} is typing…`
+                  : names.length === 2
+                    ? `${names[0]} and ${names[1]} are typing…`
+                    : `${names.slice(0, 2).join(', ')} and ${names.length - 2} others are typing…`
+                return (
+                  <div className="mb-1 flex items-center gap-2 px-1">
+                    {ctxTypers.slice(0, 3).map((u) => (
+                      <AvatarWithStatus
+                        key={u.username}
+                        avatar={u.avatar}
+                        avatar_type={u.avatar_type}
+                        avatar_data={u.avatar_data}
+                        size="sm"
+                      />
+                    ))}
+                    <span className="text-xs text-text-muted italic">{label}</span>
+                    <span className="flex gap-0.5">
+                      {[0, 1, 2].map((i) => (
+                        <span
+                          key={i}
+                          className="inline-block w-1 h-1 rounded-full bg-text-muted animate-bounce"
+                          style={{ animationDelay: `${i * 0.15}s` }}
+                        />
+                      ))}
+                    </span>
+                  </div>
+                )
+              })()}
               
               {/* Replying to indicator */}
               {replyingTo && (
@@ -5021,6 +5528,158 @@ function ChatPage() {
               </div>
             </div>
           </aside>
+        )}
+
+        {/* Pinned Messages Panel */}
+        {showPinsPanel && (selectedContext.kind === 'server' || selectedContext.kind === 'dm') && (
+          <aside className="w-[300px] shrink-0 border-l border-border-primary bg-bg-secondary/30 flex flex-col">
+            <div className="flex items-center justify-between border-b border-border-primary px-4 py-3">
+              <div className="text-sm font-semibold text-white">📌 Pinned Messages</div>
+              <button
+                type="button"
+                onClick={() => setShowPinsPanel(false)}
+                className="text-text-muted hover:text-white text-lg leading-none"
+              >
+                ×
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-3 space-y-2">
+              {(pinnedByContext[selectedKey] ?? []).length === 0 ? (
+                <div className="text-sm text-text-muted text-center py-8">No pinned messages</div>
+              ) : (
+                (pinnedByContext[selectedKey] ?? []).map((pm) => (
+                  <div
+                    key={pm.id}
+                    className="rounded-xl border border-border-primary bg-bg-primary/30 p-3 text-sm hover:bg-bg-secondary/40 transition cursor-pointer"
+                    onClick={() => {
+                      // Jump to the message
+                      if (pm.id) {
+                        const el = document.getElementById(`message-${pm.id}`)
+                        if (el) {
+                          el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                          el.classList.add('bg-yellow-500/10')
+                          setTimeout(() => el.classList.remove('bg-yellow-500/10'), 2000)
+                        }
+                      }
+                    }}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-semibold text-white text-xs">{pm.username}</span>
+                      <span className="text-text-muted text-xs">{new Date(pm.timestamp).toLocaleDateString()}</span>
+                      <button
+                        type="button"
+                        className="ml-auto text-text-muted hover:text-rose-400 text-xs"
+                        title="Unpin"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (pm.id) wsClient.unpinMessage({ type: 'unpin_message', message_id: pm.id })
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <div className="text-text-secondary text-xs line-clamp-3">{pm.content}</div>
+                    {pm.pinned_by && (
+                      <div className="text-text-muted text-[10px] mt-1">Pinned by {pm.pinned_by}</div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </aside>
+        )}
+
+        {/* Thread Creation Modal */}
+        {showCreateThreadModal && (
+          <div
+            className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60"
+            onClick={(e) => e.target === e.currentTarget && setShowCreateThreadModal(false)}
+          >
+            <div className="w-full max-w-md rounded-2xl border border-border-primary bg-bg-secondary p-6 shadow-2xl">
+              <div className="flex items-center justify-between mb-4">
+                <div className="text-lg font-semibold text-white">🧵 Create Thread</div>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateThreadModal(false)}
+                  className="text-text-muted hover:text-white text-xl"
+                >
+                  ×
+                </button>
+              </div>
+              {createThreadParentMsg && (
+                <div className="mb-3 rounded-lg border border-border-primary bg-bg-primary/30 p-2 text-xs text-text-muted">
+                  <span className="font-semibold text-text-secondary">{createThreadParentMsg.username}:</span>{' '}
+                  <span className="line-clamp-2">{createThreadParentMsg.content}</span>
+                </div>
+              )}
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs font-medium text-text-muted block mb-1">Thread Name</label>
+                  <input
+                    type="text"
+                    value={createThreadName}
+                    onChange={(e) => setCreateThreadName(e.target.value)}
+                    placeholder="Thread name..."
+                    className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    autoFocus
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="thread-private"
+                    checked={createThreadPrivate}
+                    onChange={(e) => setCreateThreadPrivate(e.target.checked)}
+                    className="rounded"
+                  />
+                  <label htmlFor="thread-private" className="text-sm text-text-secondary cursor-pointer">
+                    Private thread (invite-only)
+                  </label>
+                </div>
+                {createThreadPrivate && (
+                  <div>
+                    <label className="text-xs font-medium text-text-muted block mb-1">Invite Users (comma-separated)</label>
+                    <input
+                      type="text"
+                      placeholder="username1, username2..."
+                      onChange={(e) => setCreateThreadInvited(e.target.value.split(',').map((u) => u.trim()).filter(Boolean))}
+                      className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    />
+                  </div>
+                )}
+                <div className="flex gap-2 mt-4">
+                  <button
+                    type="button"
+                    disabled={!createThreadName.trim() || selectedContext.kind !== 'server'}
+                    onClick={() => {
+                      if (selectedContext.kind !== 'server' || !createThreadName.trim()) return
+                      wsClient.createThread({
+                        type: 'create_thread',
+                        server_id: selectedContext.serverId,
+                        parent_message_id: createThreadParentMsg?.id ?? null,
+                        name: createThreadName.trim(),
+                        is_private: createThreadPrivate,
+                        invited_users: createThreadPrivate ? createThreadInvited : [],
+                      })
+                      setShowCreateThreadModal(false)
+                      setCreateThreadName('')
+                      setCreateThreadParentMsg(null)
+                    }}
+                    className="flex-1 rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Create Thread
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowCreateThreadModal(false)}
+                    className="rounded-xl bg-bg-tertiary px-4 py-2 text-sm text-text-secondary hover:bg-bg-tertiary/60"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* User menu modal - centered overlay */}

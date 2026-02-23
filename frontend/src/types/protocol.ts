@@ -144,14 +144,19 @@ export type WsChatMessage = {
   content: string
   timestamp: string
   edited_at?: string | null
-  context?: 'global' | 'server' | 'dm' | string
+  context?: 'global' | 'server' | 'dm' | 'thread' | string
   context_id?: string | null
   messageKey?: string
+  nonce?: string
   reactions?: Reaction[]
   attachments?: Attachment[]
   mentions?: string[]
   user_status?: 'online' | 'away' | 'busy' | 'offline'
   role_color?: string
+  pinned?: boolean
+  pinned_by?: string | null
+  pinned_at?: string | null
+  thread_id?: string
   reply_data?: {
     id: number
     username: string
@@ -419,6 +424,146 @@ export type WsMentionNotification = {
   context_id?: string | null
 }
 
+// ── Typing indicators ────────────────────────────────────
+
+export type WsUserTyping = {
+  type: 'user_typing'
+  username: string
+  context: string
+  context_id: string | null
+  avatar?: string
+  avatar_type?: string
+  avatar_data?: string | null
+}
+
+export type WsUserStoppedTyping = {
+  type: 'user_stopped_typing'
+  username: string
+  context: string
+  context_id: string | null
+}
+
+// ── Threads ───────────────────────────────────────────────
+
+export type Thread = {
+  thread_id: string
+  server_id: string
+  channel_id?: string | null
+  parent_message_id?: number | null
+  name: string
+  is_private: boolean
+  created_by: string
+  is_closed: boolean
+  created_at?: string
+}
+
+export type WsThreadCreated = {
+  type: 'thread_created'
+  thread: Thread
+}
+
+export type WsThreadClosed = {
+  type: 'thread_closed'
+  thread_id: string
+  server_id: string
+}
+
+export type WsThreadHistory = {
+  type: 'thread_history'
+  thread_id: string
+  thread: Thread
+  messages: WsChatMessage[]
+}
+
+export type WsThreadsList = {
+  type: 'threads_list'
+  server_id: string
+  threads: Thread[]
+}
+
+export type WsOutboundCreateThread = {
+  type: 'create_thread'
+  server_id: string
+  parent_message_id?: number | null
+  name: string
+  is_private?: boolean
+  invited_users?: string[]
+}
+
+export type WsOutboundCloseThread = {
+  type: 'close_thread'
+  thread_id: string
+}
+
+export type WsOutboundGetThreadHistory = {
+  type: 'get_thread_history'
+  thread_id: string
+}
+
+export type WsOutboundListThreads = {
+  type: 'list_threads'
+  server_id: string
+}
+
+export type WsOutboundSendThreadMessage = {
+  type: 'thread_message'
+  thread_id: string
+  content: string
+  nonce?: string
+}
+
+// ── Pinned messages ───────────────────────────────────────
+
+export type WsMessagePinned = {
+  type: 'message_pinned'
+  message_id: number
+  pinned_by: string
+  context_type: string
+  context_id: string | null
+}
+
+export type WsMessageUnpinned = {
+  type: 'message_unpinned'
+  message_id: number
+  context_type: string
+  context_id: string | null
+}
+
+export type WsPinnedMessages = {
+  type: 'pinned_messages'
+  context_type: string
+  context_id: string | null
+  messages: WsChatMessage[]
+}
+
+export type WsOutboundPinMessage = {
+  type: 'pin_message'
+  message_id: number
+}
+
+export type WsOutboundUnpinMessage = {
+  type: 'unpin_message'
+  message_id: number
+}
+
+export type WsOutboundGetPinnedMessages = {
+  type: 'get_pinned_messages'
+  context_type: string
+  context_id: string | null
+}
+
+export type WsOutboundTypingStart = {
+  type: 'typing_start'
+  context: string
+  context_id: string | null
+}
+
+export type WsOutboundTypingStop = {
+  type: 'typing_stop'
+  context: string
+  context_id: string | null
+}
+
 export type WsMessage =
   | WsAuthSuccess
   | WsAuthError
@@ -480,6 +625,15 @@ export type WsMessage =
   | WsWebRTCIceCandidate
   | WsUserStatusChanged
   | WsMentionNotification
+  | WsUserTyping
+  | WsUserStoppedTyping
+  | WsThreadCreated
+  | WsThreadClosed
+  | WsThreadHistory
+  | WsThreadsList
+  | WsMessagePinned
+  | WsMessageUnpinned
+  | WsPinnedMessages
   | { type: string; [k: string]: any }
 
 export type WsOutboundLogin = {
@@ -536,6 +690,7 @@ export type WsOutboundSendMessage = {
   mentions?: string[]
   messageKey?: string
   reply_to?: number
+  nonce?: string
 }
 
 export type WsOutboundCreateServer = {

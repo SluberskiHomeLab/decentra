@@ -678,6 +678,31 @@ class Database:
                             END IF;
                         END $$;
                     ''')
+
+                    # Add pin columns to messages if they don't exist (migration)
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'messages' AND column_name = 'pinned'
+                            ) THEN
+                                ALTER TABLE messages ADD COLUMN pinned BOOLEAN DEFAULT FALSE;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'messages' AND column_name = 'pinned_by'
+                            ) THEN
+                                ALTER TABLE messages ADD COLUMN pinned_by VARCHAR(255);
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'messages' AND column_name = 'pinned_at'
+                            ) THEN
+                                ALTER TABLE messages ADD COLUMN pinned_at TIMESTAMP;
+                            END IF;
+                        END $$;
+                    ''')
                     
                     # Add message permission columns to server_members if they don't exist (migration)
                     cursor.execute('''
@@ -1098,6 +1123,46 @@ class Database:
                         ON poll_votes(poll_id)
                     ''')
                     
+                    # Threads table (temporary sub-channels anchored to a parent message)
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS threads (
+                            thread_id VARCHAR(255) PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            parent_message_id INTEGER,
+                            name VARCHAR(255) NOT NULL,
+                            is_private BOOLEAN DEFAULT FALSE,
+                            created_by VARCHAR(255) NOT NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            is_closed BOOLEAN DEFAULT FALSE,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (parent_message_id) REFERENCES messages(id) ON DELETE SET NULL,
+                            FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_threads_server
+                        ON threads(server_id, is_closed)
+                    ''')
+
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_threads_parent_message
+                        ON threads(parent_message_id)
+                    ''')
+
+                    # Thread members table (for private threads)
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS thread_members (
+                            thread_id VARCHAR(255) NOT NULL,
+                            username VARCHAR(255) NOT NULL,
+                            added_by VARCHAR(255),
+                            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            PRIMARY KEY (thread_id, username),
+                            FOREIGN KEY (thread_id) REFERENCES threads(thread_id) ON DELETE CASCADE,
+                            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+
                     # Welcome messages table (automation per server)
                     cursor.execute('''
                         CREATE TABLE IF NOT EXISTS welcome_messages (
@@ -3999,3 +4064,158 @@ class Database:
         except Exception as e:
             print(f"Error clearing license: {e}")
             return False
+
+    # ── Thread operations ─────────────────────────────────────────────────────
+
+    def create_thread(self, thread_id: str, server_id: str, parent_message_id: Optional[int],
+                      name: str, is_private: bool, created_by: str) -> bool:
+        """Create a new thread anchored to a parent message."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO threads (thread_id, server_id, parent_message_id, name, is_private, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                ''', (thread_id, server_id, parent_message_id, name, is_private, created_by))
+                return True
+        except Exception as e:
+            print(f"Error creating thread: {e}")
+            return False
+
+    def get_thread(self, thread_id: str) -> Optional[Dict]:
+        """Get a thread by ID."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM threads WHERE thread_id = %s', (thread_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_threads_for_channel(self, server_id: str, parent_message_ids: List[int]) -> List[Dict]:
+        """Get all open threads whose parent message is in the given list."""
+        if not parent_message_ids:
+            return []
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            placeholders = ','.join(['%s'] * len(parent_message_ids))
+            cursor.execute(f'''
+                SELECT * FROM threads
+                WHERE server_id = %s AND parent_message_id IN ({placeholders}) AND is_closed = FALSE
+            ''', [server_id] + list(parent_message_ids))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_open_threads_for_server(self, server_id: str) -> List[Dict]:
+        """Get all open threads for a server, including the channel_id derived from the parent message."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT t.*,
+                       CASE WHEN m.context_id IS NOT NULL AND POSITION('/' IN m.context_id) > 0
+                            THEN SPLIT_PART(m.context_id, '/', 2)
+                            ELSE NULL END AS channel_id
+                FROM threads t
+                LEFT JOIN messages m ON t.parent_message_id = m.id
+                WHERE t.server_id = %s AND t.is_closed = FALSE
+                ORDER BY t.created_at DESC
+            ''', (server_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def close_thread(self, thread_id: str) -> bool:
+        """Mark a thread as closed."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('UPDATE threads SET is_closed = TRUE WHERE thread_id = %s', (thread_id,))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error closing thread: {e}")
+            return False
+
+    def add_thread_member(self, thread_id: str, username: str, added_by: str) -> bool:
+        """Add a member to a private thread."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO thread_members (thread_id, username, added_by)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                ''', (thread_id, username, added_by))
+                return True
+        except Exception as e:
+            print(f"Error adding thread member: {e}")
+            return False
+
+    def get_thread_members(self, thread_id: str) -> List[str]:
+        """Get all member usernames for a thread."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT username FROM thread_members WHERE thread_id = %s', (thread_id,))
+            return [row['username'] for row in cursor.fetchall()]
+
+    def is_thread_member(self, thread_id: str, username: str) -> bool:
+        """Check if a user is a member of a thread."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT 1 FROM thread_members WHERE thread_id = %s AND username = %s', (thread_id, username))
+            return cursor.fetchone() is not None
+
+    # ── Pin operations ────────────────────────────────────────────────────────
+
+    def pin_message(self, message_id: int, pinned_by: str) -> bool:
+        """Pin a message."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE messages
+                    SET pinned = TRUE, pinned_by = %s, pinned_at = %s
+                    WHERE id = %s AND deleted = FALSE
+                ''', (pinned_by, datetime.now(), message_id))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error pinning message: {e}")
+            return False
+
+    def unpin_message(self, message_id: int) -> bool:
+        """Unpin a message."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE messages
+                    SET pinned = FALSE, pinned_by = NULL, pinned_at = NULL
+                    WHERE id = %s
+                ''', (message_id,))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error unpinning message: {e}")
+            return False
+
+    def get_pinned_messages(self, context_type: str, context_id: Optional[str]) -> List[Dict]:
+        """Get all pinned messages for a context, decrypted."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT m.id, m.username, m.content,
+                       m.timestamp::text as timestamp,
+                       m.context_type, m.context_id,
+                       m.edited_at::text as edited_at,
+                       m.deleted,
+                       m.pinned, m.pinned_by,
+                       m.pinned_at::text as pinned_at,
+                       u.avatar, u.avatar_type, u.avatar_data
+                FROM messages m
+                LEFT JOIN users u ON m.username = u.username
+                WHERE m.context_type = %s AND m.context_id = %s
+                  AND m.pinned = TRUE AND m.deleted = FALSE
+                ORDER BY m.pinned_at DESC
+            ''', (context_type, context_id))
+            messages = []
+            for row in cursor.fetchall():
+                msg = dict(row)
+                try:
+                    msg['content'] = self.encryption_manager.decrypt(msg['content'])
+                except Exception:
+                    pass
+                messages.append(msg)
+            return messages

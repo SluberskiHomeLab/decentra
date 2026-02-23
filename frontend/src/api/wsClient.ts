@@ -32,6 +32,16 @@ import type {
   WsOutboundUpdateProfile,
   WsOutboundVerify2FASetup,
   WsOutboundVerifyEmail,
+  WsOutboundTypingStart,
+  WsOutboundTypingStop,
+  WsOutboundCreateThread,
+  WsOutboundCloseThread,
+  WsOutboundGetThreadHistory,
+  WsOutboundListThreads,
+  WsOutboundSendThreadMessage,
+  WsOutboundPinMessage,
+  WsOutboundUnpinMessage,
+  WsOutboundGetPinnedMessages,
 } from '../types/protocol'
 
 type MessageHandler = (msg: WsMessage) => void
@@ -239,6 +249,49 @@ export class WsClient {
 
   forceLicenseCheckin() {
     this.send({ type: 'force_license_checkin' })
+  }
+
+  // ── Typing indicators ────────────────────────────────────
+  sendTypingStart(payload: WsOutboundTypingStart) {
+    this.send(payload)
+  }
+
+  sendTypingStop(payload: WsOutboundTypingStop) {
+    this.send(payload)
+  }
+
+  // ── Threads ───────────────────────────────────────────────
+  createThread(payload: WsOutboundCreateThread) {
+    this.send(payload)
+  }
+
+  closeThread(payload: WsOutboundCloseThread) {
+    this.send(payload)
+  }
+
+  getThreadHistory(payload: WsOutboundGetThreadHistory) {
+    this.send(payload)
+  }
+
+  listThreads(payload: WsOutboundListThreads) {
+    this.send(payload)
+  }
+
+  sendThreadMessage(payload: WsOutboundSendThreadMessage) {
+    this.send(payload)
+  }
+
+  // ── Pinned messages ───────────────────────────────────────
+  pinMessage(payload: WsOutboundPinMessage) {
+    this.send(payload)
+  }
+
+  unpinMessage(payload: WsOutboundUnpinMessage) {
+    this.send(payload)
+  }
+
+  getPinnedMessages(payload: WsOutboundGetPinnedMessages) {
+    this.send(payload)
   }
 
   close() {
