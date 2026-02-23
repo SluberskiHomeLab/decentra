@@ -500,6 +500,7 @@ function ToastHost() {
 
 function LoginPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const authToken = useAppStore((s) => s.authToken)
   const setAuth = useAppStore((s) => s.setAuth)
   const setInit = useAppStore((s) => s.setInit)
@@ -518,9 +519,11 @@ function LoginPage() {
   // If already authenticated, redirect to chat
   useEffect(() => {
     if (authToken) {
-      navigate('/chat')
+      const serverInvite = searchParams.get('server_invite')
+      const redirectPath = serverInvite ? `/chat?server_invite=${serverInvite}` : '/chat'
+      navigate(redirectPath)
     }
-  }, [authToken, navigate])
+  }, [authToken, navigate, searchParams])
 
   useEffect(() => {
     const unsubscribe = wsClient.onMessage((msg: WsMessage) => {
@@ -547,7 +550,11 @@ function LoginPage() {
         setStoredAuth({ token, username: u })
         setAuth({ token, username: u })
         setLastAuthError(null)
-        navigate('/chat')
+        
+        // Redirect to chat with server_invite parameter if present
+        const serverInvite = searchParams.get('server_invite')
+        const redirectPath = serverInvite ? `/chat?server_invite=${serverInvite}` : '/chat'
+        navigate(redirectPath)
       }
       if (msg.type === 'init') {
         const initUsername = typeof msg.username === 'string' ? msg.username : username.trim()
@@ -574,7 +581,7 @@ function LoginPage() {
     })
 
     return () => unsubscribe()
-  }, [navigate, setAuth, setInit, setLastAuthError, username])
+  }, [navigate, setAuth, setInit, setLastAuthError, username, searchParams])
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -1575,13 +1582,13 @@ function ChatPage() {
   // Check for server invite in URL parameters
   useEffect(() => {
     const serverInviteCode = searchParams.get('server_invite')
-    if (serverInviteCode && connectionStatus === 'connected') {
-      // Request server info
+    if (serverInviteCode && connectionStatus === 'connected' && init) {
+      // Request server info (only after authentication is complete)
       wsClient.getServerInfoByInvite({ type: 'get_server_info_by_invite', invite_code: serverInviteCode })
       // Clear the URL parameter
       setSearchParams({})
     }
-  }, [searchParams, setSearchParams, connectionStatus])
+  }, [searchParams, setSearchParams, connectionStatus, init])
 
   useEffect(() => {
     const unsubscribe = wsClient.onMessage((msg: WsMessage) => {
@@ -1907,6 +1914,20 @@ function ChatPage() {
           setInit({ ...prev, servers: exists ? servers : [...servers, msg.server] })
         }
         pushToast({ kind: 'success', message: `Joined server: ${msg.server.name}` })
+        
+        // Close the invite modal and reset joining state
+        setShowServerInviteModal(false)
+        setIsJoiningServer(false)
+        
+        // Navigate to the newly joined server
+        const firstChannel = msg.server.channels?.[0]
+        if (firstChannel) {
+          selectContext({
+            kind: 'server',
+            serverId: msg.server.id,
+            channelId: firstChannel.id,
+          })
+        }
       }
 
       if (isWsChatMessage(msg)) {
@@ -7906,11 +7927,7 @@ function ChatPage() {
                       type: 'join_server_with_invite', 
                       invite_code: serverInviteInfo.code 
                     })
-                    // The modal will close when we receive server_joined message
-                    setTimeout(() => {
-                      setShowServerInviteModal(false)
-                      setIsJoiningServer(false)
-                    }, 2000)
+                    // Modal will close when we receive server_joined message
                   }}
                   className="flex-1 rounded-lg bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
                   disabled={isJoiningServer}
@@ -7928,9 +7945,13 @@ function ChatPage() {
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const authToken = useAppStore((s) => s.authToken)
+  const [searchParams] = useSearchParams()
   
   if (!authToken) {
-    return <Navigate to="/login" replace />
+    // Preserve server_invite parameter when redirecting to login
+    const serverInvite = searchParams.get('server_invite')
+    const redirectPath = serverInvite ? `/login?redirect=chat&server_invite=${serverInvite}` : '/login'
+    return <Navigate to={redirectPath} replace />
   }
   
   return <>{children}</>
