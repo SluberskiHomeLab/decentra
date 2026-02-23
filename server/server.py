@@ -115,6 +115,11 @@ voice_calls = {}
 voice_states = {}
 # Store voice members per channel: {server_id/channel_id: set(usernames)}
 voice_members = {}
+# Store soundboard play cooldowns: {username: last_play_timestamp}
+soundboard_cooldowns = {}
+
+# Typing indicators: {context_key: {username: asyncio.TimerHandle}}
+typing_states: dict = {}
 
 # Helper counters for IDs (load from database on startup)
 server_counter = 0
@@ -122,6 +127,7 @@ channel_counter = 0
 category_counter = 0
 dm_counter = 0
 role_counter = 0
+thread_counter = 0
 
 
 def hash_password(password):
@@ -312,6 +318,13 @@ def get_next_role_id():
     return f"role_{role_counter}"
 
 
+def get_next_thread_id():
+    """Get next thread ID."""
+    global thread_counter
+    thread_counter += 1
+    return f"thread_{thread_counter}"
+
+
 def get_next_dm_id():
     """Get next DM ID."""
     global dm_counter
@@ -437,6 +450,16 @@ def init_counters_from_db():
                 elif len(parts) > 2 and parts[-1].isdigit():
                     max_role = max(max_role, int(parts[-1]))
             role_counter = max_role
+
+    # Get highest thread ID
+    global thread_counter
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT thread_id FROM threads')
+        t_ids = [row['thread_id'] for row in cursor.fetchall()]
+        if t_ids:
+            max_thread = max([int(t.split('_')[1]) for t in t_ids if len(t.split('_')) == 2 and t.split('_')[1].isdigit()] + [0])
+            thread_counter = max_thread
 
 
 def get_next_call_id():
@@ -708,16 +731,26 @@ async def broadcast(message, exclude=None):
 
 
 async def broadcast_to_server(server_id, message, exclude=None):
-    """Broadcast a message to all members of a server."""
-    server_members_data = db.get_server_members(server_id)
-    server_members = {m['username'] for m in server_members_data}
-    
-    tasks = []
-    for client_ws, client_username in clients.items():
-        if client_username in server_members and client_ws != exclude:
-            tasks.append(client_ws.send_str(message))
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+    """Broadcast a message to all members of a server, or to all users if server_id is None."""
+    if server_id is None:
+        # Broadcast to all connected users (for instance webhooks)
+        tasks = []
+        for client_ws, client_username in clients.items():
+            if client_ws != exclude:
+                tasks.append(client_ws.send_str(message))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+    else:
+        # Broadcast to specific server members
+        server_members_data = db.get_server_members(server_id)
+        server_members = {m['username'] for m in server_members_data}
+        
+        tasks = []
+        for client_ws, client_username in clients.items():
+            if client_username in server_members and client_ws != exclude:
+                tasks.append(client_ws.send_str(message))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 
@@ -974,18 +1007,28 @@ async def handler(websocket):
                         # Add mutual friendship
                         db.add_friend_request(inviter_username, username)
                         db.accept_friend_request(inviter_username, username)
-                        # Log invite usage and remove used invite code
+                        # Log invite usage
                         if invite_code:
                             db.log_invite_usage(invite_code, username, invite_data.get('server_id'))
-                            db.delete_invite_code(invite_code)
+                            # Check if invite has reached max uses
+                            max_uses = invite_data.get('max_uses')
+                            if max_uses is not None:
+                                current_uses = db.get_invite_usage_count(invite_code)
+                                if current_uses >= max_uses:
+                                    db.deactivate_invite_code(invite_code)
                     
                     # Generate JWT token for the user
                     token = generate_jwt_token(username)
                     
+                    # Get user preferences
+                    prefs = db.get_user_preferences(username) or {}
+                    
                     await websocket.send_str(json.dumps({
                         'type': 'auth_success',
                         'message': 'Account created successfully',
-                        'token': token
+                        'token': token,
+                        'theme_mode': prefs.get('theme_mode', 'dark'),
+                        'keybinds': prefs.get('keybinds', {})
                     }))
                     authenticated = True
                     clients[websocket] = username
@@ -1067,20 +1110,30 @@ async def handler(websocket):
                     # Add mutual friendship
                     db.add_friend_request(inviter_username, username)
                     db.accept_friend_request(inviter_username, username)
-                    # Log invite usage and remove used invite code
+                    # Log invite usage
                     if pending['invite_code']:
                         invite_data = db.get_invite_code(pending['invite_code'])
                         if invite_data:
                             db.log_invite_usage(pending['invite_code'], username, invite_data.get('server_id'))
-                        db.delete_invite_code(pending['invite_code'])
+                            # Check if invite has reached max uses
+                            max_uses = invite_data.get('max_uses')
+                            if max_uses is not None:
+                                current_uses = db.get_invite_usage_count(pending['invite_code'])
+                                if current_uses >= max_uses:
+                                    db.deactivate_invite_code(pending['invite_code'])
                 
                 # Generate JWT token for the user
                 token = generate_jwt_token(username)
                 
+                # Get user preferences
+                prefs = db.get_user_preferences(username) or {}
+                
                 await websocket.send_str(json.dumps({
                     'type': 'auth_success',
                     'message': 'Account created successfully',
-                    'token': token
+                    'token': token,
+                    'theme_mode': prefs.get('theme_mode', 'dark'),
+                    'keybinds': prefs.get('keybinds', {})
                 }))
                 authenticated = True
                 clients[websocket] = username
@@ -1177,10 +1230,15 @@ async def handler(websocket):
                 # Generate JWT token for the user
                 token = generate_jwt_token(username)
                 
+                # Get user preferences
+                prefs = db.get_user_preferences(username) or {}
+                
                 await websocket.send_str(json.dumps({
                     'type': 'auth_success',
                     'message': 'Login successful',
-                    'token': token
+                    'token': token,
+                    'theme_mode': prefs.get('theme_mode', 'dark'),
+                    'keybinds': prefs.get('keybinds', {})
                 }))
                 authenticated = True
                 clients[websocket] = username
@@ -1218,10 +1276,15 @@ async def handler(websocket):
                 # Generate a new JWT token to refresh the session
                 new_token = generate_jwt_token(username)
                 
+                # Get user preferences
+                prefs = db.get_user_preferences(username) or {}
+                
                 await websocket.send_str(json.dumps({
                     'type': 'auth_success',
                     'message': 'Token authentication successful',
-                    'token': new_token
+                    'token': new_token,
+                    'theme_mode': prefs.get('theme_mode', 'dark'),
+                    'keybinds': prefs.get('keybinds', {})
                 }))
                 authenticated = True
                 clients[websocket] = username
@@ -1513,6 +1576,7 @@ async def handler(websocket):
                         message_key = data.get('messageKey')  # Extract messageKey for file attachment correlation
                         mentions = data.get('mentions', [])  # Extract mentions
                         reply_to = data.get('reply_to')  # Extract reply_to message ID
+                        nonce = data.get('nonce')  # Extract nonce for delivery confirmation
                         
                         # Get admin settings and enforce max message length
                         admin_settings = db.get_admin_settings()
@@ -1604,6 +1668,10 @@ async def handler(websocket):
                                         if mentions:
                                             msg_obj['mentions'] = [m for m in mentions if m in member_usernames]
                                         
+                                        # Add nonce for delivery confirmation (only sender sees it)
+                                        if nonce:
+                                            msg_obj['nonce'] = nonce
+                                        
                                         # Broadcast to server members
                                         await broadcast_to_server(server_id, json.dumps(msg_obj))
                                         print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} sent message in {server_id}/{channel_id}")
@@ -1669,6 +1737,10 @@ async def handler(websocket):
                                 # Add mentions to message object
                                 if mentions and participants:
                                     msg_obj['mentions'] = [m for m in mentions if m in participants]
+                                
+                                # Add nonce for delivery confirmation (only sender sees it)
+                                if nonce:
+                                    msg_obj['nonce'] = nonce
                                 
                                 # Send to both participants
                                 for participant in participants:
@@ -1848,7 +1920,446 @@ async def handler(websocket):
                                 'dm_id': dm_id,
                                 'messages': dm_messages
                             }))
-                    
+
+                    # ── Typing indicators ──────────────────────────────────────────
+                    elif data.get('type') == 'typing_start':
+                        t_context = data.get('context', 'global')
+                        t_context_id = data.get('context_id')
+                        ctx_key = f"{t_context}:{t_context_id}" if t_context_id else t_context
+
+                        # Determine recipients to notify
+                        if t_context == 'server' and t_context_id and '/' in t_context_id:
+                            t_server_id = t_context_id.split('/')[0]
+                            server_members_data = db.get_server_members(t_server_id)
+                            recipients = {m['username'] for m in server_members_data} - {username}
+                        elif t_context == 'dm' and t_context_id:
+                            dm_list = db.get_user_dms(username)
+                            recipients = set()
+                            for dm in dm_list:
+                                if dm['dm_id'] == t_context_id:
+                                    recipients = {dm['user1'], dm['user2']} - {username}
+                                    break
+                        else:
+                            recipients = set()
+
+                        # Cancel existing expiry timer for this user+context
+                        timer_key = (username, ctx_key)
+                        if timer_key in typing_states:
+                            old_handle = typing_states[timer_key]
+                            if old_handle:
+                                old_handle.cancel()
+
+                        user_avatar = get_avatar_data(username)
+                        typing_payload = json.dumps({
+                            'type': 'user_typing',
+                            'username': username,
+                            'context': t_context,
+                            'context_id': t_context_id,
+                            **user_avatar
+                        })
+
+                        async def expire_typing(u=username, ck=ctx_key, recip=recipients,
+                                                 tc=t_context, tcid=t_context_id):
+                            await asyncio.sleep(5)
+                            typing_states.pop((u, ck), None)
+                            stop_payload = json.dumps({
+                                'type': 'user_stopped_typing',
+                                'username': u,
+                                'context': tc,
+                                'context_id': tcid
+                            })
+                            for r in recip:
+                                await send_to_user(r, stop_payload)
+
+                        task = asyncio.ensure_future(expire_typing())
+                        typing_states[timer_key] = task
+
+                        for r in recipients:
+                            await send_to_user(r, typing_payload)
+
+                    elif data.get('type') == 'typing_stop':
+                        t_context = data.get('context', 'global')
+                        t_context_id = data.get('context_id')
+                        ctx_key = f"{t_context}:{t_context_id}" if t_context_id else t_context
+                        timer_key = (username, ctx_key)
+                        if timer_key in typing_states:
+                            old_handle = typing_states.pop(timer_key, None)
+                            if old_handle:
+                                old_handle.cancel()
+                        # Determine recipients to notify
+                        if t_context == 'server' and t_context_id and '/' in t_context_id:
+                            t_server_id = t_context_id.split('/')[0]
+                            server_members_data = db.get_server_members(t_server_id)
+                            recipients = {m['username'] for m in server_members_data} - {username}
+                        elif t_context == 'dm' and t_context_id:
+                            dm_list = db.get_user_dms(username)
+                            recipients = set()
+                            for dm in dm_list:
+                                if dm['dm_id'] == t_context_id:
+                                    recipients = {dm['user1'], dm['user2']} - {username}
+                                    break
+                        else:
+                            recipients = set()
+                        stop_payload = json.dumps({
+                            'type': 'user_stopped_typing',
+                            'username': username,
+                            'context': t_context,
+                            'context_id': t_context_id
+                        })
+                        for r in recipients:
+                            await send_to_user(r, stop_payload)
+
+                    # ── Threads ────────────────────────────────────────────────────
+                    elif data.get('type') == 'create_thread':
+                        s_id = data.get('server_id', '')
+                        parent_msg_id = data.get('parent_message_id')
+                        thread_name = data.get('name', '').strip()
+                        is_private = bool(data.get('is_private', False))
+                        invited_users = data.get('invited_users', [])
+
+                        if not s_id or not thread_name:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'server_id and name are required'}))
+                            continue
+
+                        # Verify user is member of server
+                        if not db.is_server_member(username, s_id):
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Not a server member'}))
+                            continue
+
+                        new_thread_id = get_next_thread_id()
+                        if not db.create_thread(new_thread_id, s_id, parent_msg_id, thread_name, is_private, username):
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Failed to create thread'}))
+                            continue
+
+                        # Seed thread members for private threads
+                        if is_private:
+                            db.add_thread_member(new_thread_id, username, username)
+                            for inv_user in invited_users:
+                                if db.is_server_member(inv_user, s_id):
+                                    db.add_thread_member(new_thread_id, inv_user, username)
+                            # Always allow admins
+                            server_data = db.get_server(s_id)
+                            if server_data and server_data['owner'] != username:
+                                db.add_thread_member(new_thread_id, server_data['owner'], username)
+
+                        # Derive channel_id from parent message context
+                        channel_id = None
+                        if parent_msg_id:
+                            parent_msg = db.get_message(parent_msg_id)
+                            if parent_msg and parent_msg.get('context_id') and '/' in parent_msg['context_id']:
+                                channel_id = parent_msg['context_id'].split('/')[-1]
+
+                        thread_obj = {
+                            'thread_id': new_thread_id,
+                            'server_id': s_id,
+                            'channel_id': channel_id,
+                            'parent_message_id': parent_msg_id,
+                            'name': thread_name,
+                            'is_private': is_private,
+                            'created_by': username,
+                            'is_closed': False,
+                        }
+                        thread_created_payload = json.dumps({'type': 'thread_created', 'thread': thread_obj})
+
+                        if is_private:
+                            members_to_notify = db.get_thread_members(new_thread_id)
+                            for tuser in members_to_notify:
+                                await send_to_user(tuser, thread_created_payload)
+                        else:
+                            await broadcast_to_server(s_id, thread_created_payload)
+
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} created thread {new_thread_id} in {s_id}")
+
+                    elif data.get('type') == 'close_thread':
+                        t_id = data.get('thread_id', '')
+                        thread = db.get_thread(t_id)
+                        if not thread:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Thread not found'}))
+                            continue
+
+                        # Only creator or server admin/owner can close
+                        s_id = thread['server_id']
+                        server_data = db.get_server(s_id)
+                        can_close = (thread['created_by'] == username or
+                                     (server_data and server_data['owner'] == username) or
+                                     has_permission(s_id, username, 'administrator'))
+                        if not can_close:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'No permission to close thread'}))
+                            continue
+
+                        db.close_thread(t_id)
+                        close_payload = json.dumps({'type': 'thread_closed', 'thread_id': t_id, 'server_id': s_id})
+
+                        if thread['is_private']:
+                            for tuser in db.get_thread_members(t_id):
+                                await send_to_user(tuser, close_payload)
+                        else:
+                            await broadcast_to_server(s_id, close_payload)
+
+                    elif data.get('type') == 'get_thread_history':
+                        t_id = data.get('thread_id', '')
+                        thread = db.get_thread(t_id)
+                        if not thread:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Thread not found'}))
+                            continue
+
+                        s_id = thread['server_id']
+                        # Access check
+                        if thread['is_private']:
+                            if not db.is_thread_member(t_id, username):
+                                # Check if admin/owner
+                                server_data = db.get_server(s_id)
+                                if not (server_data and server_data['owner'] == username) and not has_permission(s_id, username, 'administrator'):
+                                    await websocket.send_str(json.dumps({'type': 'error', 'message': 'No access to this private thread'}))
+                                    continue
+                        else:
+                            if not db.is_server_member(username, s_id):
+                                await websocket.send_str(json.dumps({'type': 'error', 'message': 'Not a server member'}))
+                                continue
+
+                        th_messages = db.get_messages('thread', t_id, MAX_HISTORY)
+                        if th_messages:
+                            msg_ids = [m['id'] for m in th_messages]
+                            reactions_map = db.get_reactions_for_messages(msg_ids)
+                            mentions_map = db.get_mentions_for_messages(msg_ids)
+                            for tm in th_messages:
+                                tm['reactions'] = reactions_map.get(tm['id'], [])
+                                tm['attachments'] = db.get_message_attachments(tm['id'])
+                                tm['mentions'] = mentions_map.get(tm['id'], [])
+                                tm['user_status'] = get_user_status(tm['username'])
+                                hist_role_color = get_highest_role_color(s_id, tm['username'])
+                                if hist_role_color:
+                                    tm['role_color'] = hist_role_color
+
+                        await websocket.send_str(json.dumps({
+                            'type': 'thread_history',
+                            'thread_id': t_id,
+                            'thread': {
+                                'thread_id': t_id,
+                                'server_id': s_id,
+                                'parent_message_id': thread['parent_message_id'],
+                                'name': thread['name'],
+                                'is_private': thread['is_private'],
+                                'created_by': thread['created_by'],
+                                'is_closed': thread['is_closed'],
+                            },
+                            'messages': th_messages
+                        }))
+
+                    elif data.get('type') == 'list_threads':
+                        s_id = data.get('server_id', '')
+                        if not db.is_server_member(username, s_id):
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Not a server member'}))
+                            continue
+                        all_threads = db.get_open_threads_for_server(s_id)
+                        # Filter private threads: only show those the user is a member of
+                        visible = []
+                        for th in all_threads:
+                            if th['is_private']:
+                                if db.is_thread_member(th['thread_id'], username):
+                                    visible.append(th)
+                                else:
+                                    server_data = db.get_server(s_id)
+                                    if server_data and server_data['owner'] == username:
+                                        visible.append(th)
+                            else:
+                                visible.append(th)
+                        # Serialize datetime fields
+                        for th in visible:
+                            if hasattr(th.get('created_at'), 'isoformat'):
+                                th['created_at'] = th['created_at'].isoformat()
+                        await websocket.send_str(json.dumps({'type': 'threads_list', 'server_id': s_id, 'threads': visible}))
+
+                    elif data.get('type') == 'add_thread_member':
+                        t_id = data.get('thread_id', '')
+                        new_member = data.get('username', '')
+                        thread = db.get_thread(t_id)
+                        if not thread or not thread['is_private']:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Thread not found or not private'}))
+                            continue
+                        s_id = thread['server_id']
+                        # Only thread creator or admin/owner can add members
+                        server_data = db.get_server(s_id)
+                        can_add = (thread['created_by'] == username or
+                                   (server_data and server_data['owner'] == username) or
+                                   has_permission(s_id, username, 'administrator'))
+                        if not can_add:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'No permission'}))
+                            continue
+                        if db.is_server_member(new_member, s_id):
+                            db.add_thread_member(t_id, new_member, username)
+                            await send_to_user(new_member, json.dumps({
+                                'type': 'thread_created',
+                                'thread': {
+                                    'thread_id': t_id,
+                                    'server_id': s_id,
+                                    'parent_message_id': thread['parent_message_id'],
+                                    'name': thread['name'],
+                                    'is_private': True,
+                                    'created_by': thread['created_by'],
+                                    'is_closed': thread['is_closed'],
+                                }}))
+
+                    # ── Thread messages ────────────────────────────────────────────
+                    elif data.get('type') == 'thread_message':
+                        t_id = data.get('thread_id', '')
+                        th_content = data.get('content', '').strip()
+                        th_nonce = data.get('nonce')
+                        thread = db.get_thread(t_id)
+                        if not thread or thread['is_closed']:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Thread not found or closed'}))
+                            continue
+                        s_id = thread['server_id']
+                        if not th_content:
+                            continue
+                        # Access check
+                        if thread['is_private']:
+                            if not db.is_thread_member(t_id, username):
+                                await websocket.send_str(json.dumps({'type': 'error', 'message': 'No access'}))
+                                continue
+                        else:
+                            if not db.is_server_member(username, s_id):
+                                await websocket.send_str(json.dumps({'type': 'error', 'message': 'Not a server member'}))
+                                continue
+
+                        admin_settings = db.get_admin_settings()
+                        max_length = admin_settings.get('max_message_length', 2000)
+                        if len(th_content) > max_length:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': f'Message too long (max {max_length})'}))
+                            continue
+
+                        user_profile = db.get_user(username)
+                        th_msg_id = db.save_message(username, th_content, 'thread', t_id)
+                        th_msg_obj = create_message_object(
+                            username=username,
+                            msg_content=th_content,
+                            context='thread',
+                            context_id=t_id,
+                            user_profile=user_profile,
+                            message_id=th_msg_id
+                        )
+                        if th_nonce:
+                            th_msg_obj['nonce'] = th_nonce
+                        th_msg_obj['thread_id'] = t_id
+                        th_msg_obj['server_id'] = s_id
+                        thread_role_color = get_highest_role_color(s_id, username)
+                        if thread_role_color:
+                            th_msg_obj['role_color'] = thread_role_color
+
+                        thread_msg_payload = json.dumps(th_msg_obj)
+                        if thread['is_private']:
+                            for tuser in db.get_thread_members(t_id):
+                                await send_to_user(tuser, thread_msg_payload)
+                        else:
+                            await broadcast_to_server(s_id, thread_msg_payload)
+
+                    # ── Pin / Unpin ────────────────────────────────────────────────
+                    elif data.get('type') == 'pin_message':
+                        pin_msg_id = data.get('message_id')
+                        if not pin_msg_id:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'message_id required'}))
+                            continue
+                        message_row = db.get_message(pin_msg_id)
+                        if not message_row:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Message not found'}))
+                            continue
+                        # Permission: server member can pin in server; DM participant can pin in DM
+                        ctx_type = message_row['context_type']
+                        ctx_id = message_row['context_id']
+                        if ctx_type == 'server':
+                            s_id = ctx_id.split('/')[0]
+                            if not db.is_server_member(username, s_id):
+                                await websocket.send_str(json.dumps({'type': 'error', 'message': 'Not a server member'}))
+                                continue
+                        elif ctx_type == 'dm':
+                            user_dms = db.get_user_dms(username)
+                            dm_ids = [d['dm_id'] for d in user_dms]
+                            if ctx_id not in dm_ids:
+                                await websocket.send_str(json.dumps({'type': 'error', 'message': 'Not a DM participant'}))
+                                continue
+                        if db.pin_message(pin_msg_id, username):
+                            pin_payload = json.dumps({
+                                'type': 'message_pinned',
+                                'message_id': pin_msg_id,
+                                'pinned_by': username,
+                                'context_type': ctx_type,
+                                'context_id': ctx_id
+                            })
+                            if ctx_type == 'server':
+                                await broadcast_to_server(ctx_id.split('/')[0], pin_payload)
+                            elif ctx_type == 'dm':
+                                await broadcast_to_dm_participants(username, ctx_id, pin_payload)
+                            else:
+                                await websocket.send_str(pin_payload)
+
+                    elif data.get('type') == 'unpin_message':
+                        unpin_msg_id = data.get('message_id')
+                        if not unpin_msg_id:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'message_id required'}))
+                            continue
+                        message_row = db.get_message(unpin_msg_id)
+                        if not message_row:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Message not found'}))
+                            continue
+                        ctx_type = message_row['context_type']
+                        ctx_id = message_row['context_id']
+                        if ctx_type == 'server':
+                            s_id = ctx_id.split('/')[0]
+                            if not db.is_server_member(username, s_id):
+                                await websocket.send_str(json.dumps({'type': 'error', 'message': 'Not a server member'}))
+                                continue
+                        elif ctx_type == 'dm':
+                            user_dms = db.get_user_dms(username)
+                            dm_ids = [d['dm_id'] for d in user_dms]
+                            if ctx_id not in dm_ids:
+                                await websocket.send_str(json.dumps({'type': 'error', 'message': 'Not a DM participant'}))
+                                continue
+                        if db.unpin_message(unpin_msg_id):
+                            unpin_payload = json.dumps({
+                                'type': 'message_unpinned',
+                                'message_id': unpin_msg_id,
+                                'context_type': ctx_type,
+                                'context_id': ctx_id
+                            })
+                            if ctx_type == 'server':
+                                await broadcast_to_server(ctx_id.split('/')[0], unpin_payload)
+                            elif ctx_type == 'dm':
+                                await broadcast_to_dm_participants(username, ctx_id, unpin_payload)
+                            else:
+                                await websocket.send_str(unpin_payload)
+
+                    elif data.get('type') == 'get_pinned_messages':
+                        pin_ctx_type = data.get('context_type', '')
+                        pin_ctx_id = data.get('context_id', '')
+                        # Permission check
+                        can_view = False
+                        if pin_ctx_type == 'server':
+                            s_id = pin_ctx_id.split('/')[0]
+                            can_view = db.is_server_member(username, s_id)
+                        elif pin_ctx_type == 'dm':
+                            user_dms = db.get_user_dms(username)
+                            dm_ids = [d['dm_id'] for d in user_dms]
+                            can_view = pin_ctx_id in dm_ids
+                        elif pin_ctx_type == 'global':
+                            can_view = True
+                        if not can_view:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'No access'}))
+                            continue
+                        pinned = db.get_pinned_messages(pin_ctx_type, pin_ctx_id)
+                        # Enrich with attachments and reactions
+                        if pinned:
+                            p_ids = [p['id'] for p in pinned]
+                            reactions_map = db.get_reactions_for_messages(p_ids)
+                            for pm in pinned:
+                                pm['reactions'] = reactions_map.get(pm['id'], [])
+                                pm['attachments'] = db.get_message_attachments(pm['id'])
+                        await websocket.send_str(json.dumps({
+                            'type': 'pinned_messages',
+                            'context_type': pin_ctx_type,
+                            'context_id': pin_ctx_id,
+                            'messages': pinned
+                        }))
+
                     elif data.get('type') == 'edit_message':
                         message_id = data.get('message_id')
                         new_content = data.get('content', '').strip()
@@ -2320,16 +2831,109 @@ async def handler(websocket):
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} marked messages as read in {context_type}:{context_id}")
                     
                     elif data.get('type') == 'generate_invite':
-                        # Generate a new invite code
+                        # Generate a new instance invite code (admin only)
+                        first_user = db.get_first_user()
+                        is_admin = (username == first_user)
+                        
+                        if not is_admin:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Only the instance administrator can generate invite codes'
+                            }))
+                            continue
+                        
+                        max_uses = data.get('max_uses')  # None = unlimited
+                        description = data.get('description', '')
+                        
                         invite_code = generate_invite_code()
-                        db.create_invite_code(invite_code, username, 'global')
+                        db.create_invite_code(invite_code, username, 'global', max_uses=max_uses, description=description)
                         
                         await websocket.send_str(json.dumps({
                             'type': 'invite_code',
                             'code': invite_code,
+                            'max_uses': max_uses,
+                            'description': description,
                             'message': f'Invite code generated: {invite_code}'
                         }))
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} generated invite code: {invite_code}")
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} generated invite code: {invite_code} (max_uses: {max_uses})")
+                    
+                    elif data.get('type') == 'list_instance_invites':
+                        # List all instance invite codes (admin only)
+                        first_user = db.get_first_user()
+                        is_admin = (username == first_user)
+                        
+                        if not is_admin:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Only the instance administrator can view invite codes'
+                            }))
+                            continue
+                        
+                        invites = db.get_instance_invite_codes()
+                        
+                        # Convert datetime values for JSON serialization
+                        serialized_invites = []
+                        for invite in invites:
+                            item = dict(invite)
+                            if isinstance(item.get('created_at'), datetime):
+                                item['created_at'] = item['created_at'].isoformat()
+                            serialized_invites.append(item)
+                        
+                        await websocket.send_str(json.dumps({
+                            'type': 'instance_invites_list',
+                            'invites': serialized_invites
+                        }))
+                    
+                    elif data.get('type') == 'get_instance_invite_usage':
+                        # Get instance invite usage logs (admin only)
+                        first_user = db.get_first_user()
+                        is_admin = (username == first_user)
+                        
+                        if not is_admin:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Only the instance administrator can view invite usage'
+                            }))
+                            continue
+                        
+                        usage_logs = db.get_instance_invite_usage()
+                        
+                        # Convert datetime values for JSON serialization
+                        serialized_logs = []
+                        for log in usage_logs:
+                            item = dict(log)
+                            for key in ('first_used', 'last_used'):
+                                value = item.get(key)
+                                if isinstance(value, datetime):
+                                    item[key] = value.isoformat()
+                            serialized_logs.append(item)
+                        
+                        await websocket.send_str(json.dumps({
+                            'type': 'instance_invite_usage',
+                            'usage_logs': serialized_logs
+                        }))
+                    
+                    elif data.get('type') == 'revoke_instance_invite':
+                        # Revoke (deactivate) an instance invite code (admin only)
+                        first_user = db.get_first_user()
+                        is_admin = (username == first_user)
+                        
+                        if not is_admin:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Only the instance administrator can revoke invite codes'
+                            }))
+                            continue
+                        
+                        code = data.get('code', '').strip()
+                        if code:
+                            db.deactivate_invite_code(code)
+                            await websocket.send_str(json.dumps({
+                                'type': 'invite_revoked',
+                                'code': code,
+                                'message': 'Invite code has been revoked'
+                            }))
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} revoked instance invite: {code}")
                     
                     # Admin configuration handlers
                     elif data.get('type') == 'check_admin':
@@ -2624,6 +3228,85 @@ async def handler(websocket):
                                 'message': message
                             }))
                     
+                    elif data.get('type') == 'get_registered_users':
+                        # Verify user is admin
+                        first_user = db.get_first_user()
+                        if username != first_user:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Access denied. Admin only.'
+                            }))
+                        else:
+                            # Get all users with detailed information
+                            users = db.get_all_users_detailed()
+                            
+                            # Convert datetime objects to ISO format strings
+                            for user in users:
+                                if user.get('created_at') and hasattr(user['created_at'], 'isoformat'):
+                                    user['created_at'] = user['created_at'].isoformat()
+                            
+                            await websocket.send_str(json.dumps({
+                                'type': 'registered_users',
+                                'users': users
+                            }))
+                    
+                    elif data.get('type') == 'delete_registered_user':
+                        # Verify user is admin
+                        first_user = db.get_first_user()
+                        if username != first_user:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Access denied. Admin only.'
+                            }))
+                        else:
+                            target_username = data.get('username', '').strip()
+                            
+                            # Validate username
+                            if not target_username:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Username is required'
+                                }))
+                                continue
+                            
+                            # Prevent admin from deleting themselves
+                            if target_username == username:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Cannot delete your own account'
+                                }))
+                                continue
+                            
+                            # Delete the user
+                            success = db.delete_user_keep_messages(target_username)
+                            
+                            if success:
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] Admin {username} deleted user: {target_username}")
+                                
+                                # Close the deleted user's websocket connection if they're online
+                                for client_ws, client_user in list(clients.items()):
+                                    if client_user == target_username:
+                                        try:
+                                            await client_ws.send_str(json.dumps({
+                                                'type': 'account_deleted',
+                                                'message': 'Your account has been deleted by an administrator'
+                                            }))
+                                            await client_ws.close()
+                                        except Exception:
+                                            pass
+                                        break
+                                
+                                await websocket.send_str(json.dumps({
+                                    'type': 'user_deleted',
+                                    'message': f'User {target_username} has been deleted',
+                                    'username': target_username
+                                }))
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': f'Failed to delete user {target_username}'
+                                }))
+                    
                     elif data.get('type') == 'sync_data':
                         # Handle request to sync/refresh user data (servers, DMs, friends)
                         # Use helper functions to build data consistently with init message
@@ -2669,19 +3352,23 @@ async def handler(websocket):
                     
                     elif data.get('type') == 'generate_server_invite':
                         server_id = data.get('server_id', '')
+                        max_uses = data.get('max_uses')  # None = unlimited
+                        description = data.get('description', '')
                         
                         # Check if user has permission to create invites
                         if has_permission(server_id, username, 'create_invite'):
                             invite_code = generate_invite_code()
-                            db.create_invite_code(invite_code, username, 'server', server_id)
+                            db.create_invite_code(invite_code, username, 'server', server_id, max_uses=max_uses, description=description)
                             
                             await websocket.send_str(json.dumps({
                                 'type': 'server_invite_code',
                                 'server_id': server_id,
                                 'code': invite_code,
+                                'max_uses': max_uses,
+                                'description': description,
                                 'message': f'Server invite code generated: {invite_code}'
                             }))
-                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} generated invite for server {server_id}: {invite_code}")
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} generated invite for server {server_id}: {invite_code} (max_uses: {max_uses})")
                         else:
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
@@ -2714,6 +3401,53 @@ async def handler(websocket):
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
                                 'message': 'You do not have permission to view invite usage'
+                            }))
+                    
+                    elif data.get('type') == 'list_server_invites':
+                        server_id = data.get('server_id', '')
+                        
+                        # Check if user has permission to view invites
+                        if has_permission(server_id, username, 'access_settings'):
+                            invites = db.get_server_invite_codes(server_id)
+                            
+                            # Convert datetime values for JSON serialization
+                            serialized_invites = []
+                            for invite in invites:
+                                item = dict(invite)
+                                if isinstance(item.get('created_at'), datetime):
+                                    item['created_at'] = item['created_at'].isoformat()
+                                serialized_invites.append(item)
+                            
+                            await websocket.send_str(json.dumps({
+                                'type': 'server_invites_list',
+                                'server_id': server_id,
+                                'invites': serialized_invites
+                            }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'You do not have permission to view server invites'
+                            }))
+                    
+                    elif data.get('type') == 'revoke_server_invite':
+                        server_id = data.get('server_id', '')
+                        code = data.get('code', '').strip()
+                        
+                        # Check if user has permission to manage invites
+                        if has_permission(server_id, username, 'access_settings'):
+                            if code:
+                                db.deactivate_invite_code(code)
+                                await websocket.send_str(json.dumps({
+                                    'type': 'server_invite_revoked',
+                                    'server_id': server_id,
+                                    'code': code,
+                                    'message': 'Server invite code has been revoked'
+                                }))
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} revoked server invite: {code}")
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'You do not have permission to revoke server invites'
                             }))
                     
                     elif data.get('type') == 'join_server_with_invite':
@@ -2754,9 +3488,14 @@ async def handler(websocket):
                                 # Add user to server
                                 db.add_server_member(server_id, username)
                                 
-                                # Log invite usage and remove used invite code
+                                # Log invite usage
                                 db.log_invite_usage(invite_code, username, server_id)
-                                db.delete_invite_code(invite_code)
+                                # Check if invite has reached max uses
+                                max_uses = invite_data.get('max_uses')
+                                if max_uses is not None:
+                                    current_uses = db.get_invite_usage_count(invite_code)
+                                    if current_uses >= max_uses:
+                                        db.deactivate_invite_code(invite_code)
                                 
                                 # Get channels for response
                                 channels = db.get_server_channels(server_id)
@@ -2828,6 +3567,42 @@ async def handler(websocket):
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
                                 'message': 'Invalid server invite code'
+                            }))
+                    
+                    elif data.get('type') == 'get_server_info_by_invite':
+                        # Public endpoint to preview server info before joining (no auth required)
+                        invite_code = data.get('invite_code', '').strip()
+                        
+                        # Find server with this invite code
+                        invite_data = db.get_invite_code(invite_code)
+                        if invite_data and invite_data['code_type'] == 'server':
+                            server_id = invite_data['server_id']
+                            server = db.get_server(server_id)
+                            members = db.get_server_members(server_id)
+                            
+                            if server:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'server_info_preview',
+                                    'server': {
+                                        'id': server_id,
+                                        'name': server['name'],
+                                        'icon': server.get('icon', '🏠'),
+                                        'icon_type': server.get('icon_type', 'emoji'),
+                                        'icon_data': server.get('icon_data'),
+                                        'description': server.get('description', ''),
+                                        'member_count': len(members)
+                                    },
+                                    'invite_code': invite_code
+                                }))
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Server not found'
+                                }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid or expired invite code'
                             }))
                     
                     elif data.get('type') == 'update_user_permissions':
@@ -4082,6 +4857,368 @@ async def handler(websocket):
                                 'message': 'An error occurred processing your request.'
                             }))
                     
+                    elif data.get('type') == 'change_user_status':
+                        # Update user status (online, away, busy, offline)
+                        user_status = data.get('user_status', 'online')
+                        
+                        # Validate status value
+                        if user_status not in ['online', 'away', 'busy', 'offline']:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid status value'
+                            }))
+                            continue
+                        
+                        # Update status in database
+                        db.update_user_status(username, user_status)
+                        
+                        # Notify all friends about status change
+                        for friend_username in db.get_friends(username):
+                            await send_to_user(friend_username, json.dumps({
+                                'type': 'user_status_changed',
+                                'username': username,
+                                'user_status': user_status
+                            }))
+                        
+                        # Notify all servers the user is in
+                        for server_id in db.get_user_servers(username):
+                            await broadcast_to_server(server_id, json.dumps({
+                                'type': 'user_status_changed',
+                                'username': username,
+                                'user_status': user_status
+                            }))
+                        
+                        # Confirm to the user
+                        await websocket.send_str(json.dumps({
+                            'type': 'user_status_changed',
+                            'username': username,
+                            'user_status': user_status
+                        }))
+                    
+                    elif data.get('type') == 'update_user_preferences':
+                        # Update user preferences (theme_mode and/or keybinds)
+                        theme_mode = data.get('theme_mode')
+                        keybinds = data.get('keybinds')
+                        
+                        success = True
+                        error_message = None
+                        
+                        # Update theme if provided
+                        if theme_mode is not None:
+                            valid_themes = ['dark', 'light', 'high_contrast']
+                            if theme_mode not in valid_themes:
+                                success = False
+                                error_message = f'Invalid theme mode. Must be one of: {", ".join(valid_themes)}'
+                            elif not db.update_user_theme(username, theme_mode):
+                                success = False
+                                error_message = 'Failed to update theme mode'
+                        
+                        # Update keybinds if provided
+                        if keybinds is not None and success:
+                            # Validate keybinds structure
+                            required_keys = ['push_to_talk', 'toggle_mute', 'toggle_deafen', 
+                                           'toggle_video', 'toggle_screen_share', 'answer_end_call']
+                            if not isinstance(keybinds, dict):
+                                success = False
+                                error_message = 'Keybinds must be an object'
+                            elif not all(k in keybinds for k in required_keys):
+                                success = False
+                                error_message = f'Missing required keybind keys: {", ".join(required_keys)}'
+                            elif not db.update_user_keybinds(username, keybinds):
+                                success = False
+                                error_message = 'Failed to update keybinds'
+                        
+                        if success:
+                            # Get updated preferences
+                            prefs = db.get_user_preferences(username)
+                            await websocket.send_str(json.dumps({
+                                'type': 'user_preferences_updated',
+                                'theme_mode': prefs.get('theme_mode', 'dark'),
+                                'keybinds': prefs.get('keybinds', {})
+                            }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': error_message or 'Failed to update preferences'
+                            }))
+                    
+                    elif data.get('type') == 'change_email':
+                        new_email = data.get('new_email', '').strip()
+                        password = data.get('password', '').strip()
+                        
+                        # Validate email format
+                        if not new_email or not is_valid_email(new_email):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid email address format'
+                            }))
+                            continue
+
+                        # Verify password
+                        user = db.get_user(username)
+                        if not user or not verify_password(password, user['password_hash']):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid password'
+                            }))
+                            continue
+
+                        # Check same email
+                        if user.get('email') == new_email:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'New email is the same as current email'
+                            }))
+                            continue
+
+                        # Attempt update
+                        if db.update_user_email(username, new_email):
+                            # Optionally send verification email if SMTP configured
+                            admin_settings = db.get_admin_settings()
+                            if admin_settings.get('require_email_verification'):
+                                try:
+                                    email_sender = EmailSender(admin_settings)
+                                    if email_sender.is_configured():
+                                        verification_code = ''.join(secrets.choice(string.digits) for _ in range(6))
+                                        expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+                                        db.create_email_verification_code(new_email, username, verification_code, expires_at)
+                                        email_sender.send_verification_email(new_email, username, verification_code)
+                                except Exception as e:
+                                    print(f"Failed to send verification email: {e}")
+
+                            await websocket.send_str(json.dumps({
+                                'type': 'email_changed',
+                                'email': new_email,
+                                'email_verified': False
+                            }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Email address already in use'
+                            }))
+
+                    elif data.get('type') == 'verify_email_change':
+                        # Handle verification of changed email
+                        code = data.get('code', '').strip()
+                        
+                        # Validate verification code format (must be exactly 6 digits)
+                        if not code or not code.isdigit() or len(code) != 6:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid verification code format'
+                            }))
+                            continue
+                        
+                        # Get user's current email
+                        user = db.get_user(username)
+                        if not user:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'User not found'
+                            }))
+                            continue
+                        
+                        email = user.get('email')
+                        if not email:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'No email associated with this account'
+                            }))
+                            continue
+                        
+                        # Verify the code
+                        verification_data = db.get_email_verification_code(email, username)
+                        if not verification_data or verification_data['code'] != code:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid or expired verification code'
+                            }))
+                            continue
+                        
+                        # Mark email as verified
+                        if db.verify_user_email(username):
+                            # Clean up ALL verification codes for this user
+                            # This prevents reuse of old codes if deletion fails
+                            if not db.delete_all_user_verification_codes(username):
+                                print(f"Warning: Failed to delete verification codes after email verification")
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Email verified but failed to clean up verification codes'
+                                }))
+                                continue
+                            
+                            await websocket.send_str(json.dumps({
+                                'type': 'email_verified',
+                                'email': email,
+                                'email_verified': True
+                            }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Failed to verify email'
+                            }))
+
+                    elif data.get('type') == 'change_username':
+                        new_username = data.get('new_username', '').strip()
+                        password = data.get('password', '')
+
+                        # Validate
+                        if not new_username:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'New username is required'
+                            }))
+                            continue
+
+                        if len(new_username) > 255:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Username is too long. Maximum 255 characters.'
+                            }))
+                            continue
+
+                        if new_username == username:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'New username is the same as current username'
+                            }))
+                            continue
+
+                        # Check availability
+                        if db.get_user(new_username):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Username already taken'
+                            }))
+                            continue
+
+                        # Verify password
+                        user = db.get_user(username)
+                        if not user or not verify_password(password, user['password_hash']):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid password'
+                            }))
+                            continue
+
+                        old_username = username
+                        if db.change_username(old_username, new_username):
+                            # Update in-memory state
+                            clients[websocket] = new_username
+
+                            if old_username in voice_states:
+                                voice_states[new_username] = voice_states.pop(old_username)
+
+                            for call_id, call_data in voice_calls.items():
+                                if old_username in call_data.get('participants', set()):
+                                    call_data['participants'].discard(old_username)
+                                    call_data['participants'].add(new_username)
+
+                            # Update session username variable
+                            username = new_username
+
+                            # Generate new JWT token
+                            new_token = generate_jwt_token(new_username)
+
+                            # Confirm to user
+                            await websocket.send_str(json.dumps({
+                                'type': 'username_changed',
+                                'old_username': old_username,
+                                'new_username': new_username,
+                                'token': new_token
+                            }))
+
+                            # Broadcast to friends
+                            for friend_username in db.get_friends(new_username):
+                                await send_to_user(friend_username, json.dumps({
+                                    'type': 'user_renamed',
+                                    'old_username': old_username,
+                                    'new_username': new_username
+                                }))
+
+                            # Broadcast to all servers user is in
+                            for server_id in db.get_user_servers(new_username):
+                                await broadcast_to_server(server_id, json.dumps({
+                                    'type': 'user_renamed',
+                                    'old_username': old_username,
+                                    'new_username': new_username
+                                }), exclude=websocket)
+
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Username changed: {old_username} -> {new_username}")
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Failed to change username. It may already be taken.'
+                            }))
+
+                    elif data.get('type') == 'request_password_reset':
+                        # Handle password reset request from logged-in user
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Processing password reset for authenticated user: {username}")
+                        try:
+                            # For authenticated users, always rate limit by their actual account
+                            rate_limit_key = username
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: password reset rate_limit_key={rate_limit_key}")
+                            
+                            # Check rate limiting to prevent abuse
+                            if not check_password_reset_rate_limit(rate_limit_key):
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Too many password reset requests. Please try again later.'
+                                }))
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] Rate limit exceeded for password reset: {rate_limit_key}")
+                                continue
+                            
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Rate limit passed")
+                            
+                            # Get user data
+                            user = db.get_user(username)
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: user={user}")
+                            
+                            if user and user.get('email'):
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: User has email, generating token")
+                                # Generate reset token
+                                reset_token = secrets.token_urlsafe(32)
+                                expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+                                
+                                # Save token to database
+                                if db.create_password_reset_token(user['username'], reset_token, expires_at):
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Token created, sending email")
+                                    # Send password reset email
+                                    email_sender = EmailSender(db.get_admin_settings())
+                                    try:
+                                        if email_sender.send_password_reset_email(
+                                            user['email'], 
+                                            user['username'], 
+                                            reset_token
+                                        ):
+                                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Password reset email sent to {user['username']} at {user['email']}")
+                                        else:
+                                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to send password reset email to {user['username']} at {user['email']}")
+                                    except Exception as e:
+                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Error sending password reset email to {user['username']}: {e}")
+                                        traceback.print_exc()
+                                else:
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to create password reset token for {user['username']}")
+                            else:
+                                if user:
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] User {username} has no email address registered")
+                                else:
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] User {username} not found")
+                            
+                            # Always return success to prevent information leakage
+                            await websocket.send_str(json.dumps({
+                                'type': 'password_reset_requested',
+                                'message': 'If an email is registered for your account, a password reset link has been sent.'
+                            }))
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Response sent to client")
+                        except Exception as e:
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] EXCEPTION in password reset handler: {e}")
+                            traceback.print_exc()
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'An error occurred processing your request.'
+                            }))
+                    
                     elif data.get('type') == 'request_password_reset':
                         # Handle password reset request from logged-in user
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Processing password reset for authenticated user: {username}")
@@ -4552,6 +5689,92 @@ async def handler(websocket):
                                         'type': 'error',
                                         'message': 'You do not have permission to delete this emoji'
                                     }))
+                    
+                    # Soundboard handlers
+                    elif data.get('type') == 'play_soundboard':
+                        sound_id = data.get('sound_id', '')
+                        
+                        if not sound_id:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'sound_id is required'
+                            }))
+                            continue
+                        
+                        # Check if user is in a voice channel
+                        if username not in voice_states:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'You must be in a voice channel to play sounds'
+                            }))
+                            continue
+                        
+                        voice_state = voice_states[username]
+                        server_id = voice_state.get('server_id')
+                        channel_id = voice_state.get('channel_id')
+                        
+                        if not server_id or not channel_id:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid voice state'
+                            }))
+                            continue
+                        
+                        # Check soundboard is enabled
+                        admin_settings = db.get_admin_settings()
+                        if not admin_settings.get('allow_soundboard', False):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Soundboard is disabled'
+                            }))
+                            continue
+                        
+                        # Verify sound exists
+                        sound = db.get_soundboard_sound(sound_id)
+                        if not sound:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Sound not found'
+                            }))
+                            continue
+                        
+                        # Check cooldown (2 seconds between plays per user)
+                        current_time = time.time()
+                        if username in soundboard_cooldowns:
+                            last_play = soundboard_cooldowns[username]
+                            if current_time - last_play < 2:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Please wait before playing another sound'
+                                }))
+                                continue
+                        
+                        # Update cooldown
+                        soundboard_cooldowns[username] = current_time
+                        
+                        # Get all members in the voice channel
+                        voice_key = f"{server_id}/{channel_id}"
+                        if voice_key in voice_members:
+                            # Broadcast soundboard play to all voice channel participants
+                            soundboard_msg = json.dumps({
+                                'type': 'soundboard_play',
+                                'sound_id': sound_id,
+                                'sound_name': sound.get('name', ''),
+                                'username': username,
+                                'server_id': server_id,
+                                'channel_id': channel_id,
+                                'duration_ms': sound.get('duration_ms', 0)
+                            })
+                            
+                            for participant_username in voice_members[voice_key]:
+                                if participant_username in clients_by_username:
+                                    for client_ws in clients_by_username[participant_username]:
+                                        try:
+                                            await client_ws.send_str(soundboard_msg)
+                                        except Exception:
+                                            pass
+                            
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} played soundboard sound '{sound.get('name')}' in {channel_id}")
                     
                     # Message reaction handlers
                     elif data.get('type') == 'add_reaction':
@@ -5426,6 +6649,11 @@ async def load_license():
     try:
         settings = db.get_admin_settings()
         last_check_at = settings.get('last_license_check_at')
+        
+        # Ensure last_check_at is timezone-aware
+        if last_check_at and last_check_at.tzinfo is None:
+            last_check_at = last_check_at.replace(tzinfo=timezone.utc)
+        
         grace_period_days = settings.get('license_check_grace_period_days', 7)
         instance_fingerprint = settings.get('instance_fingerprint')
 
@@ -5540,7 +6768,7 @@ async def main():
     app.router.add_get('/ws', websocket_handler)
     
     # Setup REST API routes
-    setup_api_routes(app, db, verify_jwt_token)
+    setup_api_routes(app, db, verify_jwt_token, broadcast_to_server, send_to_user, get_or_create_dm, get_avatar_data)
     
     # Run the server with SSL
     runner = web.AppRunner(app)

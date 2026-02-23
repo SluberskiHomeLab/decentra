@@ -8,6 +8,7 @@ import json
 import uuid
 import base64
 import re
+import secrets
 from aiohttp import web
 import bcrypt
 from license_validator import check_limit
@@ -16,6 +17,14 @@ from license_validator import check_limit
 db = None
 # JWT verification function will be set by setup_api_routes
 verify_jwt_token = None
+# WebSocket broadcast function will be set by setup_api_routes
+broadcast_to_server_func = None
+# send_to_user function will be set by setup_api_routes
+send_to_user_func = None
+# get_or_create_dm function will be set by setup_api_routes
+get_or_create_dm_func = None
+# get_avatar_data function will be set by setup_api_routes
+get_avatar_data_func = None
 
 
 def sanitize_filename(filename):
@@ -299,11 +308,12 @@ async def api_dms(request):
 
 async def api_search_messages(request):
     """
-    GET /api/search-messages?username=<username>&query=<query>&limit=<limit>
+    GET /api/search-messages?query=<query>&limit=<limit>
     Search messages for a user across all their accessible chats
     
+    Requires: Authorization header with Bearer token
+    
     Parameters:
-    - username: username of the user performing the search
     - query: search query string
     - limit: number of results to return (default: 50, max: 100)
     
@@ -325,15 +335,25 @@ async def api_search_messages(request):
     }
     """
     try:
-        username = request.query.get('username')
-        query = request.query.get('query', '').strip()
-        limit = int(request.query.get('limit', 50))
+        # Extract and verify JWT token from Authorization header
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({
+                'success': False,
+                'error': 'Missing or invalid Authorization header'
+            }, status=401)
+        
+        token = auth_header[7:]  # Remove 'Bearer ' prefix
+        username = verify_jwt_token(token)
         
         if not username:
             return web.json_response({
                 'success': False,
-                'error': 'Username parameter is required'
-            }, status=400)
+                'error': 'Invalid or expired token'
+            }, status=401)
+        
+        query = request.query.get('query', '').strip()
+        limit = int(request.query.get('limit', 50))
         
         if not query:
             return web.json_response({
@@ -344,6 +364,8 @@ async def api_search_messages(request):
         # Limit to max 100 results
         limit = min(limit, 100)
         
+        # Use the authenticated username from the token
+        # The database function enforces access control for DMs and servers
         results = db.search_messages(username, query, limit)
         
         return web.json_response({
@@ -699,11 +721,1144 @@ async def api_reset_password(request):
         }, status=500)
 
 
-def setup_api_routes(app, database, jwt_verify_func):
+# ============================================================================
+# Soundboard API Endpoints
+# ============================================================================
+
+async def api_upload_soundboard_sound(request):
+    """
+    POST /api/upload-soundboard-sound
+    Upload a soundboard sound (personal or server-based)
+    
+    Request body (multipart/form-data):
+        - file: The audio file to upload (.mp3, .wav, .ogg)
+        - sound_name: Name for the sound (max 30 chars)
+        - is_server_sound: 'true' or 'false' (default: false)
+        - server_id: Required if is_server_sound is true
+        - token: JWT authentication token
+    
+    Response: {
+        "success": true,
+        "sound": {
+            "sound_id": "string",
+            "name": "string",
+            "duration_ms": int,
+            "file_size": int
+        }
+    }
+    """
+    try:
+        from audio_utils import validate_audio_format, get_audio_duration
+        
+        # Get admin settings
+        admin_settings = db.get_admin_settings()
+        
+        # Check if soundboard is allowed
+        if not admin_settings.get('allow_soundboard', False):
+            return web.json_response({
+                'success': False,
+                'error': 'Soundboard is disabled'
+            }, status=403)
+        
+        # Get multipart data
+        reader = await request.multipart()
+        
+        token = None
+        sound_name = None
+        is_server_sound = False
+        server_id = None
+        filename = None
+        content_type = None
+        file_data = None
+        
+        async for field in reader:
+            if field.name == 'token':
+                token = (await field.read()).decode('utf-8').strip()
+            elif field.name == 'sound_name':
+                sound_name = (await field.read()).decode('utf-8').strip()
+            elif field.name == 'is_server_sound':
+                is_server_sound_str = (await field.read()).decode('utf-8').strip().lower()
+                is_server_sound = is_server_sound_str == 'true'
+            elif field.name == 'server_id':
+                server_id = (await field.read()).decode('utf-8').strip()
+            elif field.name == 'file':
+                filename = field.filename
+                content_type = field.headers.get('Content-Type', 'application/octet-stream')
+                file_data = await field.read()
+        
+        # Validate required fields
+        if not sound_name or not file_data:
+            return web.json_response({
+                'success': False,
+                'error': 'Missing required fields (sound_name and file are required)'
+            }, status=400)
+        
+        # Authenticate user
+        if not token:
+            return web.json_response({
+                'success': False,
+                'error': 'Authentication required'
+            }, status=401)
+        
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid or expired token'
+            }, status=401)
+        
+        # Validate sound name
+        if len(sound_name) > 30:
+            return web.json_response({
+                'success': False,
+                'error': 'Sound name must be 30 characters or less'
+            }, status=400)
+        
+        if not re.match(r'^[a-zA-Z0-9\s\-_]+$', sound_name):
+            return web.json_response({
+                'success': False,
+                'error': 'Sound name can only contain letters, numbers, spaces, hyphens, and underscores'
+            }, status=400)
+        
+        # Validate audio format
+        if not validate_audio_format(filename, content_type):
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid audio format. Supported formats: .mp3, .wav, .ogg'
+            }, status=400)
+        
+        # Check file size (max 2MB for soundboard sounds)
+        max_size_bytes = 2 * 1024 * 1024  # 2MB
+        file_size = len(file_data)
+        
+        if file_size > max_size_bytes:
+            return web.json_response({
+                'success': False,
+                'error': 'File size exceeds maximum of 2MB'
+            }, status=413)
+        
+        # Extract audio duration
+        try:
+            duration_ms = get_audio_duration(file_data, content_type)
+            if duration_ms is None:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Unable to determine audio duration'
+                }, status=400)
+        except Exception as e:
+            return web.json_response({
+                'success': False,
+                'error': f'Invalid audio file: {str(e)}'
+            }, status=400)
+        
+        # Check duration limits (admin setting vs license limit)
+        admin_max_duration = admin_settings.get('max_sound_duration_seconds', 10)
+        license_max_duration = check_limit('max_sound_duration_seconds')
+        
+        if license_max_duration != -1:
+            max_duration_seconds = min(admin_max_duration, license_max_duration)
+        else:
+            max_duration_seconds = admin_max_duration
+        
+        if duration_ms > max_duration_seconds * 1000:
+            return web.json_response({
+                'success': False,
+                'error': f'Sound duration exceeds maximum of {max_duration_seconds} seconds'
+            }, status=400)
+        
+        # Handle server sound vs personal sound
+        if is_server_sound:
+            if not server_id:
+                return web.json_response({
+                    'success': False,
+                    'error': 'server_id is required for server sounds'
+                }, status=400)
+            
+            # Verify user has permission to upload server sounds (must be admin/owner)
+            server = db.get_server(server_id)
+            if not server:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Server not found'
+                }, status=404)
+            
+            # Check if user is server owner or has admin permissions
+            is_owner = server['owner'] == username
+            member_info = db.get_server_member(server_id, username)
+            
+            if not is_owner and (not member_info or member_info.get('permissions', {}).get('manage_server') != True):
+                return web.json_response({
+                    'success': False,
+                    'error': 'You must be a server admin to upload server sounds'
+                }, status=403)
+            
+            # Check server sound count limit
+            admin_max_server_sounds = admin_settings.get('max_server_sounds', 25)
+            license_max_server_sounds = check_limit('max_server_sounds')
+            
+            if license_max_server_sounds != -1:
+                max_server_sounds = min(admin_max_server_sounds, license_max_server_sounds)
+            else:
+                max_server_sounds = admin_max_server_sounds
+            
+            current_count = db.count_server_soundboard_sounds(server_id)
+            if max_server_sounds != -1 and current_count >= max_server_sounds:
+                return web.json_response({
+                    'success': False,
+                    'error': f'Server has reached maximum of {max_server_sounds} sounds'
+                }, status=403)
+            
+            # Generate sound ID and save
+            sound_id = f"snd_{uuid.uuid4().hex[:16]}"
+            file_data_b64 = base64.b64encode(file_data).decode('utf-8')
+            
+            success = db.save_server_soundboard_sound(
+                sound_id=sound_id,
+                server_id=server_id,
+                name=sound_name,
+                audio_data=file_data_b64,
+                content_type=content_type,
+                duration_ms=duration_ms,
+                file_size=file_size,
+                uploader=username
+            )
+            
+            if not success:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Sound name already exists for this server'
+                }, status=409)
+        
+        else:  # Personal sound
+            # Check user sound count limit
+            admin_max_user_sounds = admin_settings.get('max_sounds_per_user', 10)
+            license_max_user_sounds = check_limit('max_sounds_per_user')
+            
+            if license_max_user_sounds != -1:
+                max_user_sounds = min(admin_max_user_sounds, license_max_user_sounds)
+            else:
+                max_user_sounds = admin_max_user_sounds
+            
+            current_count = db.count_user_soundboard_sounds(username)
+            if max_user_sounds != -1 and current_count >= max_user_sounds:
+                return web.json_response({
+                    'success': False,
+                    'error': f'You have reached maximum of {max_user_sounds} personal sounds'
+                }, status=403)
+            
+            # Generate sound ID and save
+            sound_id = f"snd_{uuid.uuid4().hex[:16]}"
+            file_data_b64 = base64.b64encode(file_data).decode('utf-8')
+            
+            success = db.save_user_soundboard_sound(
+                sound_id=sound_id,
+                username=username,
+                name=sound_name,
+                audio_data=file_data_b64,
+                content_type=content_type,
+                duration_ms=duration_ms,
+                file_size=file_size
+            )
+            
+            if not success:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Sound name already exists in your personal soundboard'
+                }, status=409)
+        
+        return web.json_response({
+            'success': True,
+            'sound': {
+                'sound_id': sound_id,
+                'name': sound_name,
+                'duration_ms': duration_ms,
+                'file_size': file_size,
+                'is_server_sound': is_server_sound
+            }
+        })
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+async def api_get_soundboard_sounds(request):
+    """
+    GET /api/soundboard-sounds?type=user&server_id=X
+    Get soundboard sounds (personal or server-based)
+    
+    Query parameters:
+        - type: 'user' for personal sounds, 'server' for server sounds
+        - server_id: Required if type=server
+        - token: JWT authentication token
+    
+    Response: {
+        "success": true,
+        "sounds": [
+            {
+                "sound_id": "string",
+                "name": "string",
+                "duration_ms": int,
+                "file_size": int,
+                "created_at": "string"
+            }
+        ]
+    }
+    """
+    try:
+        # Get query parameters
+        sound_type = request.query.get('type', 'user')
+        server_id = request.query.get('server_id')
+        token = request.query.get('token')
+        
+        # Authenticate user
+        if not token:
+            return web.json_response({
+                'success': False,
+                'error': 'Authentication required'
+            }, status=401)
+        
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid or expired token'
+            }, status=401)
+        
+        # Get sounds based on type
+        if sound_type == 'server':
+            if not server_id:
+                return web.json_response({
+                    'success': False,
+                    'error': 'server_id is required for server sounds'
+                }, status=400)
+            
+            # Verify user is a member of the server
+            member = db.get_server_member(server_id, username)
+            if not member:
+                return web.json_response({
+                    'success': False,
+                    'error': 'You are not a member of this server'
+                }, status=403)
+            
+            sounds = db.get_server_soundboard_sounds(server_id)
+        else:  # 'user'
+            sounds = db.get_user_soundboard_sounds(username)
+        
+        return web.json_response({
+            'success': True,
+            'sounds': sounds
+        })
+    
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+async def api_download_soundboard_sound(request):
+    """
+    GET /api/download-soundboard-sound/<sound_id>
+    Download a soundboard sound file
+    
+    Response: Binary audio data with appropriate content-type
+    """
+    try:
+        sound_id = request.match_info.get('sound_id')
+        if not sound_id:
+            return web.json_response({
+                'success': False,
+                'error': 'Sound ID is required'
+            }, status=400)
+        
+        # Get sound
+        sound = db.get_soundboard_sound(sound_id)
+        if not sound:
+            return web.json_response({
+                'success': False,
+                'error': 'Sound not found'
+            }, status=404)
+        
+        # Decode base64 audio data
+        audio_data = base64.b64decode(sound['audio_data'])
+        
+        # Sanitize content type
+        safe_content_type = sanitize_content_type(sound['content_type'])
+        safe_filename = sanitize_filename(sound['name'])
+        
+        # Add appropriate extension if not present
+        if not any(safe_filename.endswith(ext) for ext in ['.mp3', '.wav', '.ogg', '.opus']):
+            if 'mp3' in safe_content_type:
+                safe_filename += '.mp3'
+            elif 'wav' in safe_content_type:
+                safe_filename += '.wav'
+            elif 'ogg' in safe_content_type or 'opus' in safe_content_type:
+                safe_filename += '.ogg'
+        
+        # Return audio file
+        return web.Response(
+            body=audio_data,
+            content_type=safe_content_type,
+            headers={
+                'Content-Disposition': f'inline; filename="{safe_filename}"',
+                'Content-Length': str(len(audio_data))
+            }
+        )
+    
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+async def api_delete_soundboard_sound(request):
+    """
+    DELETE /api/delete-soundboard-sound/<sound_id>
+    Delete a soundboard sound
+    
+    Query parameters:
+        - token: JWT authentication token
+    
+    Response: {
+        "success": true,
+        "message": "Sound deleted successfully"
+    }
+    """
+    try:
+        sound_id = request.match_info.get('sound_id')
+        token = request.query.get('token')
+        
+        if not sound_id:
+            return web.json_response({
+                'success': False,
+                'error': 'Sound ID is required'
+            }, status=400)
+        
+        # Authenticate user
+        if not token:
+            return web.json_response({
+                'success': False,
+                'error': 'Authentication required'
+            }, status=401)
+        
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid or expired token'
+            }, status=401)
+        
+        # Get sound to verify ownership
+        sound = db.get_soundboard_sound(sound_id)
+        if not sound:
+            return web.json_response({
+                'success': False,
+                'error': 'Sound not found'
+            }, status=404)
+        
+        # Check permissions
+        if sound['sound_type'] == 'user':
+            # For personal sounds, must be the owner
+            if sound['owner'] != username:
+                return web.json_response({
+                    'success': False,
+                    'error': 'You can only delete your own personal sounds'
+                }, status=403)
+        else:  # server sound
+            # For server sounds, must be server admin or the uploader
+            server_id = sound['server_id']
+            server = db.get_server(server_id)
+            
+            is_owner = server['owner'] == username
+            is_uploader = sound['uploader'] == username
+            member_info = db.get_server_member(server_id, username)
+            is_admin = member_info and member_info.get('permissions', {}).get('manage_server') == True
+            
+            if not (is_owner or is_uploader or is_admin):
+                return web.json_response({
+                    'success': False,
+                    'error': 'You do not have permission to delete this sound'
+                }, status=403)
+        
+        # Delete the sound
+        success = db.delete_soundboard_sound(sound_id)
+        if not success:
+            return web.json_response({
+                'success': False,
+                'error': 'Failed to delete sound'
+            }, status=500)
+        
+        return web.json_response({
+            'success': True,
+            'message': 'Sound deleted successfully'
+        })
+    
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+# ============================================================================
+# Webhook API Endpoints
+# ============================================================================
+
+async def api_create_webhook(request):
+    """
+    POST /api/webhooks
+    Create a new webhook for a server channel.
+    
+    Request body: {
+        "server_id": "string",
+        "channel_id": "string",
+        "name": "string",
+        "avatar": "string" (optional)
+    }
+    
+    Response: {
+        "success": true,
+        "webhook": {
+            "id": "string",
+            "name": "string",
+            "url": "string",
+            "token": "string",
+            "avatar": "string"
+        }
+    }
+    """
+    try:
+        # Verify JWT token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({
+                'success': False,
+                'error': 'Authorization required'
+            }, status=401)
+        
+        token = auth_header.split(' ')[1]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid token'
+            }, status=401)
+        
+        data = await request.json()
+        server_id = data.get('server_id', '').strip()
+        channel_id = data.get('channel_id', '').strip()
+        name = data.get('name', '').strip()
+        avatar = data.get('avatar', '🔗')
+        
+        if not server_id or not channel_id or not name:
+            return web.json_response({
+                'success': False,
+                'error': 'server_id, channel_id, and name are required'
+            }, status=400)
+        
+        # Check if user is a member of the server
+        if not db.is_server_member(username, server_id):
+            return web.json_response({
+                'success': False,
+                'error': 'You are not a member of this server'
+            }, status=403)
+        
+        # Generate webhook ID and token
+        webhook_id = str(uuid.uuid4())
+        webhook_token = secrets.token_urlsafe(32)
+        
+        # Create webhook
+        if db.create_webhook(webhook_id, server_id, channel_id, name, webhook_token, username, avatar):
+            # Get base URL from request
+            scheme = request.scheme
+            host = request.host
+            webhook_url = f"{scheme}://{host}/api/webhooks/{webhook_id}/{webhook_token}"
+            
+            return web.json_response({
+                'success': True,
+                'webhook': {
+                    'id': webhook_id,
+                    'name': name,
+                    'url': webhook_url,
+                    'token': webhook_token,
+                    'avatar': avatar,
+                    'channel_id': channel_id
+                }
+            })
+        else:
+            return web.json_response({
+                'success': False,
+                'error': 'Failed to create webhook'
+            }, status=500)
+            
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+async def api_get_server_webhooks(request):
+    """
+    GET /api/webhooks/server/{server_id}
+    Get all webhooks for a server.
+    """
+    try:
+        # Verify JWT token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({
+                'success': False,
+                'error': 'Authorization required'
+            }, status=401)
+        
+        token = auth_header.split(' ')[1]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid token'
+            }, status=401)
+        
+        server_id = request.match_info['server_id']
+        
+        # Check if user is a member of the server
+        if not db.is_server_member(username, server_id):
+            return web.json_response({
+                'success': False,
+                'error': 'You are not a member of this server'
+            }, status=403)
+        
+        webhooks = db.get_server_webhooks(server_id)
+        
+        # Format webhooks for response (exclude tokens)
+        formatted_webhooks = []
+        scheme = request.scheme
+        host = request.host
+        
+        for wh in webhooks:
+            formatted_webhooks.append({
+                'id': wh['webhook_id'],
+                'name': wh['name'],
+                'channel_id': wh['channel_id'],
+                'avatar': wh['avatar'],
+                'created_by': wh['created_by'],
+                'created_at': wh['created_at'].isoformat() if wh['created_at'] else None,
+                'url': f"{scheme}://{host}/api/webhooks/{wh['webhook_id']}/{wh['token']}"
+            })
+        
+        return web.json_response({
+            'success': True,
+            'webhooks': formatted_webhooks
+        })
+        
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+async def api_delete_webhook(request):
+    """
+    DELETE /api/webhooks/{webhook_id}
+    Delete a webhook.
+    """
+    try:
+        # Verify JWT token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({
+                'success': False,
+                'error': 'Authorization required'
+            }, status=401)
+        
+        token = auth_header.split(' ')[1]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid token'
+            }, status=401)
+        
+        webhook_id = request.match_info['webhook_id']
+        
+        # Get webhook to verify ownership
+        webhook = db.get_webhook(webhook_id)
+        if not webhook:
+            return web.json_response({
+                'success': False,
+                'error': 'Webhook not found'
+            }, status=404)
+        
+        # Check if user created the webhook or is server owner
+        server = db.get_server(webhook['server_id'])
+        if webhook['created_by'] != username and server['owner'] != username:
+            return web.json_response({
+                'success': False,
+                'error': 'You do not have permission to delete this webhook'
+            }, status=403)
+        
+        if db.delete_webhook(webhook_id):
+            return web.json_response({
+                'success': True,
+                'message': 'Webhook deleted successfully'
+            })
+        else:
+            return web.json_response({
+                'success': False,
+                'error': 'Failed to delete webhook'
+            }, status=500)
+            
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+async def api_execute_webhook(request):
+    """
+    POST /api/webhooks/{webhook_id}/{token}
+    Execute a webhook to send a message to the channel.
+    
+    Request body: {
+        "content": "string",
+        "username": "string" (optional, uses webhook name if not provided),
+        "avatar_url": "string" (optional)
+    }
+    """
+    try:
+        webhook_id = request.match_info['webhook_id']
+        token = request.match_info['token']
+        
+        # Get webhook by token
+        webhook = db.get_webhook_by_token(token)
+        if not webhook or webhook['webhook_id'] != webhook_id:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid webhook'
+            }, status=404)
+        
+        data = await request.json()
+        content = data.get('content', '').strip()
+        display_name = data.get('username', webhook['name'])
+        
+        if not content:
+            return web.json_response({
+                'success': False,
+                'error': 'Content is required'
+            }, status=400)
+        
+        # Save message to database and broadcast to server
+        server_id = webhook['server_id']
+        channel_id = webhook['channel_id']
+        context_id = f"{server_id}/{channel_id}"
+        
+        # Ensure webhook system user exists
+        db.ensure_webhook_system_user()
+        
+        # Save message to database using the system webhook user
+        # The actual webhook identity is preserved in the broadcast message
+        message_id = db.save_message(
+            username='__webhook__',
+            content=content,
+            context_type='server',
+            context_id=context_id
+        )
+        
+        # Create a webhook user profile with the display name and avatar
+        webhook_profile = {
+            'avatar': webhook.get('avatar', '🔗'),
+            'avatar_type': 'emoji',
+            'avatar_data': None,
+            'is_webhook': True,
+            'webhook_name': display_name
+        }
+        
+        # Create message object directly (don't use create_message_object_func 
+        # because it tries to look up user status/roles for non-existent webhook user)
+        from datetime import datetime, timezone
+        msg_obj = {
+            'type': 'message',
+            'username': display_name,
+            'content': content,
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'context': 'server',
+            'context_id': context_id,
+            'avatar': webhook.get('avatar', '🔗'),
+            'avatar_type': 'emoji',
+            'avatar_data': None,
+            'user_status': 'offline',  # Webhooks don't have status
+            'id': message_id,
+            'attachments': [],
+            'reactions': [],
+            'mentions': [],
+            'is_webhook': True
+        }
+        
+        # Broadcast message to all server members
+        await broadcast_to_server_func(server_id, json.dumps(msg_obj))
+        
+        return web.json_response({
+            'success': True,
+            'message': 'Webhook executed successfully',
+            'webhook_data': {
+                'channel_id': channel_id,
+                'server_id': server_id,
+                'content': content,
+                'display_name': display_name,
+                'webhook_id': webhook_id,
+                'message_id': message_id
+            }
+        })
+        
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+async def api_get_instance_webhooks(request):
+    """
+    GET /api/instance-webhooks
+    Get all instance-level webhooks (admin only).
+    """
+    try:
+        # Verify JWT token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({
+                'success': False,
+                'error': 'Authorization required'
+            }, status=401)
+        
+        token = auth_header.split(' ')[1]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid token'
+            }, status=401)
+        
+        # Check if user is admin
+        user = db.get_user(username)
+        if not user or user.get('username') != 'admin':
+            return web.json_response({
+                'success': False,
+                'error': 'Admin access required'
+            }, status=403)
+        
+        webhooks = db.get_all_instance_webhooks()
+        
+        # Get request host to build webhook URLs
+        scheme = 'https' if request.secure else 'http'
+        host = request.host
+        
+        # Format webhooks for response
+        formatted_webhooks = [{
+            'id': wh['webhook_id'],
+            'name': wh['name'],
+            'avatar': wh.get('avatar', '📢'),
+            'url': f"{scheme}://{host}/api/instance-webhooks/{wh['webhook_id']}/{wh['token']}",
+            'event_type': wh.get('event_type'),
+            'target_url': wh.get('target_url'),
+            'enabled': wh['enabled'],
+            'created_by': wh['created_by'],
+            'created_at': wh['created_at'].isoformat() if wh['created_at'] else None
+        } for wh in webhooks]
+        
+        return web.json_response({
+            'success': True,
+            'webhooks': formatted_webhooks
+        })
+        
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+async def api_create_instance_webhook(request):
+    """
+    POST /api/instance-webhooks
+    Create an instance-level webhook (admin only).
+    """
+    try:
+        # Verify JWT token and admin access
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({
+                'success': False,
+                'error': 'Authorization required'
+            }, status=401)
+        
+        token = auth_header.split(' ')[1]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid token'
+            }, status=401)
+        
+        # Check if user is admin
+        user = db.get_user(username)
+        if not user or user.get('username') != 'admin':
+            return web.json_response({
+                'success': False,
+                'error': 'Admin access required'
+            }, status=403)
+        
+        data = await request.json()
+        name = data.get('name', '').strip()
+        avatar = data.get('avatar', '📢')  # Default to megaphone emoji
+        enabled = data.get('enabled', True)
+        
+        # event_type and target_url are optional (for future outgoing webhook support)
+        event_type = data.get('event_type', None)
+        target_url = data.get('target_url', None)
+        
+        if not name:
+            return web.json_response({
+                'success': False,
+                'error': 'name is required'
+            }, status=400)
+        
+        # Validate event_type if provided
+        if event_type:
+            valid_events = ['user.signup', 'user.login', 'message.create', 'server.create']
+            if event_type not in valid_events:
+                return web.json_response({
+                    'success': False,
+                    'error': f'Invalid event_type. Must be one of: {", ".join(valid_events)}'
+                }, status=400)
+        
+        # Generate webhook ID and token
+        webhook_id = str(uuid.uuid4())
+        webhook_token = secrets.token_urlsafe(32)
+        
+        # Get the request host to build webhook URL
+        scheme = 'https' if request.secure else 'http'
+        host = request.host
+        webhook_url = f"{scheme}://{host}/api/instance-webhooks/{webhook_id}/{webhook_token}"
+        
+        if db.create_instance_webhook(webhook_id, name, webhook_token, username, avatar, event_type, target_url, enabled):
+            return web.json_response({
+                'success': True,
+                'webhook': {
+                    'id': webhook_id,
+                    'name': name,
+                    'avatar': avatar,
+                    'url': webhook_url,
+                    'token': webhook_token,
+                    'enabled': enabled
+                }
+            })
+        else:
+            return web.json_response({
+                'success': False,
+                'error': 'Failed to create instance webhook'
+            }, status=500)
+            
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+async def api_delete_instance_webhook(request):
+    """
+    DELETE /api/instance-webhooks/{webhook_id}
+    Delete an instance webhook (admin only).
+    """
+    try:
+        # Verify JWT token and admin access
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({
+                'success': False,
+                'error': 'Authorization required'
+            }, status=401)
+        
+        token = auth_header.split(' ')[1]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid token'
+            }, status=401)
+        
+        # Check if user is admin
+        user = db.get_user(username)
+        if not user or user.get('username') != 'admin':
+            return web.json_response({
+                'success': False,
+                'error': 'Admin access required'
+            }, status=403)
+        
+        webhook_id = request.match_info['webhook_id']
+        
+        if db.delete_instance_webhook(webhook_id):
+            return web.json_response({
+                'success': True,
+                'message': 'Instance webhook deleted successfully'
+            })
+        else:
+            return web.json_response({
+                'success': False,
+                'error': 'Failed to delete instance webhook'
+            }, status=500)
+            
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+async def api_execute_instance_webhook(request):
+    """
+    POST /api/instance-webhooks/{webhook_id}/{token}
+    Execute an instance webhook to send a DM to all users.
+    
+    Request body: {
+        "content": "string",
+        "username": "string" (optional, uses webhook name if not provided)
+    }
+    """
+    try:
+        webhook_id = request.match_info['webhook_id']
+        token = request.match_info['token']
+        
+        # Get webhook by token
+        webhook = db.get_instance_webhook_by_token(token)
+        if not webhook or webhook['webhook_id'] != webhook_id:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid webhook'
+            }, status=404)
+        
+        if not webhook.get('enabled', True):
+            return web.json_response({
+                'success': False,
+                'error': 'Webhook is disabled'
+            }, status=403)
+        
+        data = await request.json()
+        content = data.get('content', '').strip()
+        display_name = data.get('username', webhook['name'])
+        
+        if not content:
+            return web.json_response({
+                'success': False,
+                'error': 'Content is required'
+            }, status=400)
+        
+        # Ensure webhook system user exists
+        db.ensure_webhook_system_user()
+        
+        # Get all users except the webhook system user
+        all_users = db.get_all_users()
+        real_users = [u for u in all_users if u != '__webhook__']
+        
+        # Create message object
+        from datetime import datetime, timezone
+        timestamp = datetime.now(timezone.utc).isoformat()
+        
+        # Track DMs created and messages sent
+        dms_created = 0
+        messages_sent = 0
+        
+        # For each user, create or get a DM with the webhook system user
+        for user in real_users:
+            # Get or create DM between webhook user and this user
+            dm_id = get_or_create_dm_func('__webhook__', user)
+            
+            # Save message to this DM
+            message_id = db.save_message(
+                username='__webhook__',
+                content=content,
+                context_type='dm',
+                context_id=dm_id
+            )
+            
+            if message_id:
+                messages_sent += 1
+                
+                # Create message object for this user
+                msg_obj = {
+                    'type': 'message',
+                    'username': display_name,
+                    'content': content,
+                    'timestamp': timestamp,
+                    'context': 'dm',
+                    'context_id': dm_id,
+                    'avatar': webhook.get('avatar', '📢'),
+                    'avatar_type': 'emoji',
+                    'avatar_data': None,
+                    'user_status': 'offline',
+                    'id': message_id,
+                    'attachments': [],
+                    'reactions': [],
+                    'mentions': [],
+                    'is_webhook': True,
+                    'is_instance_webhook': True
+                }
+                
+                # Send DM message to this user
+                await send_to_user_func(user, json.dumps(msg_obj))
+                
+                # Also notify the user about the new DM if they don't have it yet
+                dm_notification = {
+                    'type': 'dm_started',
+                    'dm': {
+                        'id': dm_id,
+                        'username': display_name,
+                        'avatar': webhook.get('avatar', '📢'),
+                        'avatar_type': 'emoji',
+                        'avatar_data': None
+                    }
+                }
+                await send_to_user_func(user, json.dumps(dm_notification))
+        
+        return web.json_response({
+            'success': True,
+            'message': 'Instance webhook executed successfully',
+            'webhook_data': {
+                'content': content,
+                'display_name': display_name,
+                'webhook_id': webhook_id,
+                'users_notified': len(real_users),
+                'messages_sent': messages_sent,
+                'broadcast_type': 'direct_messages'
+            }
+        })
+        
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+def setup_api_routes(app, database, jwt_verify_func, broadcast_func, send_user_func, create_dm_func, avatar_func):
     """Setup REST API routes on the aiohttp application."""
-    global db, verify_jwt_token
+    global db, verify_jwt_token, broadcast_to_server_func, send_to_user_func, get_or_create_dm_func, get_avatar_data_func
     db = database
     verify_jwt_token = jwt_verify_func
+    broadcast_to_server_func = broadcast_func
+    send_to_user_func = send_user_func
+    get_or_create_dm_func = create_dm_func
+    get_avatar_data_func = avatar_func
     app.router.add_post('/api/auth', api_auth)
     app.router.add_post('/api/reset-password', api_reset_password)
     app.router.add_get('/api/servers', api_servers)
@@ -715,3 +1870,18 @@ def setup_api_routes(app, database, jwt_verify_func):
     app.router.add_get('/api/download-attachment/{attachment_id}', api_download_attachment)
     app.router.add_get('/api/download-attachment/{attachment_id}/{filename}', api_download_attachment)
     app.router.add_get('/api/message-attachments/{message_id}', api_get_message_attachments)
+    # Soundboard routes
+    app.router.add_post('/api/upload-soundboard-sound', api_upload_soundboard_sound)
+    app.router.add_get('/api/soundboard-sounds', api_get_soundboard_sounds)
+    app.router.add_get('/api/download-soundboard-sound/{sound_id}', api_download_soundboard_sound)
+    app.router.add_delete('/api/delete-soundboard-sound/{sound_id}', api_delete_soundboard_sound)
+    # Webhook routes
+    app.router.add_post('/api/webhooks', api_create_webhook)
+    app.router.add_get('/api/webhooks/server/{server_id}', api_get_server_webhooks)
+    app.router.add_delete('/api/webhooks/{webhook_id}', api_delete_webhook)
+    app.router.add_post('/api/webhooks/{webhook_id}/{token}', api_execute_webhook)
+    # Instance webhook routes (admin only)
+    app.router.add_get('/api/instance-webhooks', api_get_instance_webhooks)
+    app.router.add_post('/api/instance-webhooks', api_create_instance_webhook)
+    app.router.add_delete('/api/instance-webhooks/{webhook_id}', api_delete_instance_webhook)
+    app.router.add_post('/api/instance-webhooks/{webhook_id}/{token}', api_execute_instance_webhook)

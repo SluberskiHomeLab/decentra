@@ -182,10 +182,24 @@ class Database:
                             code_type VARCHAR(50) DEFAULT 'global',
                             server_id VARCHAR(255),
                             created_at TIMESTAMP NOT NULL,
+                            max_uses INTEGER,
+                            is_active BOOLEAN DEFAULT TRUE,
+                            description TEXT,
                             FOREIGN KEY (creator) REFERENCES users(username) ON DELETE CASCADE,
                             FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
                         )
                     ''')
+                    
+                    # Add new columns to existing invite_codes table if they don't exist
+                    try:
+                        cursor.execute('''
+                            ALTER TABLE invite_codes 
+                            ADD COLUMN IF NOT EXISTS max_uses INTEGER,
+                            ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE,
+                            ADD COLUMN IF NOT EXISTS description TEXT
+                        ''')
+                    except:
+                        pass  # Columns may already exist
                     
                     # Invite usage tracking table
                     cursor.execute('''
@@ -341,6 +355,52 @@ class Database:
                             FOREIGN KEY (uploader) REFERENCES users(username) ON DELETE CASCADE,
                             UNIQUE (server_id, name)
                         )
+                    ''')
+                    
+                    # User soundboard sounds table (personal sounds that work across all servers)
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS user_soundboard_sounds (
+                            sound_id VARCHAR(255) PRIMARY KEY,
+                            username VARCHAR(255) NOT NULL,
+                            name VARCHAR(100) NOT NULL,
+                            audio_data TEXT NOT NULL,
+                            content_type VARCHAR(100) NOT NULL,
+                            duration_ms INTEGER NOT NULL,
+                            file_size INTEGER NOT NULL,
+                            created_at TIMESTAMP NOT NULL,
+                            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE,
+                            UNIQUE (username, name)
+                        )
+                    ''')
+                    
+                    # Create index for faster user soundboard lookups
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_user_soundboard_username
+                        ON user_soundboard_sounds(username)
+                    ''')
+                    
+                    # Server soundboard sounds table (server-specific sounds for server members)
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS server_soundboard_sounds (
+                            sound_id VARCHAR(255) PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            name VARCHAR(100) NOT NULL,
+                            audio_data TEXT NOT NULL,
+                            content_type VARCHAR(100) NOT NULL,
+                            duration_ms INTEGER NOT NULL,
+                            file_size INTEGER NOT NULL,
+                            uploader VARCHAR(255) NOT NULL,
+                            created_at TIMESTAMP NOT NULL,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (uploader) REFERENCES users(username) ON DELETE CASCADE,
+                            UNIQUE (server_id, name)
+                        )
+                    ''')
+                    
+                    # Create index for faster server soundboard lookups
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_server_soundboard_server
+                        ON server_soundboard_sounds(server_id)
                     ''')
                     
                     # Message reactions table
@@ -618,6 +678,31 @@ class Database:
                             END IF;
                         END $$;
                     ''')
+
+                    # Add pin columns to messages if they don't exist (migration)
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'messages' AND column_name = 'pinned'
+                            ) THEN
+                                ALTER TABLE messages ADD COLUMN pinned BOOLEAN DEFAULT FALSE;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'messages' AND column_name = 'pinned_by'
+                            ) THEN
+                                ALTER TABLE messages ADD COLUMN pinned_by VARCHAR(255);
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'messages' AND column_name = 'pinned_at'
+                            ) THEN
+                                ALTER TABLE messages ADD COLUMN pinned_at TIMESTAMP;
+                            END IF;
+                        END $$;
+                    ''')
                     
                     # Add message permission columns to server_members if they don't exist (migration)
                     cursor.execute('''
@@ -749,6 +834,31 @@ class Database:
                                 WHERE table_name = 'admin_settings' AND column_name = 'instance_fingerprint'
                             ) THEN
                                 ALTER TABLE admin_settings ADD COLUMN instance_fingerprint TEXT;
+                            END IF;
+                            -- Soundboard settings
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'allow_soundboard'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN allow_soundboard BOOLEAN DEFAULT FALSE;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'max_sounds_per_user'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN max_sounds_per_user INTEGER DEFAULT 10;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'max_sound_duration_seconds'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN max_sound_duration_seconds INTEGER DEFAULT 10;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'max_server_sounds'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN max_server_sounds INTEGER DEFAULT 25;
                             END IF;
                         END $$;
                     ''')
@@ -898,6 +1008,48 @@ class Database:
                         END $$;
                     ''')
 
+                    # Drop foreign key constraint on messages.username (migration)
+                    # This allows messages to remain when users are deleted
+                    # The username will be updated to '[Deleted User]' instead
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF EXISTS (
+                                SELECT 1 FROM pg_constraint
+                                WHERE conname = 'messages_username_fkey'
+                            ) THEN
+                                ALTER TABLE messages DROP CONSTRAINT messages_username_fkey;
+                            END IF;
+                        END $$;
+                    ''')
+
+                    # Drop CASCADE constraints on direct_messages table (migration)
+                    # This allows DM channels to remain when users are deleted
+                    # The user1/user2 fields will be updated to '[Deleted User]' instead
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            -- Drop user1 cascade constraint if it exists
+                            IF EXISTS (
+                                SELECT 1 FROM pg_constraint
+                                WHERE conname = 'direct_messages_user1_fkey'
+                            ) THEN
+                                ALTER TABLE direct_messages DROP CONSTRAINT direct_messages_user1_fkey;
+                            END IF;
+                            
+                            -- Drop user2 cascade constraint if it exists
+                            IF EXISTS (
+                                SELECT 1 FROM pg_constraint
+                                WHERE conname = 'direct_messages_user2_fkey'
+                            ) THEN
+                                ALTER TABLE direct_messages DROP CONSTRAINT direct_messages_user2_fkey;
+                            END IF;
+                            
+                            -- Add back foreign keys without CASCADE (SET NULL would require columns to be nullable)
+                            -- We'll handle user deletion manually instead
+                        END $$;
+                    ''')
+
                     # Scheduled messages table
                     cursor.execute('''
                         CREATE TABLE IF NOT EXISTS scheduled_messages (
@@ -971,6 +1123,46 @@ class Database:
                         ON poll_votes(poll_id)
                     ''')
                     
+                    # Threads table (temporary sub-channels anchored to a parent message)
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS threads (
+                            thread_id VARCHAR(255) PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            parent_message_id INTEGER,
+                            name VARCHAR(255) NOT NULL,
+                            is_private BOOLEAN DEFAULT FALSE,
+                            created_by VARCHAR(255) NOT NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            is_closed BOOLEAN DEFAULT FALSE,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (parent_message_id) REFERENCES messages(id) ON DELETE SET NULL,
+                            FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_threads_server
+                        ON threads(server_id, is_closed)
+                    ''')
+
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_threads_parent_message
+                        ON threads(parent_message_id)
+                    ''')
+
+                    # Thread members table (for private threads)
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS thread_members (
+                            thread_id VARCHAR(255) NOT NULL,
+                            username VARCHAR(255) NOT NULL,
+                            added_by VARCHAR(255),
+                            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            PRIMARY KEY (thread_id, username),
+                            FOREIGN KEY (thread_id) REFERENCES threads(thread_id) ON DELETE CASCADE,
+                            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+
                     # Welcome messages table (automation per server)
                     cursor.execute('''
                         CREATE TABLE IF NOT EXISTS welcome_messages (
@@ -998,6 +1190,111 @@ class Database:
                         END $$;
                     ''')
 
+                    # Webhooks table (server-level webhooks)
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS webhooks (
+                            webhook_id VARCHAR(255) PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            channel_id VARCHAR(255) NOT NULL,
+                            name VARCHAR(255) NOT NULL,
+                            token VARCHAR(255) NOT NULL,
+                            avatar VARCHAR(255) DEFAULT '🔗',
+                            created_by VARCHAR(255) NOT NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            FOREIGN KEY (channel_id) REFERENCES channels(channel_id) ON DELETE CASCADE,
+                            FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Create index for faster webhook retrieval
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_webhooks_server 
+                        ON webhooks(server_id)
+                    ''')
+                    
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_webhooks_channel 
+                        ON webhooks(channel_id)
+                    ''')
+                    
+                    # Instance-level webhooks table (admin webhooks)
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS instance_webhooks (
+                            webhook_id VARCHAR(255) PRIMARY KEY,
+                            name VARCHAR(255) NOT NULL,
+                            token VARCHAR(255) NOT NULL,
+                            avatar TEXT,
+                            event_type VARCHAR(50),
+                            target_url TEXT,
+                            created_by VARCHAR(255) NOT NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            enabled BOOLEAN DEFAULT TRUE,
+                            FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Create index for faster instance webhook retrieval
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_instance_webhooks_event 
+                        ON instance_webhooks(event_type, enabled)
+                    ''')
+                    
+                    # Migrate existing instance_webhooks table to support avatar and nullable fields
+                    # Check if avatar column exists, if not add it
+                    cursor.execute('''
+                        DO $$ 
+                        BEGIN
+                            -- Add avatar column if it doesn't exist
+                            IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                         WHERE table_name='instance_webhooks' AND column_name='avatar') THEN
+                                ALTER TABLE instance_webhooks ADD COLUMN avatar TEXT;
+                            END IF;
+                            
+                            -- Make event_type nullable if it's not already
+                            BEGIN
+                                ALTER TABLE instance_webhooks ALTER COLUMN event_type DROP NOT NULL;
+                            EXCEPTION
+                                WHEN others THEN NULL;
+                            END;
+                            
+                            -- Make target_url nullable if it's not already
+                            BEGIN
+                                ALTER TABLE instance_webhooks ALTER COLUMN target_url DROP NOT NULL;
+                            EXCEPTION
+                                WHEN others THEN NULL;
+                            END;
+                        END $$;
+                    ''')
+
+                    # Add user preferences columns (migration)
+                    # theme_mode: 'dark' (default), 'light', or 'high_contrast'
+                    # keybinds: JSON object storing custom keybinds
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'users' AND column_name = 'theme_mode'
+                            ) THEN
+                                ALTER TABLE users ADD COLUMN theme_mode VARCHAR(50) DEFAULT 'dark';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'users' AND column_name = 'keybinds'
+                            ) THEN
+                                ALTER TABLE users ADD COLUMN keybinds JSONB DEFAULT '{
+                                    "push_to_talk": "KeyV",
+                                    "toggle_mute": "KeyM",
+                                    "toggle_deafen": "KeyD",
+                                    "toggle_video": "KeyC",
+                                    "toggle_screen_share": "KeyS",
+                                    "answer_end_call": "KeyA"
+                                }'::jsonb;
+                            END IF;
+                        END $$;
+                    ''')
+
                     conn.commit()
 
                 # If we get here, connection was successful
@@ -1018,6 +1315,17 @@ class Database:
                 raise
     
     # User operations
+    def ensure_webhook_system_user(self) -> None:
+        """Ensure the webhook system user exists. This user is used for all webhook messages."""
+        webhook_user = self.get_user('__webhook__')
+        if not webhook_user:
+            # Create webhook system user with a random password (never used for login)
+            import bcrypt
+            password_hash = bcrypt.hashpw(secrets.token_hex(32).encode(), bcrypt.gensalt()).decode()
+            self.create_user('__webhook__', password_hash, email='webhook@system.local', email_verified=True)
+            # Set a default avatar for the webhook user
+            self.update_user_avatar('__webhook__', '📢', 'emoji', None)
+    
     def create_user(self, username: str, password_hash: str, email: str = None, email_verified: bool = False) -> bool:
         """Create a new user."""
         try:
@@ -1057,6 +1365,65 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('SELECT username FROM users')
             return [row['username'] for row in cursor.fetchall()]
+    
+    def get_all_users_detailed(self) -> List[Dict]:
+        """Get all users with detailed information (username, email, created_at)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT username, email, created_at 
+                FROM users 
+                ORDER BY created_at ASC
+            ''')
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def delete_user_keep_messages(self, username: str) -> bool:
+        """
+        Delete a user account but keep their messages and DM channels.
+        Updates all messages from this user to show '[Deleted User]' instead.
+        Updates DM channel participants to show '[Deleted User]' for this user.
+        
+        Returns True if successful, False otherwise.
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # First, update all messages to use the deleted user placeholder
+                cursor.execute('''
+                    UPDATE messages 
+                    SET username = '[Deleted User]'
+                    WHERE username = %s
+                ''', (username,))
+                
+                # Update direct_messages table to replace the deleted user's username
+                # This keeps the DM channels accessible to the other participant
+                cursor.execute('''
+                    UPDATE direct_messages 
+                    SET user1 = '[Deleted User]'
+                    WHERE user1 = %s
+                ''', (username,))
+                
+                cursor.execute('''
+                    UPDATE direct_messages 
+                    SET user2 = '[Deleted User]'
+                    WHERE user2 = %s
+                ''', (username,))
+                
+                # Now delete the user
+                # Note: We've removed CASCADE from direct_messages table
+                # Other CASCADE constraints will still handle cleanup of:
+                # - friendships
+                # - server_members
+                # - etc.
+                cursor.execute('''
+                    DELETE FROM users WHERE username = %s
+                ''', (username,))
+                
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error deleting user {username}: {e}")
+            return False
     
     def update_user_avatar(self, username: str, avatar: str, avatar_type: str, avatar_data: Optional[str] = None):
         """Update user avatar."""
@@ -1229,6 +1596,54 @@ class Database:
             if row:
                 return dict(row)
             return None
+    
+    def get_user_preferences(self, username: str) -> Optional[Dict]:
+        """Get user preferences (theme_mode and keybinds)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT theme_mode, keybinds 
+                FROM users 
+                WHERE username = %s
+            ''', (username,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+    
+    def update_user_theme(self, username: str, theme_mode: str) -> bool:
+        """Update user theme mode. Valid values: 'dark', 'light', 'high_contrast'."""
+        valid_themes = ['dark', 'light', 'high_contrast']
+        if theme_mode not in valid_themes:
+            return False
+        
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE users 
+                    SET theme_mode = %s
+                    WHERE username = %s
+                ''', (theme_mode, username))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error updating theme for {username}: {e}")
+            return False
+    
+    def update_user_keybinds(self, username: str, keybinds: Dict) -> bool:
+        """Update user keybinds. Expects a dict with keybind mappings."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE users 
+                    SET keybinds = %s::jsonb
+                    WHERE username = %s
+                ''', (json.dumps(keybinds), username))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error updating keybinds for {username}: {e}")
+            return False
     
     def delete_email_verification_code(self, email: str, username: str) -> bool:
         """Delete an email verification code."""
@@ -1768,6 +2183,15 @@ class Database:
                 SELECT server_id FROM server_members WHERE username = %s
             ''', (username,))
             return [row['server_id'] for row in cursor.fetchall()]
+    
+    def is_server_member(self, username: str, server_id: str) -> bool:
+        """Check if a user is a member of a server."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT 1 FROM server_members WHERE username = %s AND server_id = %s
+            ''', (username, server_id))
+            return cursor.fetchone() is not None
     
     def update_member_permissions(self, server_id: str, username: str, permissions: Dict[str, bool]):
         """Update member permissions."""
@@ -2519,15 +2943,17 @@ class Database:
             return [dict(row) for row in cursor.fetchall()]
     
     # Invite code operations
-    def create_invite_code(self, code: str, creator: str, code_type: str = 'global', server_id: Optional[str] = None) -> bool:
+    def create_invite_code(self, code: str, creator: str, code_type: str = 'global', 
+                          server_id: Optional[str] = None, max_uses: Optional[int] = None, 
+                          description: Optional[str] = None) -> bool:
         """Create an invite code."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT INTO invite_codes (code, creator, code_type, server_id, created_at)
-                    VALUES (%s, %s, %s, %s, %s)
-                ''', (code, creator, code_type, server_id, datetime.now()))
+                    INSERT INTO invite_codes (code, creator, code_type, server_id, created_at, max_uses, is_active, description)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (code, creator, code_type, server_id, datetime.now(), max_uses, True, description))
                 return True
         except psycopg2.IntegrityError:
             return False
@@ -2536,7 +2962,7 @@ class Database:
         """Get invite code data."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT * FROM invite_codes WHERE code = %s', (code,))
+            cursor.execute('SELECT * FROM invite_codes WHERE code = %s AND is_active = TRUE', (code,))
             row = cursor.fetchone()
             if row:
                 return dict(row)
@@ -2548,15 +2974,49 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM invite_codes WHERE code = %s', (code,))
     
-    def get_server_invite_codes(self, server_id: str) -> Dict[str, str]:
-        """Get all invite codes for a server."""
+    def get_server_invite_codes(self, server_id: str) -> List[Dict]:
+        """Get all invite codes for a server with usage stats."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT code, creator FROM invite_codes 
-                WHERE server_id = %s AND code_type = 'server'
+                SELECT ic.code, ic.creator, ic.created_at, ic.max_uses, ic.is_active, ic.description,
+                       COUNT(iu.id) as current_uses
+                FROM invite_codes ic
+                LEFT JOIN invite_usage iu ON ic.code = iu.invite_code
+                WHERE ic.server_id = %s AND ic.code_type = 'server'
+                GROUP BY ic.code, ic.creator, ic.created_at, ic.max_uses, ic.is_active, ic.description
+                ORDER BY ic.created_at DESC
             ''', (server_id,))
-            return {row['code']: row['creator'] for row in cursor.fetchall()}
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_instance_invite_codes(self) -> List[Dict]:
+        """Get all instance invite codes with usage stats."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT ic.code, ic.creator, ic.created_at, ic.max_uses, ic.is_active, ic.description,
+                       COUNT(iu.id) as current_uses
+                FROM invite_codes ic
+                LEFT JOIN invite_usage iu ON ic.code = iu.invite_code
+                WHERE ic.code_type = 'global' AND ic.server_id IS NULL
+                GROUP BY ic.code, ic.creator, ic.created_at, ic.max_uses, ic.is_active, ic.description
+                ORDER BY ic.created_at DESC
+            ''', ())
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def deactivate_invite_code(self, code: str):
+        """Mark an invite code as inactive."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('UPDATE invite_codes SET is_active = FALSE WHERE code = %s', (code,))
+    
+    def get_invite_usage_count(self, code: str) -> int:
+        """Get the number of times an invite code has been used."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) as count FROM invite_usage WHERE invite_code = %s', (code,))
+            row = cursor.fetchone()
+            return row['count'] if row else 0
     
     def log_invite_usage(self, invite_code: str, used_by: str, server_id: Optional[str] = None):
         """Log when an invite code is used."""
@@ -2583,6 +3043,24 @@ class Database:
                 GROUP BY invite_code
                 ORDER BY last_used DESC
             ''', (server_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_instance_invite_usage(self) -> List[Dict]:
+        """Get invite usage logs for instance invites, grouped by invite code with usage counts."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT 
+                    invite_code,
+                    COUNT(*) as use_count,
+                    MIN(used_at) as first_used,
+                    MAX(used_at) as last_used,
+                    ARRAY_AGG(used_by ORDER BY used_at DESC) as users
+                FROM invite_usage
+                WHERE server_id IS NULL
+                GROUP BY invite_code
+                ORDER BY last_used DESC
+            ''', ())
             return [dict(row) for row in cursor.fetchall()]
     
     # Custom emoji operations
@@ -2630,6 +3108,116 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM custom_emojis WHERE emoji_id = %s', (emoji_id,))
             return cursor.rowcount > 0
+    
+    # Soundboard operations
+    def save_user_soundboard_sound(self, sound_id: str, username: str, name: str,
+                                   audio_data: str, content_type: str, duration_ms: int,
+                                   file_size: int) -> bool:
+        """Save a personal soundboard sound for a user."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO user_soundboard_sounds 
+                    (sound_id, username, name, audio_data, content_type, duration_ms, file_size, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (sound_id, username, name, audio_data, content_type, duration_ms, file_size, datetime.now()))
+                return True
+        except psycopg2.IntegrityError:
+            return False
+    
+    def save_server_soundboard_sound(self, sound_id: str, server_id: str, name: str,
+                                     audio_data: str, content_type: str, duration_ms: int,
+                                     file_size: int, uploader: str) -> bool:
+        """Save a server soundboard sound."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO server_soundboard_sounds 
+                    (sound_id, server_id, name, audio_data, content_type, duration_ms, file_size, uploader, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (sound_id, server_id, name, audio_data, content_type, duration_ms, file_size, uploader, datetime.now()))
+                return True
+        except psycopg2.IntegrityError:
+            return False
+    
+    def get_user_soundboard_sounds(self, username: str) -> List[Dict]:
+        """Get all personal soundboard sounds for a user."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT sound_id, name, content_type, duration_ms, file_size, created_at::text as created_at
+                FROM user_soundboard_sounds
+                WHERE username = %s
+                ORDER BY created_at ASC
+            ''', (username,))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_server_soundboard_sounds(self, server_id: str) -> List[Dict]:
+        """Get all soundboard sounds for a server."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT sound_id, name, content_type, duration_ms, file_size, uploader, created_at::text as created_at
+                FROM server_soundboard_sounds
+                WHERE server_id = %s
+                ORDER BY created_at ASC
+            ''', (server_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_soundboard_sound(self, sound_id: str) -> Optional[Dict]:
+        """Get a specific soundboard sound (from either user or server tables)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            # Try user sounds first
+            cursor.execute('''
+                SELECT sound_id, username as owner, name, audio_data, content_type, 
+                       duration_ms, file_size, created_at::text as created_at, 'user' as sound_type
+                FROM user_soundboard_sounds
+                WHERE sound_id = %s
+            ''', (sound_id,))
+            result = cursor.fetchone()
+            if result:
+                return dict(result)
+            
+            # Try server sounds
+            cursor.execute('''
+                SELECT sound_id, server_id, uploader, name, audio_data, content_type,
+                       duration_ms, file_size, created_at::text as created_at, 'server' as sound_type
+                FROM server_soundboard_sounds
+                WHERE sound_id = %s
+            ''', (sound_id,))
+            result = cursor.fetchone()
+            return dict(result) if result else None
+    
+    def delete_soundboard_sound(self, sound_id: str) -> bool:
+        """Delete a soundboard sound (from either user or server tables)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            # Try deleting from user sounds
+            cursor.execute('DELETE FROM user_soundboard_sounds WHERE sound_id = %s', (sound_id,))
+            if cursor.rowcount > 0:
+                return True
+            # Try deleting from server sounds
+            cursor.execute('DELETE FROM server_soundboard_sounds WHERE sound_id = %s', (sound_id,))
+            return cursor.rowcount > 0
+    
+    def count_user_soundboard_sounds(self, username: str) -> int:
+        """Count how many personal soundboard sounds a user has."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) as count FROM user_soundboard_sounds WHERE username = %s', (username,))
+            result = cursor.fetchone()
+            return result['count'] if result else 0
+    
+    def count_server_soundboard_sounds(self, server_id: str) -> int:
+        """Count how many soundboard sounds a server has."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) as count FROM server_soundboard_sounds WHERE server_id = %s', (server_id,))
+            result = cursor.fetchone()
+            return result['count'] if result else 0
     
     # Message reaction operations
     def add_reaction(self, message_id: int, username: str, emoji: str, emoji_type: str = 'standard') -> bool:
@@ -3191,6 +3779,220 @@ class Database:
         except Exception as e:
             print(f"Error deleting welcome message: {e}")
             return False
+    
+    # Webhook operations
+    def create_webhook(self, webhook_id: str, server_id: str, channel_id: str, name: str, token: str, created_by: str, avatar: str = '🔗') -> bool:
+        """Create a new webhook for a server channel."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO webhooks (webhook_id, server_id, channel_id, name, token, avatar, created_by, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (webhook_id, server_id, channel_id, name, token, avatar, created_by, datetime.now()))
+                return True
+        except Exception as e:
+            print(f"Error creating webhook: {e}")
+            return False
+    
+    def get_webhook(self, webhook_id: str) -> Optional[Dict]:
+        """Get webhook by ID."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM webhooks WHERE webhook_id = %s', (webhook_id,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            print(f"Error getting webhook: {e}")
+            return None
+    
+    def get_webhook_by_token(self, token: str) -> Optional[Dict]:
+        """Get webhook by token."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM webhooks WHERE token = %s', (token,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            print(f"Error getting webhook by token: {e}")
+            return None
+    
+    def get_server_webhooks(self, server_id: str) -> List[Dict]:
+        """Get all webhooks for a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM webhooks WHERE server_id = %s ORDER BY created_at DESC', (server_id,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting server webhooks: {e}")
+            return []
+    
+    def get_channel_webhooks(self, channel_id: str) -> List[Dict]:
+        """Get all webhooks for a channel."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM webhooks WHERE channel_id = %s ORDER BY created_at DESC', (channel_id,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting channel webhooks: {e}")
+            return []
+    
+    def update_webhook(self, webhook_id: str, name: str = None, channel_id: str = None, avatar: str = None) -> bool:
+        """Update webhook properties."""
+        try:
+            updates = []
+            params = []
+            
+            if name is not None:
+                updates.append("name = %s")
+                params.append(name)
+            if channel_id is not None:
+                updates.append("channel_id = %s")
+                params.append(channel_id)
+            if avatar is not None:
+                updates.append("avatar = %s")
+                params.append(avatar)
+            
+            if not updates:
+                return True
+            
+            params.append(webhook_id)
+            
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(f'''
+                    UPDATE webhooks SET {", ".join(updates)}
+                    WHERE webhook_id = %s
+                ''', params)
+                return True
+        except Exception as e:
+            print(f"Error updating webhook: {e}")
+            return False
+    
+    def delete_webhook(self, webhook_id: str) -> bool:
+        """Delete a webhook."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM webhooks WHERE webhook_id = %s', (webhook_id,))
+                return True
+        except Exception as e:
+            print(f"Error deleting webhook: {e}")
+            return False
+    
+    # Instance webhook operations
+    def create_instance_webhook(self, webhook_id: str, name: str, token: str, created_by: str, avatar: str = None, event_type: str = None, target_url: str = None, enabled: bool = True) -> bool:
+        """Create a new instance-level webhook."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO instance_webhooks (webhook_id, name, token, avatar, event_type, target_url, created_by, enabled, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (webhook_id, name, token, avatar, event_type, target_url, created_by, enabled, datetime.now()))
+                return True
+        except Exception as e:
+            print(f"Error creating instance webhook: {e}")
+            return False
+    
+    def get_instance_webhook(self, webhook_id: str) -> Optional[Dict]:
+        """Get instance webhook by ID."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM instance_webhooks WHERE webhook_id = %s', (webhook_id,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            print(f"Error getting instance webhook: {e}")
+            return None
+    
+    def get_instance_webhook_by_token(self, token: str) -> Optional[Dict]:
+        """Get instance webhook by token."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM instance_webhooks WHERE token = %s', (token,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            print(f"Error getting instance webhook by token: {e}")
+            return None
+    
+    def get_all_instance_webhooks(self) -> List[Dict]:
+        """Get all instance webhooks."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM instance_webhooks ORDER BY created_at DESC')
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting instance webhooks: {e}")
+            return []
+    
+    def get_instance_webhooks_by_event(self, event_type: str, enabled_only: bool = True) -> List[Dict]:
+        """Get instance webhooks for a specific event type."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                if enabled_only:
+                    cursor.execute('SELECT * FROM instance_webhooks WHERE event_type = %s AND enabled = TRUE', (event_type,))
+                else:
+                    cursor.execute('SELECT * FROM instance_webhooks WHERE event_type = %s', (event_type,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting instance webhooks by event: {e}")
+            return []
+    
+    def update_instance_webhook(self, webhook_id: str, name: str = None, target_url: str = None, enabled: bool = None) -> bool:
+        """Update instance webhook properties."""
+        try:
+            updates = []
+            params = []
+            
+            if name is not None:
+                updates.append("name = %s")
+                params.append(name)
+            if target_url is not None:
+                updates.append("target_url = %s")
+                params.append(target_url)
+            if enabled is not None:
+                updates.append("enabled = %s")
+                params.append(enabled)
+            
+            if not updates:
+                return True
+            
+            params.append(webhook_id)
+            
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(f'''
+                    UPDATE instance_webhooks SET {", ".join(updates)}
+                    WHERE webhook_id = %s
+                ''', params)
+                return True
+        except Exception as e:
+            print(f"Error updating instance webhook: {e}")
+            return False
+    
+    def delete_instance_webhook(self, webhook_id: str) -> bool:
+        """Delete an instance webhook."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM instance_webhooks WHERE webhook_id = %s', (webhook_id,))
+                return True
+        except Exception as e:
+            print(f"Error deleting instance webhook: {e}")
+            return False
+    
+    def save_license_key(self, license_key: str, tier: str, expires_at, customer_name: str, customer_email: str) -> bool:
+        """Save license key information."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -3262,3 +4064,158 @@ class Database:
         except Exception as e:
             print(f"Error clearing license: {e}")
             return False
+
+    # ── Thread operations ─────────────────────────────────────────────────────
+
+    def create_thread(self, thread_id: str, server_id: str, parent_message_id: Optional[int],
+                      name: str, is_private: bool, created_by: str) -> bool:
+        """Create a new thread anchored to a parent message."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO threads (thread_id, server_id, parent_message_id, name, is_private, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                ''', (thread_id, server_id, parent_message_id, name, is_private, created_by))
+                return True
+        except Exception as e:
+            print(f"Error creating thread: {e}")
+            return False
+
+    def get_thread(self, thread_id: str) -> Optional[Dict]:
+        """Get a thread by ID."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM threads WHERE thread_id = %s', (thread_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_threads_for_channel(self, server_id: str, parent_message_ids: List[int]) -> List[Dict]:
+        """Get all open threads whose parent message is in the given list."""
+        if not parent_message_ids:
+            return []
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            placeholders = ','.join(['%s'] * len(parent_message_ids))
+            cursor.execute(f'''
+                SELECT * FROM threads
+                WHERE server_id = %s AND parent_message_id IN ({placeholders}) AND is_closed = FALSE
+            ''', [server_id] + list(parent_message_ids))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_open_threads_for_server(self, server_id: str) -> List[Dict]:
+        """Get all open threads for a server, including the channel_id derived from the parent message."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT t.*,
+                       CASE WHEN m.context_id IS NOT NULL AND POSITION('/' IN m.context_id) > 0
+                            THEN SPLIT_PART(m.context_id, '/', 2)
+                            ELSE NULL END AS channel_id
+                FROM threads t
+                LEFT JOIN messages m ON t.parent_message_id = m.id
+                WHERE t.server_id = %s AND t.is_closed = FALSE
+                ORDER BY t.created_at DESC
+            ''', (server_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def close_thread(self, thread_id: str) -> bool:
+        """Mark a thread as closed."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('UPDATE threads SET is_closed = TRUE WHERE thread_id = %s', (thread_id,))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error closing thread: {e}")
+            return False
+
+    def add_thread_member(self, thread_id: str, username: str, added_by: str) -> bool:
+        """Add a member to a private thread."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO thread_members (thread_id, username, added_by)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                ''', (thread_id, username, added_by))
+                return True
+        except Exception as e:
+            print(f"Error adding thread member: {e}")
+            return False
+
+    def get_thread_members(self, thread_id: str) -> List[str]:
+        """Get all member usernames for a thread."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT username FROM thread_members WHERE thread_id = %s', (thread_id,))
+            return [row['username'] for row in cursor.fetchall()]
+
+    def is_thread_member(self, thread_id: str, username: str) -> bool:
+        """Check if a user is a member of a thread."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT 1 FROM thread_members WHERE thread_id = %s AND username = %s', (thread_id, username))
+            return cursor.fetchone() is not None
+
+    # ── Pin operations ────────────────────────────────────────────────────────
+
+    def pin_message(self, message_id: int, pinned_by: str) -> bool:
+        """Pin a message."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE messages
+                    SET pinned = TRUE, pinned_by = %s, pinned_at = %s
+                    WHERE id = %s AND deleted = FALSE
+                ''', (pinned_by, datetime.now(), message_id))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error pinning message: {e}")
+            return False
+
+    def unpin_message(self, message_id: int) -> bool:
+        """Unpin a message."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE messages
+                    SET pinned = FALSE, pinned_by = NULL, pinned_at = NULL
+                    WHERE id = %s
+                ''', (message_id,))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error unpinning message: {e}")
+            return False
+
+    def get_pinned_messages(self, context_type: str, context_id: Optional[str]) -> List[Dict]:
+        """Get all pinned messages for a context, decrypted."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT m.id, m.username, m.content,
+                       m.timestamp::text as timestamp,
+                       m.context_type, m.context_id,
+                       m.edited_at::text as edited_at,
+                       m.deleted,
+                       m.pinned, m.pinned_by,
+                       m.pinned_at::text as pinned_at,
+                       u.avatar, u.avatar_type, u.avatar_data
+                FROM messages m
+                LEFT JOIN users u ON m.username = u.username
+                WHERE m.context_type = %s AND m.context_id = %s
+                  AND m.pinned = TRUE AND m.deleted = FALSE
+                ORDER BY m.pinned_at DESC
+            ''', (context_type, context_id))
+            messages = []
+            for row in cursor.fetchall():
+                msg = dict(row)
+                try:
+                    msg['content'] = self.encryption_manager.decrypt(msg['content'])
+                except Exception:
+                    pass
+                messages.append(msg)
+            return messages

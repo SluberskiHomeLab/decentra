@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import type { ChangeEvent } from 'react'
+import { getStoredAuth } from '../auth/storage'
 
 export interface SearchResult {
   id: number
@@ -47,8 +48,22 @@ export function SearchBar({ currentUsername, onResultClick }: SearchBarProps) {
 
     setIsSearching(true)
     try {
+      const { token } = getStoredAuth()
+      
+      if (!token) {
+        console.error('No authentication token available')
+        setResults([])
+        setIsSearching(false)
+        return
+      }
+
       const response = await fetch(
-        `/api/search-messages?username=${encodeURIComponent(currentUsername)}&query=${encodeURIComponent(searchQuery)}&limit=50`
+        `/api/search-messages?query=${encodeURIComponent(searchQuery)}&limit=50`,
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        }
       )
       const data = await response.json()
       
@@ -110,7 +125,9 @@ export function SearchBar({ currentUsername, onResultClick }: SearchBarProps) {
   const highlightQuery = (text: string, query: string): React.ReactNode => {
     if (!query.trim()) return text
     
-    const parts = text.split(new RegExp(`(${query})`, 'gi'))
+    // Escape regex metacharacters to prevent errors and incorrect highlighting
+    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const parts = text.split(new RegExp(`(${escapedQuery})`, 'gi'))
     return parts.map((part, i) => 
       part.toLowerCase() === query.toLowerCase() 
         ? <mark key={i} className="bg-yellow-500/30 text-yellow-200">{part}</mark>
@@ -144,19 +161,19 @@ export function SearchBar({ currentUsername, onResultClick }: SearchBarProps) {
           onChange={(e: ChangeEvent<HTMLInputElement>) => handleQueryChange(e.target.value)}
           onFocus={() => query.trim() && results.length > 0 && setShowResults(true)}
           placeholder="Search messages..."
-          className="w-64 rounded-lg border border-white/10 bg-slate-950/40 px-3 py-1.5 pr-8 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+          className="w-64 rounded-lg border border-border-primary bg-bg-primary/40 px-3 py-1.5 pr-8 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
         />
         {isSearching && (
           <div className="absolute right-2 top-1/2 -translate-y-1/2">
-            <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-400 border-t-transparent" />
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-text-muted border-t-transparent" />
           </div>
         )}
       </div>
 
       {showResults && results.length > 0 && (
-        <div className="absolute top-full mt-2 w-96 max-h-64 overflow-y-auto rounded-xl border border-white/10 bg-slate-900 shadow-2xl z-50">
+        <div className="absolute top-full mt-2 w-96 max-h-64 overflow-y-auto rounded-xl border border-border-primary bg-bg-secondary shadow-2xl z-50">
           <div className="p-2">
-            <div className="mb-2 px-2 text-xs font-semibold text-slate-400">
+            <div className="mb-2 px-2 text-xs font-semibold text-text-muted">
               {results.length} result{results.length !== 1 ? 's' : ''}
             </div>
             <div className="space-y-1">
@@ -164,7 +181,7 @@ export function SearchBar({ currentUsername, onResultClick }: SearchBarProps) {
                 <button
                   key={result.id}
                   onClick={() => handleResultClick(result)}
-                  className="w-full rounded-lg bg-slate-950/40 px-3 py-2 text-left hover:bg-slate-800/50 transition"
+                  className="w-full rounded-lg bg-bg-primary/40 px-3 py-2 text-left hover:bg-bg-tertiary/50 transition"
                 >
                   <div className="flex items-start gap-2">
                     <div className="shrink-0 mt-0.5">
@@ -182,17 +199,17 @@ export function SearchBar({ currentUsername, onResultClick }: SearchBarProps) {
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-baseline justify-between gap-2">
-                        <span className="text-xs font-semibold text-slate-200">
+                        <span className="text-xs font-semibold text-text-secondary">
                           {result.username}
                         </span>
-                        <span className="text-xs text-slate-500">
+                        <span className="text-xs text-text-muted">
                           {formatTimestamp(result.timestamp)}
                         </span>
                       </div>
-                      <div className="mt-0.5 text-xs text-slate-300 break-words">
+                      <div className="mt-0.5 text-xs text-text-secondary break-words">
                         {highlightQuery(truncateContent(result.content), query)}
                       </div>
-                      <div className="mt-1 text-xs text-slate-500">
+                      <div className="mt-1 text-xs text-text-muted">
                         in {getContextLabel(result)}
                       </div>
                     </div>
@@ -205,8 +222,8 @@ export function SearchBar({ currentUsername, onResultClick }: SearchBarProps) {
       )}
 
       {showResults && results.length === 0 && query.trim() && !isSearching && (
-        <div className="absolute top-full mt-2 w-96 rounded-xl border border-white/10 bg-slate-900 shadow-2xl p-4 z-50">
-          <div className="text-sm text-slate-400 text-center">
+        <div className="absolute top-full mt-2 w-96 rounded-xl border border-border-primary bg-bg-secondary shadow-2xl p-4 z-50">
+          <div className="text-sm text-text-muted text-center">
             No messages found for "{query}"
           </div>
         </div>

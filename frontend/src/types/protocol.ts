@@ -2,6 +2,8 @@ export type WsAuthSuccess = {
   type: 'auth_success'
   message?: string
   token: string
+  theme_mode?: 'dark' | 'light' | 'high_contrast'
+  keybinds?: Record<string, string>
 }
 
 export type Avatar = {
@@ -142,14 +144,19 @@ export type WsChatMessage = {
   content: string
   timestamp: string
   edited_at?: string | null
-  context?: 'global' | 'server' | 'dm' | string
+  context?: 'global' | 'server' | 'dm' | 'thread' | string
   context_id?: string | null
   messageKey?: string
+  nonce?: string
   reactions?: Reaction[]
   attachments?: Attachment[]
   mentions?: string[]
   user_status?: 'online' | 'away' | 'busy' | 'offline'
   role_color?: string
+  pinned?: boolean
+  pinned_by?: string | null
+  pinned_at?: string | null
+  thread_id?: string
   reply_data?: {
     id: number
     username: string
@@ -194,6 +201,8 @@ export type WsServerJoined = {
 export type WsInviteCode = {
   type: 'invite_code'
   code: string
+  max_uses?: number | null
+  description?: string
   message?: string
 }
 
@@ -201,6 +210,8 @@ export type WsServerInviteCode = {
   type: 'server_invite_code'
   server_id: string
   code: string
+  max_uses?: number | null
+  description?: string
   message?: string
 }
 
@@ -216,6 +227,59 @@ export type WsServerInviteUsage = {
   type: 'server_invite_usage'
   server_id: string
   usage_logs: ServerInviteUsageLog[]
+}
+
+export type InviteListItem = {
+  code: string
+  creator: string
+  created_at: string
+  max_uses?: number | null
+  is_active: boolean
+  description?: string
+  current_uses: number
+}
+
+export type WsInstanceInvitesList = {
+  type: 'instance_invites_list'
+  invites: InviteListItem[]
+}
+
+export type WsServerInvitesList = {
+  type: 'server_invites_list'
+  server_id: string
+  invites: InviteListItem[]
+}
+
+export type WsInstanceInviteUsage = {
+  type: 'instance_invite_usage'
+  usage_logs: ServerInviteUsageLog[]
+}
+
+export type WsInviteRevoked = {
+  type: 'invite_revoked'
+  code: string
+  message?: string
+}
+
+export type WsServerInviteRevoked = {
+  type: 'server_invite_revoked'
+  server_id: string
+  code: string
+  message?: string
+}
+
+export type WsServerInfoPreview = {
+  type: 'server_info_preview'
+  server: {
+    id: string
+    name: string
+    icon?: string
+    icon_type?: string
+    icon_data?: string
+    description?: string
+    member_count: number
+  }
+  invite_code: string
 }
 
 export type WsChannelCreated = {
@@ -360,6 +424,146 @@ export type WsMentionNotification = {
   context_id?: string | null
 }
 
+// ── Typing indicators ────────────────────────────────────
+
+export type WsUserTyping = {
+  type: 'user_typing'
+  username: string
+  context: string
+  context_id: string | null
+  avatar?: string
+  avatar_type?: string
+  avatar_data?: string | null
+}
+
+export type WsUserStoppedTyping = {
+  type: 'user_stopped_typing'
+  username: string
+  context: string
+  context_id: string | null
+}
+
+// ── Threads ───────────────────────────────────────────────
+
+export type Thread = {
+  thread_id: string
+  server_id: string
+  channel_id?: string | null
+  parent_message_id?: number | null
+  name: string
+  is_private: boolean
+  created_by: string
+  is_closed: boolean
+  created_at?: string
+}
+
+export type WsThreadCreated = {
+  type: 'thread_created'
+  thread: Thread
+}
+
+export type WsThreadClosed = {
+  type: 'thread_closed'
+  thread_id: string
+  server_id: string
+}
+
+export type WsThreadHistory = {
+  type: 'thread_history'
+  thread_id: string
+  thread: Thread
+  messages: WsChatMessage[]
+}
+
+export type WsThreadsList = {
+  type: 'threads_list'
+  server_id: string
+  threads: Thread[]
+}
+
+export type WsOutboundCreateThread = {
+  type: 'create_thread'
+  server_id: string
+  parent_message_id?: number | null
+  name: string
+  is_private?: boolean
+  invited_users?: string[]
+}
+
+export type WsOutboundCloseThread = {
+  type: 'close_thread'
+  thread_id: string
+}
+
+export type WsOutboundGetThreadHistory = {
+  type: 'get_thread_history'
+  thread_id: string
+}
+
+export type WsOutboundListThreads = {
+  type: 'list_threads'
+  server_id: string
+}
+
+export type WsOutboundSendThreadMessage = {
+  type: 'thread_message'
+  thread_id: string
+  content: string
+  nonce?: string
+}
+
+// ── Pinned messages ───────────────────────────────────────
+
+export type WsMessagePinned = {
+  type: 'message_pinned'
+  message_id: number
+  pinned_by: string
+  context_type: string
+  context_id: string | null
+}
+
+export type WsMessageUnpinned = {
+  type: 'message_unpinned'
+  message_id: number
+  context_type: string
+  context_id: string | null
+}
+
+export type WsPinnedMessages = {
+  type: 'pinned_messages'
+  context_type: string
+  context_id: string | null
+  messages: WsChatMessage[]
+}
+
+export type WsOutboundPinMessage = {
+  type: 'pin_message'
+  message_id: number
+}
+
+export type WsOutboundUnpinMessage = {
+  type: 'unpin_message'
+  message_id: number
+}
+
+export type WsOutboundGetPinnedMessages = {
+  type: 'get_pinned_messages'
+  context_type: string
+  context_id: string | null
+}
+
+export type WsOutboundTypingStart = {
+  type: 'typing_start'
+  context: string
+  context_id: string | null
+}
+
+export type WsOutboundTypingStop = {
+  type: 'typing_stop'
+  context: string
+  context_id: string | null
+}
+
 export type WsMessage =
   | WsAuthSuccess
   | WsAuthError
@@ -384,6 +588,12 @@ export type WsMessage =
   | WsInviteCode
   | WsServerInviteCode
   | WsServerInviteUsage
+  | WsInstanceInvitesList
+  | WsServerInvitesList
+  | WsInstanceInviteUsage
+  | WsInviteRevoked
+  | WsServerInviteRevoked
+  | WsServerInfoPreview
   | Ws2FASetup
   | Ws2FAEnabled
   | Ws2FADisabled
@@ -415,6 +625,15 @@ export type WsMessage =
   | WsWebRTCIceCandidate
   | WsUserStatusChanged
   | WsMentionNotification
+  | WsUserTyping
+  | WsUserStoppedTyping
+  | WsThreadCreated
+  | WsThreadClosed
+  | WsThreadHistory
+  | WsThreadsList
+  | WsMessagePinned
+  | WsMessageUnpinned
+  | WsPinnedMessages
   | { type: string; [k: string]: any }
 
 export type WsOutboundLogin = {
@@ -471,6 +690,7 @@ export type WsOutboundSendMessage = {
   mentions?: string[]
   messageKey?: string
   reply_to?: number
+  nonce?: string
 }
 
 export type WsOutboundCreateServer = {
@@ -500,11 +720,15 @@ export type WsOutboundStartDm = {
 
 export type WsOutboundGenerateInvite = {
   type: 'generate_invite'
+  max_uses?: number | null
+  description?: string
 }
 
 export type WsOutboundGenerateServerInvite = {
   type: 'generate_server_invite'
   server_id: string
+  max_uses?: number | null
+  description?: string
 }
 
 export type WsOutboundJoinServerWithInvite = {
@@ -515,6 +739,35 @@ export type WsOutboundJoinServerWithInvite = {
 export type WsOutboundGetServerInviteUsage = {
   type: 'get_server_invite_usage'
   server_id: string
+}
+
+export type WsOutboundListInstanceInvites = {
+  type: 'list_instance_invites'
+}
+
+export type WsOutboundListServerInvites = {
+  type: 'list_server_invites'
+  server_id: string
+}
+
+export type WsOutboundGetInstanceInviteUsage = {
+  type: 'get_instance_invite_usage'
+}
+
+export type WsOutboundRevokeInvite = {
+  type: 'revoke_instance_invite'
+  code: string
+}
+
+export type WsOutboundRevokeServerInvite = {
+  type: 'revoke_server_invite'
+  server_id: string
+  code: string
+}
+
+export type WsOutboundGetServerInfoByInvite = {
+  type: 'get_server_info_by_invite'
+  invite_code: string
 }
 
 export type WsOutboundGetServerMembers = {
@@ -824,4 +1077,18 @@ export interface WsInboundLicenseInfo {
 export interface WsInboundLicenseUpdated {
   type: 'license_updated'
   data: LicenseInfo
+}
+
+// ── User Preferences System ──────────────────────────────────────
+
+export type WsOutboundUpdateUserPreferences = {
+  type: 'update_user_preferences'
+  theme_mode?: 'dark' | 'light' | 'high_contrast'
+  keybinds?: Record<string, string>
+}
+
+export type WsInboundUserPreferencesUpdated = {
+  type: 'user_preferences_updated'
+  theme_mode: 'dark' | 'light' | 'high_contrast'
+  keybinds: Record<string, string>
 }

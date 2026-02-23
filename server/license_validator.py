@@ -39,6 +39,7 @@ DEFAULT_FEATURES: Dict[str, bool] = {
     "custom_emojis": True,
     "audit_logs": True,
     "sso": False,
+    "soundboard": True,
 }
 
 DEFAULT_LIMITS: Dict[str, int] = {
@@ -47,6 +48,12 @@ DEFAULT_LIMITS: Dict[str, int] = {
     "max_channels_per_server": 30,
     "max_file_size_mb": 10,
     "max_messages_history": -1,
+    "max_sounds_per_user": 5,
+    "max_sound_duration_seconds": 5,
+    "max_server_sounds": 10,
+}
+
+DEFAULT_QUALITIES: Dict[str, str] = {
     "video_quality": "720p",
     "screensharing_quality": "720p",
 }
@@ -214,6 +221,14 @@ class LicenseValidator:
             return DEFAULT_LIMITS.get(limit_name, default)
         return self._license_data.get("limits", {}).get(
             limit_name, DEFAULT_LIMITS.get(limit_name, default)
+        )
+
+    def get_quality(self, quality_name: str, default: str = "720p") -> str:
+        """Return the quality setting for *quality_name* (e.g., 'video_quality')."""
+        if self._license_data is None:
+            return DEFAULT_QUALITIES.get(quality_name, default)
+        return self._license_data.get("limits", {}).get(
+            quality_name, DEFAULT_QUALITIES.get(quality_name, default)
         )
 
     def get_tier(self) -> str:
@@ -405,6 +420,11 @@ def check_feature_access(feature_name: str) -> bool:
 def check_limit(limit_name: str) -> int:
     """Quick check: return the current numeric limit for *limit_name*."""
     return license_validator.get_limit(limit_name)
+
+
+def check_quality(quality_name: str) -> str:
+    """Quick check: return the current quality setting for *quality_name*."""
+    return license_validator.get_quality(quality_name)
 
 
 def enforce_limit(current_count: int, limit_name: str) -> bool:

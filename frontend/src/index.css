@@ -3,8 +3,56 @@
 @tailwind utilities;
 
 @layer base {
-  :root {
+  /* Dark theme (default) */
+  :root,
+  [data-theme="dark"] {
     color-scheme: dark;
+    --bg-primary: 15 23 42; /* slate-950 */
+    --bg-secondary: 30 41 59; /* slate-900 */
+    --bg-tertiary: 51 65 85; /* slate-800 */
+    --bg-panel: 15 23 42; /* slate-950 */
+    --text-primary: 241 245 249; /* slate-100 */
+    --text-secondary: 203 213 225; /* slate-300 */
+    --text-muted: 148 163 184; /* slate-400 */
+    --border-primary: 255 255 255 / 0.1; /* white/10 */
+    --border-secondary: 255 255 255 / 0.05; /* white/5 */
+    --accent-primary: 14 165 233; /* sky-500 */
+    --accent-hover: 56 189 248; /* sky-400 */
+    --accent-subtle: 14 165 233 / 0.3; /* sky-500/30 */
+  }
+
+  /* Light theme */
+  [data-theme="light"] {
+    color-scheme: light;
+    --bg-primary: 248 250 252; /* slate-50 */
+    --bg-secondary: 241 245 249; /* slate-100 */
+    --bg-tertiary: 226 232 240; /* slate-200 */
+    --bg-panel: 255 255 255; /* white */
+    --text-primary: 15 23 42; /* slate-950 */
+    --text-secondary: 51 65 85; /* slate-800 */
+    --text-muted: 100 116 139; /* slate-500 */
+    --border-primary: 0 0 0 / 0.1; /* black/10 */
+    --border-secondary: 0 0 0 / 0.05; /* black/5 */
+    --accent-primary: 14 165 233; /* sky-500 */
+    --accent-hover: 2 132 199; /* sky-600 */
+    --accent-subtle: 14 165 233 / 0.15; /* sky-500/15 */
+  }
+
+  /* High contrast theme */
+  [data-theme="high_contrast"] {
+    color-scheme: dark;
+    --bg-primary: 0 0 0; /* black */
+    --bg-secondary: 17 24 39; /* gray-900 */
+    --bg-tertiary: 31 41 55; /* gray-800 */
+    --bg-panel: 0 0 0; /* black */
+    --text-primary: 255 255 255; /* white */
+    --text-secondary: 243 244 246; /* gray-100 */
+    --text-muted: 229 231 235; /* gray-200 - brighter for contrast */
+    --border-primary: 255 255 255 / 0.6; /* white/60 - more visible borders */
+    --border-secondary: 255 255 255 / 0.3; /* white/30 */
+    --accent-primary: 34 211 238; /* cyan-400 - brighter for contrast */
+    --accent-hover: 103 232 249; /* cyan-300 */
+    --accent-subtle: 34 211 238 / 0.5; /* cyan-400/50 */
   }
 
   html,
@@ -14,14 +62,20 @@
   }
 
   body {
-    @apply bg-slate-950 text-slate-100 antialiased;
+    @apply antialiased;
+    background-color: rgb(var(--bg-primary));
+    color: rgb(var(--text-primary));
   }
 
   a {
-    @apply text-sky-300 hover:text-sky-200;
+    color: rgb(var(--accent-primary));
+  }
+
+  a:hover {
+    color: rgb(var(--accent-hover));
   }
 
   ::selection {
-    @apply bg-sky-400/25;
+    background-color: rgb(var(--accent-primary) / 0.25);
   }
 }

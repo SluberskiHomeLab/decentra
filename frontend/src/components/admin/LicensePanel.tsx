@@ -42,8 +42,8 @@ function TierBadge({ tier }: { tier: string }) {
 
 function FeatureRow({ name, enabled }: { name: string; enabled: boolean }) {
   return (
-    <div className="flex items-center justify-between rounded-md bg-[#202225] px-3 py-2">
-      <span className="text-sm text-[#dcddde]">{name}</span>
+    <div className="flex items-center justify-between rounded-md bg-bg-tertiary px-3 py-2">
+      <span className="text-sm text-text-primary">{name}</span>
       {enabled ? (
         <svg className="h-5 w-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
@@ -65,12 +65,12 @@ function LimitRow({ name, value }: { name: string; value: number }) {
   const barColor = isUnlimited ? 'bg-blue-500' : 'bg-red-500'
 
   return (
-    <div className="rounded-md bg-[#202225] px-3 py-2">
+    <div className="rounded-md bg-bg-tertiary px-3 py-2">
       <div className="flex items-center justify-between mb-1">
-        <span className="text-sm text-[#dcddde]">{name}</span>
-        <span className="text-sm font-medium text-white">{displayValue}</span>
+        <span className="text-sm text-text-primary">{name}</span>
+        <span className="text-sm font-medium text-text-primary">{displayValue}</span>
       </div>
-      <div className="h-1.5 w-full rounded-full bg-[#40444b]">
+      <div className="h-1.5 w-full rounded-full bg-bg-tertiary/60">
         <div
           className={`h-1.5 rounded-full ${barColor} transition-all duration-300`}
           style={{ width: isUnlimited ? '100%' : '0%' }}
@@ -146,7 +146,7 @@ export function LicensePanel() {
   if (loading) {
     return (
       <div className="flex items-center justify-center p-8">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#5865f2] border-t-transparent" />
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-accent-primary border-t-transparent" />
       </div>
     )
   }
@@ -154,14 +154,14 @@ export function LicensePanel() {
   return (
     <div className="space-y-6 p-6">
       {/* ── License Status Card ────────────────────────── */}
-      <div className="rounded-lg bg-[#2f3136] border border-[#40444b] p-5">
+      <div className="rounded-lg bg-bg-secondary border border-border-primary p-5">
         <div className="flex items-start justify-between">
           <div>
-            <h2 className="text-lg font-semibold text-white mb-1">License Status</h2>
+            <h2 className="text-lg font-semibold text-text-primary mb-1">License Status</h2>
             <div className="flex items-center gap-3 mt-2">
               <TierBadge tier={tier} />
               {expiresAt && (
-                <span className="text-xs text-[#b9bbbe]">
+                <span className="text-xs text-text-secondary">
                   Expires: {new Date(expiresAt).toLocaleDateString()}
                 </span>
               )}
@@ -178,23 +178,23 @@ export function LicensePanel() {
         </div>
 
         {isAdmin && customer && (
-          <div className="mt-4 rounded-md bg-[#202225] p-3">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-[#72767d] mb-2">Customer Info</h3>
-            <div className="space-y-1 text-sm text-[#dcddde]">
-              <p><span className="text-[#72767d]">Name:</span> {customer.name}</p>
-              <p><span className="text-[#72767d]">Email:</span> {customer.email}</p>
-              <p><span className="text-[#72767d]">Company:</span> {customer.company}</p>
+          <div className="mt-4 rounded-md bg-bg-tertiary p-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-text-muted mb-2">Customer Info</h3>
+            <div className="space-y-1 text-sm text-text-primary">
+              <p><span className="text-text-muted">Name:</span> {customer.name}</p>
+              <p><span className="text-text-muted">Email:</span> {customer.email}</p>
+              <p><span className="text-text-muted">Company:</span> {customer.company}</p>
             </div>
           </div>
         )}
 
         {/* License Server Check-in Status */}
         {isAdmin && tier.toLowerCase() !== 'community' && (
-          <div className="mt-4 rounded-md bg-[#202225] p-3">
+          <div className="mt-4 rounded-md bg-bg-tertiary p-3">
             <div className="flex items-start justify-between mb-2">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-[#72767d]">Server Check-in</h3>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-text-muted">Server Check-in</h3>
               <button
-                className="text-xs text-[#5865f2] hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+                className="text-xs text-accent-primary hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
                 onClick={handleForceCheckin}
                 disabled={checkingIn}
               >
@@ -202,14 +202,14 @@ export function LicensePanel() {
               </button>
             </div>
             {lastCheckAt ? (
-              <div className="space-y-1 text-sm text-[#dcddde]">
+              <div className="space-y-1 text-sm text-text-primary">
                 <p>
-                  <span className="text-[#72767d]">Last Check:</span>{' '}
+                  <span className="text-text-muted">Last Check:</span>{' '}
                   {new Date(lastCheckAt).toLocaleDateString()} ({daysSinceCheck} days ago)
                 </p>
                 {nextCheckDue && (
                   <p>
-                    <span className="text-[#72767d]">Next Check:</span>{' '}
+                    <span className="text-text-muted">Next Check:</span>{' '}
                     {daysSinceCheck! < 30 ? (
                       <span className="text-green-400">{nextCheckDue.toLocaleDateString()}</span>
                     ) : (
@@ -229,7 +229,7 @@ export function LicensePanel() {
                 )}
               </div>
             ) : (
-              <p className="text-sm text-[#72767d]">Never checked in with licensing server</p>
+              <p className="text-sm text-text-muted">Never checked in with licensing server</p>
             )}
           </div>
         )}
@@ -257,10 +257,10 @@ export function LicensePanel() {
 
       {/* ── License Key Input ──────────────────────────── */}
       {isAdmin && (
-        <div className="rounded-lg bg-[#2f3136] border border-[#40444b] p-5">
-          <h2 className="text-lg font-semibold text-white mb-3">Activate License</h2>
+        <div className="rounded-lg bg-bg-secondary border border-border-primary p-5">
+          <h2 className="text-lg font-semibold text-text-primary mb-3">Activate License</h2>
           <textarea
-            className="w-full rounded-md border border-[#40444b] bg-[#202225] px-3 py-2 text-sm text-white placeholder-[#72767d] focus:border-[#5865f2] focus:outline-none focus:ring-1 focus:ring-[#5865f2] resize-none"
+            className="w-full rounded-md border border-border-primary bg-bg-tertiary px-3 py-2 text-sm text-text-primary placeholder-text-muted focus:border-accent-primary focus:outline-none focus:ring-1 focus:ring-accent-primary resize-none"
             rows={3}
             placeholder="Paste your license key here..."
             value={licenseKey}
@@ -271,7 +271,7 @@ export function LicensePanel() {
           />
           <div className="mt-3 flex items-center gap-3">
             <button
-              className="rounded-md bg-[#5865f2] px-4 py-2 text-sm font-medium text-white hover:bg-[#4752c4] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="rounded-md bg-accent-primary px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={handleActivate}
               disabled={activating || !licenseKey.trim()}
             >

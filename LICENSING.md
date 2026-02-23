@@ -17,6 +17,10 @@ Decentra uses an offline RSA-2048 cryptographic licensing system. The server run
 | **Custom Emojis** | Yes | Yes | Yes | Yes | Yes |
 | **Audit Logs** | Yes | Yes | Yes | Yes | Yes |
 | **SSO** | No | No | Yes | Yes | Yes |
+| **Soundboard** | Yes | Yes | Yes | Yes | Yes |
+| **Sounds per User** | 5 | 10 | 20 | Unlimited | Unlimited |
+| **Server Sounds** | 10 | 25 | 50 | Unlimited | Unlimited |
+| **Max Sound Duration** | 5s | 8s | 10s | 15s | 20s |
 | **Video** | 720p | 720p | 1080p | 1440p | 4k |
 | **Screensharing** | 720p | 720p | 1080p | 1440p | 4k |
 | **SMTP** | Yes | Yes | Yes | Yes | Yes |

@@ -10,11 +10,17 @@ import type {
   WsOutboundGenerateServerInvite,
   WsOutboundGetChannelHistory,
   WsOutboundGetDmHistory,
+  WsOutboundGetInstanceInviteUsage,
+  WsOutboundGetServerInfoByInvite,
   WsOutboundGetServerInviteUsage,
   WsOutboundGetServerMembers,
   WsOutboundJoinServerWithInvite,
+  WsOutboundListInstanceInvites,
+  WsOutboundListServerInvites,
   WsOutboundLogin,
   WsOutboundRequestPasswordReset,
+  WsOutboundRevokeInvite,
+  WsOutboundRevokeServerInvite,
   WsOutboundSendMessage,
   WsOutboundSetAvatar,
   WsOutboundSetNotificationMode,
@@ -26,6 +32,16 @@ import type {
   WsOutboundUpdateProfile,
   WsOutboundVerify2FASetup,
   WsOutboundVerifyEmail,
+  WsOutboundTypingStart,
+  WsOutboundTypingStop,
+  WsOutboundCreateThread,
+  WsOutboundCloseThread,
+  WsOutboundGetThreadHistory,
+  WsOutboundListThreads,
+  WsOutboundSendThreadMessage,
+  WsOutboundPinMessage,
+  WsOutboundUnpinMessage,
+  WsOutboundGetPinnedMessages,
 } from '../types/protocol'
 
 type MessageHandler = (msg: WsMessage) => void
@@ -155,6 +171,30 @@ export class WsClient {
     this.send(payload)
   }
 
+  listInstanceInvites(payload: WsOutboundListInstanceInvites = { type: 'list_instance_invites' }) {
+    this.send(payload)
+  }
+
+  listServerInvites(payload: WsOutboundListServerInvites) {
+    this.send(payload)
+  }
+
+  getInstanceInviteUsage(payload: WsOutboundGetInstanceInviteUsage = { type: 'get_instance_invite_usage' }) {
+    this.send(payload)
+  }
+
+  revokeInvite(payload: WsOutboundRevokeInvite) {
+    this.send(payload)
+  }
+
+  revokeServerInvite(payload: WsOutboundRevokeServerInvite) {
+    this.send(payload)
+  }
+
+  getServerInfoByInvite(payload: WsOutboundGetServerInfoByInvite) {
+    this.send(payload)
+  }
+
   getServerMembers(payload: WsOutboundGetServerMembers) {
     this.send(payload)
   }
@@ -209,6 +249,49 @@ export class WsClient {
 
   forceLicenseCheckin() {
     this.send({ type: 'force_license_checkin' })
+  }
+
+  // ── Typing indicators ────────────────────────────────────
+  sendTypingStart(payload: WsOutboundTypingStart) {
+    this.send(payload)
+  }
+
+  sendTypingStop(payload: WsOutboundTypingStop) {
+    this.send(payload)
+  }
+
+  // ── Threads ───────────────────────────────────────────────
+  createThread(payload: WsOutboundCreateThread) {
+    this.send(payload)
+  }
+
+  closeThread(payload: WsOutboundCloseThread) {
+    this.send(payload)
+  }
+
+  getThreadHistory(payload: WsOutboundGetThreadHistory) {
+    this.send(payload)
+  }
+
+  listThreads(payload: WsOutboundListThreads) {
+    this.send(payload)
+  }
+
+  sendThreadMessage(payload: WsOutboundSendThreadMessage) {
+    this.send(payload)
+  }
+
+  // ── Pinned messages ───────────────────────────────────────
+  pinMessage(payload: WsOutboundPinMessage) {
+    this.send(payload)
+  }
+
+  unpinMessage(payload: WsOutboundUnpinMessage) {
+    this.send(payload)
+  }
+
+  getPinnedMessages(payload: WsOutboundGetPinnedMessages) {
+    this.send(payload)
   }
 
   close() {

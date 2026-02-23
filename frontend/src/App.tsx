@@ -1,16 +1,21 @@
 import { Link, Navigate, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom'
-import { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { wsClient } from './api/wsClient'
 import { clearStoredAuth, getStoredAuth, setStoredAuth } from './auth/storage'
 import { contextKey, useAppStore } from './store/appStore'
 import { useToastStore } from './store/toastStore'
 import { VoiceChat } from './lib/VoiceChat'
-import type { ChatContext } from './store/appStore'
-import type { Attachment, CustomEmoji, Reaction, Server, ServerInviteUsageLog, ServerMember, WsChatMessage, WsMessage } from './types/protocol'
+import type { ChatContext, TypingUser } from './store/appStore'
+import type { Attachment, CustomEmoji, Reaction, Server, ServerInviteUsageLog, ServerMember, Thread, WsChatMessage, WsMessage } from './types/protocol'
 import { LicensePanel } from './components/admin/LicensePanel'
+import { WebhookPanel } from './components/admin/WebhookPanel'
+import { UsersPanel } from './components/admin/UsersPanel'
 import { useLicenseStore } from './store/licenseStore'
+import { useSettingsStore, type Keybinds } from './store/settingsStore'
 import { notificationManager } from './utils/notifications'
+import { keybindManager } from './utils/keybindManager'
 import { SearchBar, type SearchResult } from './components/SearchBar'
+import SoundboardPanel from './components/SoundboardPanel'
 import './App.css'
 
 // URL processing utilities
@@ -322,7 +327,7 @@ function MessageEmbeds({ content }: { content: string }): React.ReactElement | n
     const youtubeId = getYouTubeVideoId(safeUrl)
     if (youtubeId) {
       embeds.push(
-        <div key={`embed-${index}`} className="mt-2 overflow-hidden rounded-lg border border-white/10 bg-slate-900/40">
+        <div key={`embed-${index}`} className="mt-2 overflow-hidden rounded-lg border border-border-primary bg-bg-secondary/40">
           <iframe
             src={`https://www.youtube.com/embed/${encodeURIComponent(youtubeId)}`}
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
@@ -342,7 +347,7 @@ function MessageEmbeds({ content }: { content: string }): React.ReactElement | n
               src={safeUrl}
               alt="Embedded image"
               loading="lazy"
-              className="max-w-md rounded-lg border border-white/10"
+              className="max-w-md rounded-lg border border-border-primary"
               onError={(e) => {
                 e.currentTarget.style.display = 'none'
               }}
@@ -354,7 +359,7 @@ function MessageEmbeds({ content }: { content: string }): React.ReactElement | n
     // Video embed
     else if (isVideoUrl(safeUrl)) {
       embeds.push(
-        <div key={`embed-${index}`} className="mt-2 overflow-hidden rounded-lg border border-white/10 bg-slate-900/40">
+        <div key={`embed-${index}`} className="mt-2 overflow-hidden rounded-lg border border-border-primary bg-bg-secondary/40">
           <video
             src={safeUrl}
             controls
@@ -446,7 +451,7 @@ function AvatarWithStatus({
 
   return (
     <div className="relative inline-block">
-      <span className={`flex ${sizeClasses[size]} items-center justify-center overflow-hidden rounded-full bg-slate-700`}>
+      <span className={`flex ${sizeClasses[size]} items-center justify-center overflow-hidden rounded-full bg-bg-tertiary`}>
         {avatar_type === 'image' && avatar_data ? (
           <img src={avatar_data} alt="Avatar" className="h-full w-full object-cover" />
         ) : (
@@ -455,7 +460,7 @@ function AvatarWithStatus({
       </span>
       {showStatus && user_status && (
         <span
-          className={`absolute bottom-0 right-0 ${statusSizeClasses[size]} ${statusColorClasses[user_status]} rounded-full border-2 border-slate-950`}
+          className={`absolute bottom-0 right-0 ${statusSizeClasses[size]} ${statusColorClasses[user_status]} rounded-full border-2 border-bg-primary`}
           title={user_status}
         />
       )}
@@ -477,7 +482,7 @@ function ToastHost() {
           type="button"
           onClick={() => remove(t.id)}
           className={
-            'rounded-xl border px-3 py-2 text-left text-sm shadow-lg backdrop-blur transition hover:border-slate-500/50 ' +
+            'rounded-xl border px-3 py-2 text-left text-sm shadow-lg backdrop-blur transition hover:border-border-primary/50 ' +
             (t.kind === 'error'
               ? 'border-rose-500/30 bg-rose-500/10 text-rose-50'
               : t.kind === 'success'
@@ -495,6 +500,7 @@ function ToastHost() {
 
 function LoginPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const authToken = useAppStore((s) => s.authToken)
   const setAuth = useAppStore((s) => s.setAuth)
   const setInit = useAppStore((s) => s.setInit)
@@ -513,9 +519,11 @@ function LoginPage() {
   // If already authenticated, redirect to chat
   useEffect(() => {
     if (authToken) {
-      navigate('/chat')
+      const serverInvite = searchParams.get('server_invite')
+      const redirectPath = serverInvite ? `/chat?server_invite=${serverInvite}` : '/chat'
+      navigate(redirectPath)
     }
-  }, [authToken, navigate])
+  }, [authToken, navigate, searchParams])
 
   useEffect(() => {
     const unsubscribe = wsClient.onMessage((msg: WsMessage) => {
@@ -542,7 +550,11 @@ function LoginPage() {
         setStoredAuth({ token, username: u })
         setAuth({ token, username: u })
         setLastAuthError(null)
-        navigate('/chat')
+        
+        // Redirect to chat with server_invite parameter if present
+        const serverInvite = searchParams.get('server_invite')
+        const redirectPath = serverInvite ? `/chat?server_invite=${serverInvite}` : '/chat'
+        navigate(redirectPath)
       }
       if (msg.type === 'init') {
         const initUsername = typeof msg.username === 'string' ? msg.username : username.trim()
@@ -569,7 +581,7 @@ function LoginPage() {
     })
 
     return () => unsubscribe()
-  }, [navigate, setAuth, setInit, setLastAuthError, username])
+  }, [navigate, setAuth, setInit, setLastAuthError, username, searchParams])
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -627,46 +639,46 @@ function LoginPage() {
   }
 
   return (
-    <div className="relative min-h-screen bg-slate-950">
+    <div className="relative min-h-screen bg-bg-primary">
       <div className="absolute inset-0 bg-cover bg-center bg-no-repeat blur-sm" style={{ backgroundImage: 'url(/login-background.png)' }} />
       <div className="relative mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4 py-10">
         <div className="w-full max-w-md">
           <div className="mb-6">
             <div className="text-xs font-medium text-sky-200/70">Decentra</div>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">Sign in</h1>
-            <p className="mt-2 text-sm text-slate-300">Dashboard UI (React + Tailwind) – migration in progress.</p>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-text-primary">Sign in</h1>
+            <p className="mt-2 text-sm text-text-secondary">Dashboard UI (React + Tailwind) – migration in progress.</p>
           </div>
 
-          <div className="rounded-2xl border border-white/10 bg-slate-900/40 p-5 shadow-xl">
+          <div className="rounded-2xl border border-border-primary bg-bg-secondary/40 p-5 shadow-xl">
             <form onSubmit={onSubmit} className="flex flex-col gap-4">
               <label className="text-sm">
-                <div className="mb-1 text-slate-200">Username</div>
+                <div className="mb-1 text-text-secondary">Username</div>
                 <input
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                  className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                   placeholder="alice"
                 />
               </label>
               <label className="text-sm">
-                <div className="mb-1 text-slate-200">Password</div>
+                <div className="mb-1 text-text-secondary">Password</div>
                 <input
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                  className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                   placeholder="••••••••"
                 />
               </label>
 
               {needs2fa && (
                 <label className="text-sm">
-                  <div className="mb-1 text-slate-200">2FA Code</div>
+                  <div className="mb-1 text-text-secondary">2FA Code</div>
                   <input
                     value={totpCode}
                     onChange={(e) => setTotpCode(e.target.value)}
                     placeholder="123456"
-                    className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                   />
                 </label>
               )}
@@ -674,26 +686,26 @@ function LoginPage() {
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="mt-1 inline-flex items-center justify-center rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+                className="mt-1 inline-flex items-center justify-center rounded-xl bg-accent-primary px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isSubmitting ? 'Signing in…' : needs2fa ? 'Verify 2FA' : 'Sign In'}
               </button>
             </form>
 
             <div className="mt-4 flex flex-wrap gap-3 text-sm">
-              <Link className="text-sky-300 hover:text-sky-200" to="/signup">
+              <Link className="text-accent-primary hover:text-accent-hover" to="/signup">
                 Create Account
               </Link>
               <button
                 type="button"
-                className="text-sky-300 hover:text-sky-200"
+                className="text-accent-primary hover:text-accent-hover"
                 onClick={() => setShowForgotPassword(true)}
               >
                 Forgot Password?
               </button>
               <button
                 type="button"
-                className="text-slate-300 hover:text-slate-200"
+                className="text-accent-primary hover:text-accent-hover"
                 onClick={() => {
                   clearStoredAuth()
                   useAppStore.getState().clearAuth()
@@ -712,8 +724,8 @@ function LoginPage() {
             ) : null}
           </div>
 
-          <div className="mt-6 text-xs text-slate-400">
-            Backend via nginx proxy: <span className="text-slate-300">/api</span> and <span className="text-slate-300">/ws</span>
+          <div className="mt-6 text-xs text-text-muted">
+            Backend via nginx proxy: <span className="text-text-secondary">/api</span> and <span className="text-text-secondary">/ws</span>
           </div>
         </div>
       </div>
@@ -729,10 +741,10 @@ function LoginPage() {
           }}
         >
           <div
-            className="w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 p-6 shadow-2xl"
+            className="w-full max-w-md rounded-2xl border border-border-primary bg-bg-secondary p-6 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 className="mb-4 text-xl font-semibold text-slate-100">Reset Password</h2>
+            <h2 className="mb-4 text-xl font-semibold text-text-primary">Reset Password</h2>
             
             {resetSuccess ? (
               <div className="space-y-4">
@@ -746,24 +758,24 @@ function LoginPage() {
                     setResetSuccess(false)
                     setResetUsername('')
                   }}
-                  className="w-full rounded-xl bg-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-100 hover:bg-slate-600"
+                  className="w-full rounded-xl bg-bg-tertiary px-4 py-2.5 text-sm font-semibold text-text-primary hover:bg-bg-tertiary/70"
                 >
                   Close
                 </button>
               </div>
             ) : (
               <form onSubmit={handlePasswordReset} className="space-y-4">
-                <p className="text-sm text-slate-300">
+                <p className="text-sm text-text-secondary">
                   Enter your username to receive a password reset link at your registered email address.
                 </p>
                 
                 <label className="block text-sm">
-                  <div className="mb-1 text-slate-200">Username</div>
+                  <div className="mb-1 text-text-secondary">Username</div>
                   <input
                     type="text"
                     value={resetUsername}
                     onChange={(e) => setResetUsername(e.target.value)}
-                    className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                     placeholder="Your username"
                     required
                   />
@@ -773,7 +785,7 @@ function LoginPage() {
                   <button
                     type="submit"
                     disabled={!resetUsername.trim()}
-                    className="flex-1 rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="flex-1 rounded-xl bg-accent-primary px-4 py-2.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     Send Reset Link
                   </button>
@@ -784,7 +796,7 @@ function LoginPage() {
                       setResetSuccess(false)
                       setResetUsername('')
                     }}
-                    className="rounded-xl bg-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-100 hover:bg-slate-600"
+                    className="rounded-xl bg-bg-tertiary px-4 py-2.5 text-sm font-semibold text-text-primary hover:bg-bg-tertiary/70"
                   >
                     Cancel
                   </button>
@@ -800,6 +812,7 @@ function LoginPage() {
 
 function SignUpPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const setAuth = useAppStore((s) => s.setAuth)
   const setInit = useAppStore((s) => s.setInit)
   const setLastAuthError = useAppStore((s) => s.setLastAuthError)
@@ -812,6 +825,14 @@ function SignUpPage() {
   const [verificationCode, setVerificationCode] = useState('')
   const [needsVerification, setNeedsVerification] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
+
+  // Auto-fill invite code from URL parameter
+  useEffect(() => {
+    const inviteParam = searchParams.get('invite')
+    if (inviteParam) {
+      setInviteCode(inviteParam)
+    }
+  }, [searchParams])
 
   useEffect(() => {
     const unsubscribe = wsClient.onMessage((msg: WsMessage) => {
@@ -928,39 +949,39 @@ function SignUpPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950">
+    <div className="min-h-screen bg-bg-primary">
       <div className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4 py-10">
         <div className="w-full max-w-md">
           <div className="mb-6">
             <div className="text-xs font-medium text-sky-200/70">Decentra</div>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-text-primary">
               {needsVerification ? 'Verify Email' : 'Sign Up'}
             </h1>
-            <p className="mt-2 text-sm text-slate-300">
+            <p className="mt-2 text-sm text-text-secondary">
               {needsVerification
                 ? 'Enter the verification code sent to your email.'
                 : 'Create a new account to get started.'}
             </p>
           </div>
 
-          <div className="rounded-2xl border border-white/10 bg-slate-900/40 p-5 shadow-xl">
+          <div className="rounded-2xl border border-border-primary bg-bg-secondary/40 p-5 shadow-xl">
             <form onSubmit={onSubmit} className="flex flex-col gap-4">
               {needsVerification ? (
                 <>
                   <label className="text-sm">
-                    <div className="mb-1 text-slate-200">Username</div>
+                    <div className="mb-1 text-text-secondary">Username</div>
                     <input
                       value={username}
                       readOnly
-                      className="w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-slate-400"
+                      className="w-full rounded-xl border border-border-primary bg-bg-primary/60 px-3 py-2 text-text-muted"
                     />
                   </label>
                   <label className="text-sm">
-                    <div className="mb-1 text-slate-200">Verification Code</div>
+                    <div className="mb-1 text-text-secondary">Verification Code</div>
                     <input
                       value={verificationCode}
                       onChange={(e) => setVerificationCode(e.target.value)}
-                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                       placeholder="123456"
                       maxLength={6}
                     />
@@ -969,42 +990,42 @@ function SignUpPage() {
               ) : (
                 <>
                   <label className="text-sm">
-                    <div className="mb-1 text-slate-200">Username</div>
+                    <div className="mb-1 text-text-secondary">Username</div>
                     <input
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
-                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                       placeholder="alice"
                     />
                   </label>
                   <label className="text-sm">
-                    <div className="mb-1 text-slate-200">Password</div>
+                    <div className="mb-1 text-text-secondary">Password</div>
                     <input
                       type="password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                       placeholder="••••••••"
                     />
                   </label>
                   <label className="text-sm">
-                    <div className="mb-1 text-slate-200">Email</div>
+                    <div className="mb-1 text-text-secondary">Email</div>
                     <input
                       type="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                       placeholder="alice@example.com"
                     />
                   </label>
                   <label className="text-sm">
-                    <div className="mb-1 text-slate-200">
-                      Invite Code <span className="text-xs text-slate-400">(optional, empty for first user)</span>
+                    <div className="mb-1 text-text-secondary">
+                      Invite Code <span className="text-xs text-text-muted">(optional, empty for first user)</span>
                     </div>
                     <input
                       value={inviteCode}
                       onChange={(e) => setInviteCode(e.target.value)}
-                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                       placeholder="ABC123"
                     />
                   </label>
@@ -1014,20 +1035,20 @@ function SignUpPage() {
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="mt-1 inline-flex items-center justify-center rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+                className="mt-1 inline-flex items-center justify-center rounded-xl bg-accent-primary px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isSubmitting ? 'Processing…' : needsVerification ? 'Verify Email' : 'Create Account'}
               </button>
             </form>
 
             <div className="mt-4 flex flex-wrap gap-3 text-sm">
-              <Link className="text-sky-300 hover:text-sky-200" to="/login">
+              <Link className="text-accent-primary hover:text-accent-hover" to="/login">
                 Already have an account? Sign In
               </Link>
               {needsVerification && (
                 <button
                   type="button"
-                  className="text-slate-300 hover:text-slate-200"
+                  className="text-accent-primary hover:text-accent-hover"
                   onClick={() => {
                     setNeedsVerification(false)
                     setVerificationCode('')
@@ -1046,8 +1067,8 @@ function SignUpPage() {
             ) : null}
           </div>
 
-          <div className="mt-6 text-xs text-slate-400">
-            Backend via nginx proxy: <span className="text-slate-300">/api</span> and <span className="text-slate-300">/ws</span>
+          <div className="mt-6 text-xs text-text-muted">
+            Backend via nginx proxy: <span className="text-text-secondary">/api</span> and <span className="text-text-secondary">/ws</span>
           </div>
         </div>
       </div>
@@ -1123,12 +1144,12 @@ function ResetPasswordPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-4">
+    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-bg-primary via-bg-secondary to-bg-primary p-4">
       <div className="w-full max-w-md">
-        <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-slate-900/80 to-slate-950/80 p-8 shadow-2xl backdrop-blur-xl">
+        <div className="rounded-3xl border border-border-primary bg-gradient-to-br from-bg-secondary/80 to-bg-primary/80 p-8 shadow-2xl backdrop-blur-xl">
           <div className="mb-8 text-center">
-            <h1 className="mb-2 text-4xl font-bold text-slate-100">Reset Password</h1>
-            <p className="text-sm text-slate-400">Enter your new password below</p>
+            <h1 className="mb-2 text-4xl font-bold text-text-primary">Reset Password</h1>
+            <p className="text-sm text-text-muted">Enter your new password below</p>
           </div>
 
           <div className="space-y-6">
@@ -1143,12 +1164,12 @@ function ResetPasswordPage() {
             ) : (
               <form onSubmit={handleSubmit} className="space-y-4">
                 <label className="text-sm">
-                  <div className="mb-1 text-slate-200">New Password</div>
+                  <div className="mb-1 text-text-secondary">New Password</div>
                   <input
                     type="password"
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
-                    className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                     placeholder="At least 8 characters"
                     required
                     disabled={isSubmitting}
@@ -1156,12 +1177,12 @@ function ResetPasswordPage() {
                 </label>
 
                 <label className="text-sm">
-                  <div className="mb-1 text-slate-200">Confirm Password</div>
+                  <div className="mb-1 text-text-secondary">Confirm Password</div>
                   <input
                     type="password"
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
-                    className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/40"
                     placeholder="Re-enter your password"
                     required
                     disabled={isSubmitting}
@@ -1171,7 +1192,7 @@ function ResetPasswordPage() {
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="mt-1 w-full inline-flex items-center justify-center rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="mt-1 w-full inline-flex items-center justify-center rounded-xl bg-accent-primary px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isSubmitting ? 'Resetting Password...' : 'Reset Password'}
                 </button>
@@ -1185,7 +1206,7 @@ function ResetPasswordPage() {
             )}
 
             <div className="mt-4 text-center">
-              <Link className="text-sm text-sky-300 hover:text-sky-200" to="/login">
+              <Link className="text-sm text-accent-primary hover:text-accent-hover" to="/login">
                 Back to Sign In
               </Link>
             </div>
@@ -1197,6 +1218,7 @@ function ResetPasswordPage() {
 }
 
 function ChatPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const connectionStatus = useAppStore((s) => s.connectionStatus)
   const setConnectionStatus = useAppStore((s) => s.setConnectionStatus)
   const authToken = useAppStore((s) => s.authToken)
@@ -1210,6 +1232,22 @@ function ChatPage() {
   const messagesByContext = useAppStore((s) => s.messagesByContext)
   const setMessagesForContext = useAppStore((s) => s.setMessagesForContext)
   const appendMessage = useAppStore((s) => s.appendMessage)
+  const pinnedByContext = useAppStore((s) => s.pinnedByContext)
+  const setPinnedMessages = useAppStore((s) => s.setPinnedMessages)
+  const addPinnedMessage = useAppStore((s) => s.addPinnedMessage)
+  const removePinnedMessage = useAppStore((s) => s.removePinnedMessage)
+  const typingUsers = useAppStore((s) => s.typingUsers)
+  const addTypingUser = useAppStore((s) => s.addTypingUser)
+  const removeTypingUser = useAppStore((s) => s.removeTypingUser)
+  const threadsByServer = useAppStore((s) => s.threadsByServer)
+  const addThread = useAppStore((s) => s.addThread)
+  const closeThreadInStore = useAppStore((s) => s.closeThread)
+  const setThreadsForServer = useAppStore((s) => s.setThreadsForServer)
+
+  const themeMode = useSettingsStore((s) => s.themeMode)
+  const setThemeMode = useSettingsStore((s) => s.setThemeMode)
+  const keybinds = useSettingsStore((s) => s.keybinds) 
+  const loadPreferences = useSettingsStore((s) => s.loadPreferences)
 
   const [draft, setDraft] = useState('')
   const [serverName, setServerName] = useState('')
@@ -1220,11 +1258,30 @@ function ChatPage() {
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null)
   const [editingCategoryName, setEditingCategoryName] = useState('')
   const [dmUsername, setDmUsername] = useState('')
-  const [joinInviteCode, setJoinInviteCode] = useState('')
   const [lastInviteCode, setLastInviteCode] = useState<string | null>(null)
   const [inviteUsageServerId, setInviteUsageServerId] = useState<string | null>(null)
   const [inviteUsageLogs, setInviteUsageLogs] = useState<ServerInviteUsageLog[] | null>(null)
   const [isLoadingInviteUsage, setIsLoadingInviteUsage] = useState(false)
+  const [serverInviteMaxUses, setServerInviteMaxUses] = useState<number | null>(null)
+  const [instanceInviteMaxUses, setInstanceInviteMaxUses] = useState<number | null>(null)
+  const [instanceInvitesList, setInstanceInvitesList] = useState<any[] | null>(null)
+  const [showInstanceInvitesList, setShowInstanceInvitesList] = useState(false)
+  
+  // Server invite modal state
+  const [showServerInviteModal, setShowServerInviteModal] = useState(false)
+  const [serverInviteInfo, setServerInviteInfo] = useState<{
+    code: string
+    server: {
+      id: string
+      name: string
+      icon?: string
+      icon_type?: string
+      icon_data?: string
+      description?: string
+      member_count: number
+    }
+  } | null>(null)
+  const [isJoiningServer, setIsJoiningServer] = useState(false)
   
   // File upload state
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
@@ -1237,10 +1294,12 @@ function ChatPage() {
   const [isDmSidebarOpen, setIsDmSidebarOpen] = useState(false)
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null)
   const [isServerSettingsOpen, setIsServerSettingsOpen] = useState(false)
+  const [serverSettingsTab, setServerSettingsTab] = useState<'overview' | 'channels' | 'roles' | 'customization' | 'automations'>('overview')
   const [isMembersSidebarOpen, setIsMembersSidebarOpen] = useState(true)
   const [serverMembers, setServerMembers] = useState<Record<string, ServerMember[]>>({})
   const [isAccountSettingsOpen, setIsAccountSettingsOpen] = useState(false)
   const [isAdminMode, setIsAdminMode] = useState(false)
+  const [adminSettingsTab, setAdminSettingsTab] = useState<'general' | 'email' | 'announcements' | 'license' | 'webhooks' | 'users'>('general')
   const [adminSettings, setAdminSettings] = useState<Record<string, any>>({})
   const [isSavingSettings, setIsSavingSettings] = useState(false)
   const [isTestingSMTP, setIsTestingSMTP] = useState(false)
@@ -1267,11 +1326,15 @@ function ChatPage() {
   // Voice/Video chat state
   const [voiceChat, setVoiceChat] = useState<any>(null)
   const [isInVoice, setIsInVoice] = useState(false)
+  const [isVoiceConnecting, setIsVoiceConnecting] = useState(false)
   const [voiceParticipants, setVoiceParticipants] = useState<string[]>([])
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map())
   const [isVoiceMuted, setIsVoiceMuted] = useState(false)
   const [isVideoEnabled, setIsVideoEnabled] = useState(false)
   const [isScreenSharing, setIsScreenSharing] = useState(false)
+  
+  // Soundboard state
+  const [isSoundboardOpen, setIsSoundboardOpen] = useState(false)
 
   // Mention autocomplete state
   const [showMentionAutocomplete, setShowMentionAutocomplete] = useState(false)
@@ -1321,9 +1384,38 @@ function ChatPage() {
   const [newUsername, setNewUsername] = useState('')
   const [usernamePassword, setUsernamePassword] = useState('')
   const [usernameChangeStatus, setUsernameChangeStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null)
+  const [accountSettingsTab, setAccountSettingsTab] = useState<'profile' | 'security' | 'notifications' | 'keybinds'>('profile')
+  const [rebindingAction, setRebindingAction] = useState<keyof Keybinds | null>(null)
+  const [rebindConflict, setRebindConflict] = useState<string | null>(null)
   
   // Reply state
   const [replyingTo, setReplyingTo] = useState<WsChatMessage | null>(null)
+
+  // Typing indicator state
+  const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const isTypingRef = useRef(false)
+
+  // Delivery state: use ref so the useEffect closure always sees fresh data
+  const pendingNoncesRef = useRef<Set<string>>(new Set())
+  const [deliveredMessageId, setDeliveredMessageId] = useState<number | null>(null)
+
+  // Pins panel state
+  const [showPinsPanel, setShowPinsPanel] = useState(false)
+
+  // Thread state
+  const [showCreateThreadModal, setShowCreateThreadModal] = useState(false)
+  const [createThreadParentMsg, setCreateThreadParentMsg] = useState<WsChatMessage | null>(null)
+  const [createThreadName, setCreateThreadName] = useState('')
+  const [createThreadPrivate, setCreateThreadPrivate] = useState(false)
+  const [createThreadInvited, setCreateThreadInvited] = useState<string[]>([])
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null)
+  const [activeThread, setActiveThread] = useState<Thread | null>(null)
+
+  // Channel mention autocomplete state
+  const [showChannelMentionAutocomplete, setShowChannelMentionAutocomplete] = useState(false)
+  const [channelMentionSearch, setChannelMentionSearch] = useState('')
+  const [channelMentionStartPos, setChannelMentionStartPos] = useState(0)
+  const [selectedChannelMentionIndex, setSelectedChannelMentionIndex] = useState(0)
 
   // Automation state
   const [scheduledMessages, setScheduledMessages] = useState<any[]>([])
@@ -1337,32 +1429,11 @@ function ChatPage() {
   const [welcomeEnabled, setWelcomeEnabled] = useState(false)
   const [welcomeMessage, setWelcomeMessage] = useState('Welcome {user} to the server!')
   const [welcomeChannel, setWelcomeChannel] = useState('')
-  const [isViewingAutomations, setIsViewingAutomations] = useState(false)
 
   const pushToast = useToastStore((s) => s.push)
 
   const selectedKey = contextKey(selectedContext)
   const messages = messagesByContext[selectedKey] ?? []
-
-  const reconnectRef = useRef<{ attempt: number; timer: number | null; stopped: boolean }>({
-    attempt: 0,
-    timer: null,
-    stopped: false,
-  })
-
-  const clearReconnectTimer = () => {
-    if (reconnectRef.current.timer != null) {
-      window.clearTimeout(reconnectRef.current.timer)
-      reconnectRef.current.timer = null
-    }
-  }
-
-  const backoffMs = (attempt: number) => {
-    // Exponential backoff with jitter; caps at 30s.
-    const base = Math.min(30_000, 500 * Math.pow(2, attempt))
-    const jitter = base * (0.2 * (Math.random() - 0.5) * 2) // +/-20%
-    return Math.max(250, Math.floor(base + jitter))
-  }
 
   const requestHistoryFor = (ctx: ChatContext) => {
     if (wsClient.readyState !== WebSocket.OPEN) return
@@ -1373,6 +1444,115 @@ function ChatPage() {
       loadServerEmojis(ctx.serverId)
     } else if (ctx.kind === 'dm') {
       wsClient.getDmHistory({ type: 'get_dm_history', dm_id: ctx.dmId })
+    } else if (ctx.kind === 'thread') {
+      wsClient.getThreadHistory({ type: 'get_thread_history', thread_id: ctx.threadId })
+    }
+  }
+
+  const clearUnreadForContext = (ctx: ChatContext) => {
+    const prev = useAppStore.getState().init
+    if (!prev) return
+
+    if (ctx.kind === 'dm') {
+      // Clear DM unread count
+      const updatedDms = prev.dms?.map((dm) => {
+        if (dm.id === ctx.dmId) {
+          return {
+            ...dm,
+            unread_count: 0,
+            has_mention: false
+          }
+        }
+        return dm
+      })
+      setInit({ ...prev, dms: updatedDms })
+    } else if (ctx.kind === 'server') {
+      // Clear channel unread count
+      const updatedServers = prev.servers?.map((server) => {
+        if (server.id === ctx.serverId) {
+          const channelUnreads = { ...(server.channel_unreads ?? {}) }
+          channelUnreads[ctx.channelId] = {
+            unread_count: 0,
+            has_mention: false
+          }
+          
+          // Recalculate total server unreads
+          let totalUnread = 0
+          let hasAnyMention = false
+          Object.values(channelUnreads).forEach((ch: any) => {
+            totalUnread += ch.unread_count ?? 0
+            if (ch.has_mention) hasAnyMention = true
+          })
+          
+          return {
+            ...server,
+            unread_count: totalUnread,
+            has_mention: hasAnyMention,
+            channel_unreads: channelUnreads
+          }
+        }
+        return server
+      })
+      setInit({ ...prev, servers: updatedServers })
+    }
+  }
+
+  const handleSearchResultClick = (result: SearchResult) => {
+    // Navigate to the context where the message is
+    if (result.context_type === 'dm') {
+      const dm = init?.dms?.find(d => d.id === result.context_id)
+      if (dm) {
+        const next: ChatContext = { kind: 'dm', dmId: dm.id, username: dm.username }
+        selectContext(next)
+        requestHistoryFor(next)
+        setSelectedServerId(null)
+        setIsDmSidebarOpen(true)
+        
+        // Scroll to message after a short delay to allow messages to load
+        setTimeout(() => {
+          const messageElement = document.getElementById(`message-${result.id}`)
+          if (messageElement) {
+            messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            // Highlight the message briefly
+            messageElement.classList.add('bg-sky-500/20')
+            setTimeout(() => {
+              messageElement.classList.remove('bg-sky-500/20')
+            }, 2000)
+          }
+        }, 500)
+      }
+    } else if (result.context_type === 'server' && result.context_id) {
+      const [serverId, channelId] = result.context_id.split('/')
+      const server = init?.servers?.find(s => s.id === serverId)
+      
+      if (server) {
+        const channel = server.channels?.find(c => c.id === channelId)
+        if (channel) {
+          setSelectedServerId(serverId)
+          setIsDmSidebarOpen(false)
+          const next: ChatContext = { kind: 'server', serverId, channelId }
+          selectContext(next)
+          requestHistoryFor(next)
+          
+          // Request server members if not already loaded
+          if (!serverMembers[serverId]) {
+            wsClient.getServerMembers({ type: 'get_server_members', server_id: serverId })
+          }
+          
+          // Scroll to message after a short delay to allow messages to load
+          setTimeout(() => {
+            const messageElement = document.getElementById(`message-${result.id}`)
+            if (messageElement) {
+              messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              // Highlight the message briefly
+              messageElement.classList.add('bg-sky-500/20')
+              setTimeout(() => {
+                messageElement.classList.remove('bg-sky-500/20')
+              }, 2000)
+            }
+          }, 500)
+        }
+      }
     }
   }
 
@@ -1493,14 +1673,6 @@ function ChatPage() {
     requestHistoryFor(next)
   }
 
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [email, setEmail] = useState('')
-  const [inviteCode, setInviteCode] = useState('')
-  const [verificationCode, setVerificationCode] = useState('')
-  const [needsVerification, setNeedsVerification] = useState(false)
-  const [isSubmitting, setIsSubmitting] = useState(false)
-
   // Check notification permission on mount
   useEffect(() => {
     if (notificationManager.isSupported()) {
@@ -1508,27 +1680,79 @@ function ChatPage() {
     }
   }, [])
 
+  // Connect and authenticate with stored token on mount
+  useEffect(() => {
+    if (!authToken) return
+
+    const ws = wsClient.connect()
+    
+    const handleOpen = () => {
+      setConnectionStatus('connected')
+    }
+    
+    const handleClose = () => {
+      setConnectionStatus('disconnected')
+    }
+    
+    const handleError = () => {
+      setConnectionStatus('disconnected')
+    }
+    
+    const sendAuth = () => {
+      wsClient.authenticateWithToken({ type: 'token', token: authToken })
+    }
+
+    // Set initial status
+    if (ws.readyState === WebSocket.OPEN) {
+      setConnectionStatus('connected')
+      sendAuth()
+    } else if (ws.readyState === WebSocket.CONNECTING) {
+      setConnectionStatus('connecting')
+    } else {
+      setConnectionStatus('disconnected')
+    }
+  }, [])
+
+    ws.addEventListener('open', handleOpen)
+    ws.addEventListener('open', sendAuth)
+    ws.addEventListener('close', handleClose)
+    ws.addEventListener('error', handleError)
+
+    return () => {
+      ws.removeEventListener('open', handleOpen)
+      ws.removeEventListener('open', sendAuth)
+      ws.removeEventListener('close', handleClose)
+      ws.removeEventListener('error', handleError)
+    }
+  }, [authToken, setConnectionStatus])
+
+  // Check for server invite in URL parameters
+  useEffect(() => {
+    const serverInviteCode = searchParams.get('server_invite')
+    if (serverInviteCode && connectionStatus === 'connected' && init) {
+      // Request server info (only after authentication is complete)
+      wsClient.getServerInfoByInvite({ type: 'get_server_info_by_invite', invite_code: serverInviteCode })
+      // Clear the URL parameter
+      setSearchParams({})
+    }
+  }, [searchParams, setSearchParams, connectionStatus, init])
+
   useEffect(() => {
     const unsubscribe = wsClient.onMessage((msg: WsMessage) => {
       if (msg.type === 'auth_error') {
-        setIsSubmitting(false)
-        setNeedsVerification(false)
         const message = typeof msg.message === 'string' ? msg.message : 'Authentication failed'
         setLastAuthError(message)
       }
       if (msg.type === 'verification_required') {
-        setIsSubmitting(false)
-        setNeedsVerification(true)
         setLastAuthError(null)
       }
       if (msg.type === 'auth_success') {
-        setIsSubmitting(false)
-        const u = username.trim()
-        if (!u) return
-        const token = typeof msg.token === 'string' ? msg.token : ''
-        if (!token) {
-          setLastAuthError('Signup succeeded but no token was returned')
-          return
+        // Load user preferences from server
+        if (msg.theme_mode || msg.keybinds) {
+          loadPreferences(
+            msg.theme_mode || 'dark',
+            msg.keybinds || {}
+          )
         }
 
         // Request admin settings (includes announcement info for all users)
@@ -1549,7 +1773,7 @@ function ChatPage() {
         requestHistoryFor(useAppStore.getState().selectedContext)
       }
       if (msg.type === 'init') {
-        const initUsername = typeof msg.username === 'string' ? msg.username : username.trim()
+        const initUsername = typeof msg.username === 'string' ? msg.username : (init?.username || authUsername || '')
         if (!initUsername) return
         console.log('Init message full:', JSON.stringify(msg, null, 2))
         setInit({
@@ -1578,6 +1802,13 @@ function ChatPage() {
           console.log('Set userStatus to:', msg.user_status)
         }
 
+        // Sync user status
+        console.log('Init message received, user_status:', msg.user_status)
+        if (msg.user_status) {
+          setUserStatus(msg.user_status)
+          console.log('Set userStatus to:', msg.user_status)
+        }
+
         // If the user hasn't selected a context yet, default to first channel.
         if (useAppStore.getState().selectedContext.kind === 'global') {
           setDefaultContextFromServers(msg.servers)
@@ -1594,6 +1825,7 @@ function ChatPage() {
             setIsVideoEnabled(vc.getIsVideoEnabled())
             setIsScreenSharing(vc.getIsScreenSharing())
             setIsInVoice(vc.getIsInVoice())
+            setIsVoiceConnecting(vc.getIsConnecting())
           })
           vc.setOnRemoteStreamChange((peer, stream) => {
             setRemoteStreams((prev) => {
@@ -1625,14 +1857,6 @@ function ChatPage() {
         }
       }
 
-      const ws = wsClient.connect()
-      const sendVerify = () => {
-        wsClient.verifyEmail({
-          type: 'verify_email',
-          username: u,
-          code,
-        })
-      }
       if (msg.type === 'auth_error') {
         const message = typeof msg.message === 'string' ? msg.message : 'Authentication failed'
         setLastAuthError(message)
@@ -1659,15 +1883,19 @@ function ChatPage() {
         }
       }
 
-      ws.onopen = () => {
-        sendVerify()
+      if (msg.type === 'channel_history') {
+        const serverId = msg.server_id
+        const channelId = msg.channel_id
+        const messages = msg.messages || []
+        const ctx: ChatContext = { kind: 'server', serverId, channelId }
+        setMessagesForContext(ctx, messages)
       }
-    } else {
-      // Signup step
-      if (!u || !password || !email) {
-        setIsSubmitting(false)
-        setLastAuthError('Username, password, and email are required')
-        return
+
+      if (msg.type === 'dm_history') {
+        const dmId = msg.dm_id
+        const messages = msg.messages || []
+        const ctx: ChatContext = { kind: 'dm', dmId }
+        setMessagesForContext(ctx, messages)
       }
 
       if (msg.type === 'category_created') {
@@ -1705,6 +1933,18 @@ function ChatPage() {
               : s,
           )
           setInit({ ...prev, servers: nextServers })
+          
+          // If the current channel was deleted, switch to the first available channel
+          const currentCtx = useAppStore.getState().selectedContext
+          if (currentCtx.kind === 'server' && currentCtx.serverId === msg.server_id && currentCtx.channelId === msg.channel_id) {
+            const updatedServer = nextServers.find(s => s.id === msg.server_id)
+            if (updatedServer && updatedServer.channels && updatedServer.channels.length > 0) {
+              const firstChannel = updatedServer.channels[0]
+              const next: ChatContext = { kind: 'server', serverId: msg.server_id, channelId: firstChannel.id }
+              selectContext(next)
+              requestHistoryFor(next)
+            }
+          }
         }
       }
 
@@ -1790,6 +2030,8 @@ function ChatPage() {
           setInit({ ...prev, servers: nextServers })
         }
       }
+    }
+  }
 
       if (msg.type === 'channel_deleted') {
         const prev = useAppStore.getState().init
@@ -1827,33 +2069,6 @@ function ChatPage() {
         requestHistoryFor(next)
       }
 
-      if (ws.readyState === WebSocket.OPEN) {
-        sendSignup()
-        return
-      }
-
-      ws.onopen = () => {
-        sendSignup()
-      }
-    }
-  }
-
-  return (
-    <div className="min-h-screen bg-slate-950">
-      <div className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4 py-10">
-        <div className="w-full max-w-md">
-          <div className="mb-6">
-            <div className="text-xs font-medium text-sky-200/70">Decentra</div>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">
-              {needsVerification ? 'Verify Email' : 'Sign Up'}
-            </h1>
-            <p className="mt-2 text-sm text-slate-300">
-              {needsVerification
-                ? 'Enter the verification code sent to your email.'
-                : 'Create a new account to get started.'}
-            </p>
-          </div>
-
       if (msg.type === 'server_members') {
         setServerMembers((prev) => ({
           ...prev,
@@ -1869,50 +2084,21 @@ function ChatPage() {
           setInit({ ...prev, servers: exists ? servers : [...servers, msg.server] })
         }
         pushToast({ kind: 'success', message: `Joined server: ${msg.server.name}` })
-
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="mt-1 inline-flex items-center justify-center rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isSubmitting ? 'Processing…' : needsVerification ? 'Verify Email' : 'Create Account'}
-              </button>
-            </form>
-
-            <div className="mt-4 flex flex-wrap gap-3 text-sm">
-              <Link className="text-sky-300 hover:text-sky-200" to="/login">
-                Already have an account? Sign In
-              </Link>
-              {needsVerification && (
-                <button
-                  type="button"
-                  className="text-slate-300 hover:text-slate-200"
-                  onClick={() => {
-                    setNeedsVerification(false)
-                    setVerificationCode('')
-                    setLastAuthError(null)
-                  }}
-                >
-                  Change Username/Email
-                </button>
-              )}
-            </div>
-
-            {lastAuthError ? (
-              <div className="mt-4 rounded-xl border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-sm text-rose-50">
-                {lastAuthError}
-              </div>
-            ) : null}
-          </div>
-
-          <div className="mt-6 text-xs text-slate-400">
-            Backend via nginx proxy: <span className="text-slate-300">/api</span> and <span className="text-slate-300">/ws</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
+        
+        // Close the invite modal and reset joining state
+        setShowServerInviteModal(false)
+        setIsJoiningServer(false)
+        
+        // Navigate to the newly joined server
+        const firstChannel = msg.server.channels?.[0]
+        if (firstChannel) {
+          selectContext({
+            kind: 'server',
+            serverId: msg.server.id,
+            channelId: firstChannel.id,
+          })
+        }
+      }
 
       if (isWsChatMessage(msg)) {
         appendMessage(msg)
@@ -2117,6 +2303,38 @@ function ChatPage() {
       
       if (msg.type === 'welcome_message_updated') {
         pushToast({ kind: 'success', message: 'Welcome message updated' })
+      }
+      
+      // Invite code messages
+      if (msg.type === 'invite_code') {
+        setLastInviteCode(msg.code)
+        pushToast({ kind: 'success', message: msg.message || 'Invite code generated' })
+      }
+      
+      if (msg.type === 'instance_invites_list') {
+        setInstanceInvitesList(msg.invites)
+      }
+      
+      if (msg.type === 'invite_revoked') {
+        pushToast({ kind: 'success', message: 'Invite revoked' })
+      }
+      
+      if (msg.type === 'server_invite_code') {
+        setLastInviteCode(msg.code)
+        pushToast({ kind: 'success', message: msg.message || 'Server invite code generated' })
+      }
+      
+      if (msg.type === 'server_info_preview') {
+        setServerInviteInfo({
+          code: msg.invite_code,
+          server: msg.server
+        })
+        setShowServerInviteModal(true)
+      }
+      
+      if (msg.type === 'server_invite_usage') {
+        setInviteUsageLogs(msg.usage_logs)
+        setIsLoadingInviteUsage(false)
       }
       
       if (msg.type === 'admin_signup_notification') {
@@ -2445,6 +2663,112 @@ function ChatPage() {
         })
       }
 
+      // ── Typing indicators ────────────────────────────────────────────
+      if (msg.type === 'user_typing') {
+        const { username, context, context_id } = msg as any
+        const currentUsername = useAppStore.getState().init?.username
+        if (username === currentUsername) return
+        const ctxKey = context === 'dm' && context_id ? `dm:${context_id}` : context === 'server' && context_id ? `server:${context_id}` : 'global'
+        addTypingUser(ctxKey, {
+          username,
+          avatar: (msg as any).avatar,
+          avatar_type: (msg as any).avatar_type,
+          avatar_data: (msg as any).avatar_data,
+        } as TypingUser)
+        // Auto-remove after 7s in case stop event is missed
+        setTimeout(() => removeTypingUser(ctxKey, username), 7000)
+      }
+
+      if (msg.type === 'user_stopped_typing') {
+        const { username, context, context_id } = msg as any
+        const ctxKey = context === 'dm' && context_id ? `dm:${context_id}` : context === 'server' && context_id ? `server:${context_id}` : 'global'
+        removeTypingUser(ctxKey, username)
+      }
+
+      // ── Delivery state (nonce echo) ───────────────────────────────────
+      if (msg.type === 'message') {
+        const chatMsg = msg as WsChatMessage
+        if (chatMsg.nonce && chatMsg.id && pendingNoncesRef.current.has(chatMsg.nonce)) {
+          pendingNoncesRef.current.delete(chatMsg.nonce)
+          setDeliveredMessageId(chatMsg.id)
+        }
+      }
+
+      // ── Threads ───────────────────────────────────────────────────────
+      if (msg.type === 'thread_created') {
+        const thread: Thread = (msg as any).thread
+        addThread(thread.server_id, thread)
+        // Re-fetch threads list so channel_id is populated
+        if (thread.server_id && wsClient.readyState === WebSocket.OPEN) {
+          wsClient.listThreads({ type: 'list_threads', server_id: thread.server_id })
+        }
+        pushToast({ kind: 'success', message: `Thread created: ${thread.name}` })
+      }
+
+      if (msg.type === 'thread_closed') {
+        const { thread_id, server_id } = msg as any
+        closeThreadInStore(server_id, thread_id)
+        pushToast({ kind: 'info', message: 'Thread closed' })
+        // If currently viewing the closed thread, go back to server channel
+        const currentCtx = useAppStore.getState().selectedContext
+        if (currentCtx.kind === 'thread' && currentCtx.threadId === thread_id) {
+          const server = useAppStore.getState().init?.servers?.find((s) => s.id === server_id)
+          const firstChannel = server?.channels?.[0]
+          if (firstChannel) {
+            selectContext({ kind: 'server', serverId: server_id, channelId: firstChannel.id })
+          }
+        }
+        if (activeThreadId === thread_id) {
+          setActiveThreadId(null)
+          setActiveThread(null)
+        }
+      }
+
+      if (msg.type === 'thread_history') {
+        const { thread_id, thread, messages: threadMessages } = msg as any
+        setActiveThread(thread as Thread)
+        const ctxKey = `thread:${thread.server_id}/${thread_id}`
+        useAppStore.setState((state) => ({
+          messagesByContext: { ...state.messagesByContext, [ctxKey]: threadMessages }
+        }))
+      }
+
+      if (msg.type === 'threads_list') {
+        const { server_id, threads } = msg as any
+        setThreadsForServer(server_id, threads as Thread[])
+      }
+
+      // Thread messages arrive as type 'message' with context='thread', handled by appendMessage
+
+      // ── Pinned messages ───────────────────────────────────────────────
+      if (msg.type === 'pinned_messages') {
+        const { context_type, context_id, messages: pinned } = msg as any
+        const ctxKey = context_type === 'dm' && context_id ? `dm:${context_id}` : context_type === 'server' && context_id ? `server:${context_id}` : 'global'
+        setPinnedMessages(ctxKey, pinned)
+      }
+
+      if (msg.type === 'message_pinned') {
+        const { message_id, pinned_by, context_type, context_id } = msg as any
+        const ctxKey = context_type === 'dm' && context_id ? `dm:${context_id}` : context_type === 'server' && context_id ? `server:${context_id}` : 'global'
+        addPinnedMessage(ctxKey, message_id, pinned_by, new Date().toISOString())
+        pushToast({ kind: 'success', message: `📌 Message pinned` })
+        // Refresh pinned panel if it's open
+        if (context_type && context_id) {
+          wsClient.getPinnedMessages({ type: 'get_pinned_messages', context_type, context_id })
+        }
+      }
+
+      if (msg.type === 'message_unpinned') {
+        const { message_id, context_type, context_id } = msg as any
+        const ctxKey = context_type === 'dm' && context_id ? `dm:${context_id}` : context_type === 'server' && context_id ? `server:${context_id}` : 'global'
+        removePinnedMessage(ctxKey, message_id)
+        pushToast({ kind: 'info', message: '📌 Message unpinned' })
+        // Refresh pinned panel if it's open
+        if (context_type && context_id) {
+          wsClient.getPinnedMessages({ type: 'get_pinned_messages', context_type, context_id })
+        }
+      }
+
       // Voice/Video chat handlers
       if (msg.type === 'voice_channel_joined' && voiceChat) {
         voiceChat.handleVoiceJoined(msg.participants)
@@ -2453,22 +2777,31 @@ function ChatPage() {
       if (msg.type === 'voice_state_update') {
         console.log('Received voice_state_update:', msg)
         // Update voice participants when someone joins/leaves
-        if (msg.voice_members && Array.isArray(msg.voice_members)) {
+        if (msg.voice_members && Array.isArray(msg.voice_members) && voiceChat) {
           const participantUsernames = msg.voice_members.map((m: any) => m.username)
-          const currentChannel = voiceChat?.getCurrentChannel()
+          const currentChannel = voiceChat.getCurrentChannel()
+          
+          // Check if message matches current or pending channel
           const matchesCurrentChannel =
             !!currentChannel?.server &&
             !!currentChannel?.channel &&
             msg.server_id === currentChannel.server &&
             msg.channel_id === currentChannel.channel
+          
+          // Also check pending channel (when first joining)
+          const pendingChannel = voiceChat.getPendingChannel?.()
+          const matchesPendingChannel = 
+            pendingChannel &&
+            !!pendingChannel?.server &&
+            !!pendingChannel?.channel &&
+            msg.server_id === pendingChannel.server &&
+            msg.channel_id === pendingChannel.channel
 
-          if (matchesCurrentChannel) {
+          if (matchesCurrentChannel || matchesPendingChannel) {
             setVoiceParticipants(participantUsernames)
             const isUserInVoice = participantUsernames.includes(init?.username)
             setIsInVoice(isUserInVoice)
-            if (voiceChat) {
-              voiceChat.handleVoiceJoined(participantUsernames)
-            }
+            voiceChat.handleVoiceJoined(participantUsernames)
             console.log('Updated voice participants:', participantUsernames)
           }
         }
@@ -2506,33 +2839,80 @@ function ChatPage() {
           voiceChat.handleICECandidate(fromUsername, msg.candidate)
         }
       }
+      
+      // Soundboard handler
+      if (msg.type === 'soundboard_play' && voiceChat) {
+        const soundId = (msg as any).sound_id
+        const soundName = (msg as any).sound_name || 'Unknown'
+        const playingUsername = (msg as any).username
+        
+        // Don't play if it's the current user (already played locally)
+        if (playingUsername && playingUsername === init?.username) {
+          return
+        }
+        
+        // Play the sound remotely
+        if (soundId) {
+          voiceChat.playRemoteSoundboard(soundId).catch((err: any) => {
+            console.error('Failed to play remote soundboard sound:', err)
+          })
+          
+          // Show toast notification
+          pushToast({ 
+            kind: 'info', 
+            message: `🔊 ${playingUsername} played: ${soundName}` 
+          })
+        }
+      }
     })
 
+    return () => unsubscribe()
+  }, [])
+
+  // Initialize keybind manager for voice chat controls
   useEffect(() => {
-    if (!token) {
-      setErrorMessage('Invalid or missing reset token')
-    }
-  }, [token])
+    keybindManager.init()
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setErrorMessage(null)
-    setSuccessMessage(null)
+    // Register keybind callbacks
+    keybindManager.on('push_to_talk', () => {
+      if (voiceChat && voiceChat.getIsInVoice()) {
+        voiceChat.toggleMute()
+      }
+    })
 
-    if (!token) {
-      setErrorMessage('Invalid or missing reset token')
-      return
-    }
+    keybindManager.on('toggle_mute', () => {
+      if (voiceChat && voiceChat.getIsInVoice()) {
+        voiceChat.toggleMute()
+      }
+    })
 
-    if (newPassword.length < 8) {
-      setErrorMessage('Password must be at least 8 characters long')
-      return
-    }
+    keybindManager.on('toggle_deafen', () => {
+      // TODO: Implement deafen functionality in VoiceChat.ts
+      console.log('Toggle deafen not yet implemented')
+    })
 
-    if (newPassword !== confirmPassword) {
-      setErrorMessage('Passwords do not match')
-      return
+    keybindManager.on('toggle_video', () => {
+      if (voiceChat && voiceChat.getIsInVoice()) {
+        voiceChat.toggleVideo()
+      }
+    })
+
+    keybindManager.on('toggle_screen_share', () => {
+      if (voiceChat && voiceChat.getIsInVoice()) {
+        voiceChat.toggleScreenShare()
+      }
+    })
+
+    keybindManager.on('answer_end_call', () => {
+      // TODO: Implement answer/end call functionality
+      console.log('Answer/end call not yet implemented')
+    })
+
+    // Cleanup on unmount
+    return () => {
+      keybindManager.destroy()
     }
+  }, [voiceChat])
 
   // Populate account settings when init data is available
   useEffect(() => {
@@ -2577,6 +2957,13 @@ function ChatPage() {
   useEffect(() => {
     console.log('serverEmojis updated:', Object.keys(serverEmojis).map(key => ({ [key]: serverEmojis[key]?.length || 0 })))
   }, [serverEmojis])
+
+  // Load threads when the selected server changes
+  useEffect(() => {
+    if (selectedServerId && wsClient.readyState === WebSocket.OPEN) {
+      wsClient.listThreads({ type: 'list_threads', server_id: selectedServerId })
+    }
+  }, [selectedServerId])
 
   // Load server roles when server settings modal is opened
   useEffect(() => {
@@ -2673,11 +3060,13 @@ function ChatPage() {
       ? 'Global'
       : selectedContext.kind === 'dm'
         ? selectedContext.username
-        : (() => {
-            const server = init?.servers?.find((s) => s.id === selectedContext.serverId)
-            const channel = server?.channels?.find((c) => c.id === selectedContext.channelId)
-            return server && channel ? `${server.name} / ${channel.name}` : 'Channel'
-          })()
+        : selectedContext.kind === 'thread'
+          ? `🧵 ${selectedContext.threadName || activeThread?.name || selectedContext.threadId}`
+          : (() => {
+              const server = init?.servers?.find((s) => s.id === selectedContext.serverId)
+              const channel = server?.channels?.find((c) => c.id === selectedContext.channelId)
+              return server && channel ? `${server.name} / ${channel.name}` : 'Channel'
+            })()
 
   const canSend = wsClient.readyState === WebSocket.OPEN && (draft.trim().length > 0 || selectedFiles.length > 0)
 
@@ -2691,22 +3080,41 @@ function ChatPage() {
     // Get reply_to ID if replying
     const reply_to = replyingTo?.id || undefined
 
+    // Stop typing indicator
+    if (isTypingRef.current) {
+      isTypingRef.current = false
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current)
+      let context = 'global'
+      let context_id: string | null = null
+      if (selectedContext.kind === 'server') { context = 'server'; context_id = `${selectedContext.serverId}/${selectedContext.channelId}` }
+      else if (selectedContext.kind === 'dm') { context = 'dm'; context_id = selectedContext.dmId }
+      try { wsClient.sendTypingStop({ type: 'typing_stop', context, context_id }) } catch { /* ignore */ }
+    }
+
+    // Generate nonce for delivery tracking
+    const nonce = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`
+
     // If there are files, send message first, then upload files
     if (selectedFiles.length > 0) {
       await sendMessageWithFiles(content || '', mentions, reply_to)
     } else {
       // Just send text message
-      if (selectedContext.kind === 'server') {
-        wsClient.sendMessage({ type: 'message', content, context: 'server', context_id: `${selectedContext.serverId}/${selectedContext.channelId}`, mentions, reply_to })
+      if (selectedContext.kind === 'thread') {
+        // Send as thread message
+        wsClient.sendThreadMessage({ type: 'thread_message', thread_id: selectedContext.threadId, content, nonce })
+      } else if (selectedContext.kind === 'server') {
+        wsClient.sendMessage({ type: 'message', content, context: 'server', context_id: `${selectedContext.serverId}/${selectedContext.channelId}`, mentions, reply_to, nonce })
       } else if (selectedContext.kind === 'dm') {
-        wsClient.sendMessage({ type: 'message', content, context: 'dm', context_id: selectedContext.dmId, mentions, reply_to })
+        wsClient.sendMessage({ type: 'message', content, context: 'dm', context_id: selectedContext.dmId, mentions, reply_to, nonce })
       } else {
-        wsClient.sendMessage({ type: 'message', content, context: 'global', context_id: null, mentions, reply_to })
+        wsClient.sendMessage({ type: 'message', content, context: 'global', context_id: null, mentions, reply_to, nonce })
       }
+      pendingNoncesRef.current.add(nonce)
       setDraft('')
       setReplyingTo(null)
     }
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isServerSettingsOpen, selectedServerId])
 
   const sendMessageWithFiles = async (content: string, mentions: string[] = [], reply_to?: number) => {
     setIsUploading(true)
@@ -3003,35 +3411,11 @@ function ChatPage() {
     setDmUsername('')
   }
 
-  const generateServerInvite = () => {
-    if (!contextServerId) return
-    wsClient.generateServerInvite({ type: 'generate_server_invite', server_id: contextServerId })
-  }
-
-  const joinServerWithInvite = () => {
-    const code = joinInviteCode.trim()
-    if (!code) return
-    wsClient.joinServerWithInvite({ type: 'join_server_with_invite', invite_code: code })
-    setJoinInviteCode('')
-  }
-
   const loadInviteUsage = (serverId: string) => {
     setIsLoadingInviteUsage(true)
     setInviteUsageServerId(serverId)
     wsClient.getServerInviteUsage({ type: 'get_server_invite_usage', server_id: serverId })
   }
-
-                        <label className="block">
-                          <div className="mb-1 text-sm text-slate-200">Announcement Message</div>
-                          <input
-                            type="text"
-                            maxLength={500}
-                            value={adminSettings.announcement_message || ''}
-                            onChange={(e) => setAdminSettings({ ...adminSettings, announcement_message: e.target.value })}
-                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                            placeholder="Enter announcement message"
-                          />
-                        </label>
 
   const loadAdminSettings = () => {
     if (wsClient.readyState !== WebSocket.OPEN) return
@@ -3267,6 +3651,52 @@ function ChatPage() {
 
   const handleDraftChange = (newDraft: string) => {
     setDraft(newDraft)
+
+    // ── Typing indicator ──────────────────────────────────────────────
+    if (wsClient.readyState === WebSocket.OPEN) {
+      let context = 'global'
+      let context_id: string | null = null
+      if (selectedContext.kind === 'server') {
+        context = 'server'
+        context_id = `${selectedContext.serverId}/${selectedContext.channelId}`
+      } else if (selectedContext.kind === 'dm') {
+        context = 'dm'
+        context_id = selectedContext.dmId
+      }
+
+      if (newDraft.trim()) {
+        if (!isTypingRef.current) {
+          isTypingRef.current = true
+          try { wsClient.sendTypingStart({ type: 'typing_start', context, context_id }) } catch { /* ignore */ }
+        }
+        // Reset the stop timer
+        if (typingTimerRef.current) clearTimeout(typingTimerRef.current)
+        typingTimerRef.current = setTimeout(() => {
+          isTypingRef.current = false
+          try { wsClient.sendTypingStop({ type: 'typing_stop', context, context_id }) } catch { /* ignore */ }
+        }, 4000)
+      } else {
+        if (isTypingRef.current) {
+          isTypingRef.current = false
+          if (typingTimerRef.current) clearTimeout(typingTimerRef.current)
+          try { wsClient.sendTypingStop({ type: 'typing_stop', context, context_id }) } catch { /* ignore */ }
+        }
+      }
+    }
+
+    // ── Channel mention autocomplete ('#') ────────────────────────────
+    const cursorPos = newDraft.length
+    const textBeforeCursor = newDraft.slice(0, cursorPos)
+    const hashMatch = textBeforeCursor.match(/#([\w-]*)$/)
+    if (hashMatch && selectedContext.kind === 'server') {
+      setShowChannelMentionAutocomplete(true)
+      setChannelMentionSearch(hashMatch[1])
+      setChannelMentionStartPos(hashMatch.index!)
+      setSelectedChannelMentionIndex(0)
+    } else {
+      setShowChannelMentionAutocomplete(false)
+      setChannelMentionSearch('')
+    }
   }
 
   const insertMention = (username: string) => {
@@ -3275,6 +3705,23 @@ function ChatPage() {
     setDraft(`${before}@${username} ${after}`)
     setShowMentionAutocomplete(false)
     setMentionSearch('')
+  }
+
+  const insertChannelMention = (channelName: string, channelId: string) => {
+    const before = draft.slice(0, channelMentionStartPos)
+    const after = draft.slice(channelMentionStartPos + channelMentionSearch.length + 1)
+    setDraft(`${before}#[${channelName}|${channelId}] ${after}`)
+    setShowChannelMentionAutocomplete(false)
+    setChannelMentionSearch('')
+  }
+
+  const getFilteredChannelMentions = () => {
+    if (selectedContext.kind !== 'server') return []
+    const server = init?.servers?.find((s) => s.id === selectedContext.serverId)
+    if (!server?.channels) return []
+    const textChannels = server.channels.filter((ch) => (ch.type ?? 'text') === 'text')
+    if (!channelMentionSearch) return textChannels.slice(0, 10)
+    return textChannels.filter((ch) => ch.name.toLowerCase().includes(channelMentionSearch.toLowerCase())).slice(0, 10)
   }
 
   const getFilteredMentionUsers = () => {
@@ -3314,10 +3761,35 @@ function ChatPage() {
 
     // Helper function to process mentions and custom emojis within text
     const processTextWithEmojisAndMentions = (text: string, keyPrefix: string): React.ReactNode[] => {
-      const parts = text.split(/(@\w+|:\w+:)/g)
+      const parts = text.split(/(@\w+|:\w+:|#\[[^\|\]]+\|[^\]]+\])/g)
       console.log('🔍 processTextWithEmojisAndMentions:', { text: text.substring(0, 50), partsCount: parts.length, parts: parts.slice(0, 10), availableEmojiCount: availableEmojis.length })
       return parts.map((part, index) => {
         const key = `${keyPrefix}-${index}`
+
+        // Handle channel mentions: #[channelName|channelId]
+        const channelMentionMatch = part.match(/^#\[([^\|\]]+)\|([^\]]+)\]$/)
+        if (channelMentionMatch) {
+          const [, chName, chId] = channelMentionMatch
+          // Find what server this channel belongs to
+          const server = init?.servers?.find((s) => s.channels?.some((ch) => ch.id === chId))
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => {
+                if (server) {
+                  const ctx: ChatContext = { kind: 'server', serverId: server.id, channelId: chId }
+                  selectContext(ctx)
+                  requestHistoryFor(ctx)
+                }
+              }}
+              className="inline-flex items-center gap-0.5 bg-sky-500/20 text-sky-300 hover:bg-sky-500/30 hover:text-sky-200 px-1.5 py-0.5 rounded font-medium text-sm transition cursor-pointer"
+              title={`Go to #${chName}`}
+            >
+              #{chName}
+            </button>
+          )
+        }
         
         // Handle mentions
         if (part.match(/^@\w+$/)) {
@@ -3397,17 +3869,17 @@ function ChatPage() {
         
         case 'code':
           return (
-            <code key={key} className="bg-slate-800/60 text-sky-300 px-1.5 py-0.5 rounded text-sm font-mono">
+            <code key={key} className="bg-bg-tertiary/60 text-sky-300 px-1.5 py-0.5 rounded text-sm font-mono">
               {token.content}
             </code>
           )
         
         case 'codeBlock':
           return (
-            <pre key={key} className="bg-slate-800/60 text-slate-200 p-3 rounded-lg overflow-x-auto my-1 border border-white/5">
+            <pre key={key} className="bg-bg-tertiary/60 text-text-secondary p-3 rounded-lg overflow-x-auto my-1 border border-white/5">
               <code className="text-sm font-mono block">
                 {token.language && (
-                  <div className="text-xs text-slate-400 mb-1">{token.language}</div>
+                  <div className="text-xs text-text-muted mb-1">{token.language}</div>
                 )}
                 {token.content}
               </code>
@@ -3425,12 +3897,12 @@ function ChatPage() {
           return (
             <span
               key={key}
-              className="bg-slate-800 text-slate-800 hover:text-slate-200 cursor-pointer px-1 rounded transition-colors select-none"
+              className="bg-bg-tertiary text-bg-tertiary hover:text-text-secondary cursor-pointer px-1 rounded transition-colors select-none"
               title="Click to reveal spoiler"
               onClick={(e) => {
                 const target = e.currentTarget
-                target.classList.toggle('text-slate-800')
-                target.classList.toggle('text-slate-200')
+                target.classList.toggle('text-bg-tertiary')
+                target.classList.toggle('text-text-secondary')
               }}
             >
               {processTextWithEmojisAndMentions(token.content, `${key}-content`)}
@@ -3439,7 +3911,7 @@ function ChatPage() {
         
         case 'quote':
           return (
-            <div key={key} className="border-l-2 border-slate-600 pl-3 py-0.5 italic text-slate-300 my-1">
+            <div key={key} className="border-l-2 border-border-secondary pl-3 py-0.5 italic text-text-secondary my-1">
               {processTextWithEmojisAndMentions(token.content, `${key}-content`)}
             </div>
           )
@@ -3456,6 +3928,34 @@ function ChatPage() {
   }
 
   const handleMentionKeyDown = (e: React.KeyboardEvent) => {
+    // Handle channel mention autocomplete first
+    if (showChannelMentionAutocomplete) {
+      const filteredChannels = getFilteredChannelMentions()
+      if (filteredChannels.length > 0) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault()
+          setSelectedChannelMentionIndex((prev) => prev < filteredChannels.length - 1 ? prev + 1 : 0)
+          return true
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault()
+          setSelectedChannelMentionIndex((prev) => prev > 0 ? prev - 1 : filteredChannels.length - 1)
+          return true
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          e.preventDefault()
+          const ch = filteredChannels[selectedChannelMentionIndex]
+          insertChannelMention(ch.name, ch.id)
+          return true
+        }
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setShowChannelMentionAutocomplete(false)
+        return true
+      }
+    }
+
     if (!showMentionAutocomplete) return false
     
     const filteredUsers = getFilteredMentionUsers()
@@ -3627,6 +4127,16 @@ function ChatPage() {
     if (!voiceChat) return
     voiceChat.toggleScreenShare()
   }
+  
+  const handlePlaySoundboard = async (soundId: string, soundName: string) => {
+    if (!voiceChat) return
+    try {
+      await voiceChat.playSoundboard(soundId)
+      pushToast({ kind: 'info', message: `Playing: ${soundName}` })
+    } catch (error) {
+      pushToast({ kind: 'error', message: 'Failed to play sound' })
+    }
+  }
 
   /* const updateVoiceDevices = () => {
     if (!voiceChat) return
@@ -3675,6 +4185,61 @@ function ChatPage() {
       type: 'change_user_status',
       user_status: newStatus,
     })
+  }
+
+  const handleThemeChange = (theme: 'dark' | 'light' | 'high_contrast') => {
+    // Update local store immediately
+    setThemeMode(theme)
+    // Send to backend for persistence
+    wsClient.send({
+      type: 'update_user_preferences',
+      theme_mode: theme,
+    })
+  }
+
+  const handleStartRebind = (action: keyof Keybinds) => {
+    setRebindingAction(action)
+    setRebindConflict(null)
+  }
+
+  const handleCancelRebind = () => {
+    setRebindingAction(null)
+    setRebindConflict(null)
+  }
+
+  const handleKeybindCapture = (event: React.KeyboardEvent) => {
+    if (!rebindingAction) return
+    
+    event.preventDefault()
+    event.stopPropagation()
+
+    const keyCode = event.code
+
+    // Check for conflicts with other keybinds
+    const conflictingAction = Object.entries(keybinds).find(
+      ([action, key]) => key === keyCode && action !== rebindingAction
+    )?.[0]
+
+    if (conflictingAction) {
+      setRebindConflict(conflictingAction)
+      return
+    }
+
+    // Update the keybind
+    const newKeybinds = { ...keybinds, [rebindingAction]: keyCode }
+    
+    // Update local store
+    useSettingsStore.getState().setKeybind(rebindingAction, keyCode)
+    
+    // Send to backend for persistence
+    wsClient.send({
+      type: 'update_user_preferences',
+      keybinds: newKeybinds,
+    })
+
+    // Close dialog
+    setRebindingAction(null)
+    setRebindConflict(null)
   }
 
   const handleChangeEmail = () => {
@@ -3800,7 +4365,7 @@ function ChatPage() {
   }
 
   return (
-    <div className="h-screen bg-slate-950 flex flex-col">
+    <div className="h-screen bg-bg-primary flex flex-col">
       {/* Announcement Banner */}
       {announcement && announcement.enabled && announcement.message && (
         <div className="relative border-b border-amber-500/30 bg-gradient-to-r from-amber-500/20 to-orange-500/20 px-4 py-2.5">
@@ -3822,14 +4387,14 @@ function ChatPage() {
       )}
       <div className="flex flex-1 min-h-0">
         {/* Left-side vertical icon bar */}
-        <aside className="w-[72px] shrink-0 flex flex-col border-r border-white/10 bg-slate-900">
+        <aside className="w-[72px] shrink-0 flex flex-col border-r border-border-primary bg-bg-secondary">
           {/* DMs button at top */}
           <div className="p-3">
             <button
               type="button"
               onClick={() => setIsDmSidebarOpen(!isDmSidebarOpen)}
               className={`relative flex h-12 w-12 items-center justify-center rounded-2xl text-2xl transition ${
-                isDmSidebarOpen ? 'bg-sky-500 text-white' : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 hover:rounded-xl'
+                isDmSidebarOpen ? 'bg-sky-500 text-white' : 'bg-bg-tertiary text-text-secondary hover:bg-bg-tertiary/60 hover:rounded-xl'
               }`}
               title="Direct Messages"
             >
@@ -3842,7 +4407,7 @@ function ChatPage() {
           </div>
 
           {/* Separator */}
-          <div className="mx-3 h-[2px] bg-slate-700/50" />
+          <div className="mx-3 h-[2px] bg-bg-tertiary/60" />
 
           {/* Server icons */}
           <div className="flex-1 overflow-auto p-3 space-y-2 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
@@ -3871,7 +4436,7 @@ function ChatPage() {
                     }
                   }}
                   className={`relative flex h-12 w-12 items-center justify-center rounded-2xl text-xl transition overflow-hidden ${
-                    selectedServerId === server.id ? 'bg-sky-500 text-white' : 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50 hover:rounded-xl'
+                    selectedServerId === server.id ? 'bg-sky-500 text-white' : 'bg-bg-tertiary text-text-secondary hover:bg-bg-tertiary/60 hover:rounded-xl'
                   }`}
                   title={server.name}
                 >
@@ -3882,9 +4447,9 @@ function ChatPage() {
                   )}
                   {/* Unread indicator dot */}
                   {hasMention ? (
-                    <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-red-500 border-2 border-slate-900" />
+                    <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-red-500 border-2 border-bg-secondary" />
                   ) : hasUnread ? (
-                    <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-slate-400 border-2 border-slate-900" />
+                    <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-text-muted border-2 border-bg-secondary" />
                   ) : null}
                 </button>
               )
@@ -3892,11 +4457,11 @@ function ChatPage() {
           </div>
 
           {/* Profile section at bottom */}
-          <div className="border-t border-white/10 bg-slate-900 p-3">
+          <div className="border-t border-border-primary bg-bg-secondary p-3">
             <button
               type="button"
               onClick={() => setIsUserMenuOpen(true)}
-              className="rounded-2xl bg-slate-800/50 hover:bg-slate-700/50 hover:rounded-xl transition"
+              className="rounded-2xl bg-bg-tertiary hover:bg-bg-tertiary/60 hover:rounded-xl transition"
               title={init?.username ?? 'User'}
             >
               <AvatarWithStatus
@@ -3912,15 +4477,15 @@ function ChatPage() {
 
         {/* DM Sidebar - opens when DM button is clicked */}
         {isDmSidebarOpen && (
-          <aside className="w-[240px] shrink-0 border-r border-white/10 bg-slate-900/30">
+          <aside className="w-[240px] shrink-0 border-r border-border-primary bg-bg-secondary/30">
             <div className="flex h-full flex-col">
-              <div className="border-b border-white/10 px-4 py-3">
+              <div className="border-b border-border-primary px-4 py-4">
                 <div className="text-sm font-semibold text-white">Direct Messages</div>
               </div>
               
               <div className="flex-1 overflow-auto p-2 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                 {(init?.dms ?? []).length === 0 ? (
-                  <div className="px-3 py-2 text-sm text-slate-400">No DMs yet</div>
+                  <div className="px-3 py-2 text-sm text-text-muted">No DMs yet</div>
                 ) : (
                   <div className="space-y-1">
                     {(init?.dms ?? []).map((dm) => {
@@ -3951,7 +4516,7 @@ function ChatPage() {
                             }
                           }}
                           className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition ${
-                            isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
+                            isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-text-secondary hover:bg-white/5'
                           }`}
                         >
                           <AvatarWithStatus
@@ -3979,20 +4544,20 @@ function ChatPage() {
                 )}
               </div>
 
-              <div className="border-t border-white/10 p-3">
-                <div className="text-xs font-medium text-slate-400 mb-2">Start DM</div>
+              <div className="border-t border-border-primary px-4 py-4">
+                <div className="text-xs font-medium text-text-muted mb-2">Start DM</div>
                 <div className="flex gap-2">
                   <input
                     value={dmUsername}
                     onChange={(e) => setDmUsername(e.target.value)}
                     placeholder="Username"
-                    className="flex-1 rounded-lg border border-white/10 bg-slate-950/40 px-2 py-1.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    className="flex-1 rounded-lg border border-border-primary bg-bg-primary/40 px-2 py-1.5 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-sky-500/40"
                   />
                   <button
                     type="button"
                     onClick={startDm}
                     disabled={!dmUsername.trim() || wsClient.readyState !== WebSocket.OPEN}
-                    className="shrink-0 rounded-lg bg-sky-500 px-3 py-1.5 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                    className="shrink-0 rounded-lg bg-sky-500 px-3 py-1.5 text-sm font-semibold text-bg-primary hover:bg-sky-400 disabled:opacity-60"
                   >
                     +
                   </button>
@@ -4004,10 +4569,10 @@ function ChatPage() {
 
         {/* Server Sidebar - opens when a server icon is clicked */}
         {selectedServerId && selectedServerObj && (
-          <aside className="w-[240px] shrink-0 border-r border-white/10 bg-slate-900/30">
+          <aside className="w-[240px] shrink-0 border-r border-border-primary bg-bg-secondary/30">
             <div className="flex h-full flex-col">
               {/* Server header */}
-              <div className="border-b border-white/10 px-4 py-3">
+              <div className="border-b border-border-primary px-4 py-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 flex-1 min-w-0">
                     <span className="text-lg">{selectedServerObj.icon ?? '🏠'}</span>
@@ -4016,7 +4581,7 @@ function ChatPage() {
                   <button
                     type="button"
                     onClick={() => setIsServerSettingsOpen(true)}
-                    className="shrink-0 text-slate-400 hover:text-slate-200 text-lg"
+                    className="shrink-0 text-text-muted hover:text-text-secondary text-lg"
                     title="Server Settings"
                   >
                     ⚙️
@@ -4036,7 +4601,7 @@ function ChatPage() {
 
                     return (
                       <div key={category.id} className="mb-3">
-                        <div className="px-2 text-xs font-medium text-slate-400 uppercase mb-1">{category.name}</div>
+                        <div className="px-2 text-xs font-medium text-text-muted uppercase mb-1">{category.name}</div>
                         <div className="space-y-1">
                           {categoryChannels.map((ch) => {
                             const isSelected =
@@ -4048,8 +4613,8 @@ function ChatPage() {
                             const hasMention = channelUnread?.has_mention ?? false
                             
                             return (
+                              <React.Fragment key={ch.id}>
                               <button
-                                key={ch.id}
                                 type="button"
                                 onClick={() => {
                                   const next: ChatContext = { kind: 'server', serverId: selectedServerId, channelId: ch.id }
@@ -4075,10 +4640,10 @@ function ChatPage() {
                                   }
                                 }}
                                 className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
-                                  isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
+                                  isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-text-secondary hover:bg-white/5'
                                 }`}
                               >
-                                <span className="text-slate-400">{ch.type === 'voice' ? '🔊' : '#'}</span>
+                                <span className="text-text-muted">{ch.type === 'voice' ? '🔊' : '#'}</span>
                                 <span className={`text-sm ${
                                   hasMention 
                                     ? 'font-bold italic text-red-400' 
@@ -4087,6 +4652,37 @@ function ChatPage() {
                                       : 'font-medium'
                                 }`}>{ch.name}</span>
                               </button>
+                              {/* Thread sub-channels below this channel */}
+                              {(threadsByServer[selectedServerId!] ?? [])
+                                .filter(t => t.channel_id === ch.id)
+                                .map(thread => {
+                                  const isThreadSelected = selectedContext.kind === 'thread' && selectedContext.threadId === thread.thread_id
+                                  return (
+                                    <button
+                                      key={thread.thread_id}
+                                      type="button"
+                                      onClick={() => {
+                                        const next: ChatContext = {
+                                          kind: 'thread',
+                                          serverId: selectedServerId!,
+                                          channelId: ch.id,
+                                          threadId: thread.thread_id,
+                                          threadName: thread.name,
+                                        }
+                                        selectContext(next)
+                                        requestHistoryFor(next)
+                                      }}
+                                      className={`flex w-full items-center gap-1.5 rounded-lg pl-5 pr-2 py-1 text-left transition ${
+                                        isThreadSelected ? 'bg-sky-500/10 text-sky-200' : 'text-text-muted hover:bg-white/5 hover:text-text-secondary'
+                                      }`}
+                                    >
+                                      <span className="text-xs shrink-0 opacity-40">└</span>
+                                      <span className="text-xs font-medium truncate">{thread.name}</span>
+                                      {thread.is_private && <span className="text-[10px] shrink-0 opacity-50">🔒</span>}
+                                    </button>
+                                  )
+                                })}
+                              </React.Fragment>
                             )
                           })}
                         </div>
@@ -4104,7 +4700,7 @@ function ChatPage() {
 
                   return (
                     <div className="mb-3">
-                      <div className="px-2 text-xs font-medium text-slate-400 uppercase mb-1">Uncategorized</div>
+                      <div className="px-2 text-xs font-medium text-text-muted uppercase mb-1">Uncategorized</div>
                       <div className="space-y-1">
                         {uncategorizedChannels.map((ch) => {
                           const isSelected =
@@ -4116,8 +4712,8 @@ function ChatPage() {
                           const hasMention = channelUnread?.has_mention ?? false
                           
                           return (
+                            <React.Fragment key={ch.id}>
                             <button
-                              key={ch.id}
                               type="button"
                               onClick={() => {
                                 const next: ChatContext = { kind: 'server', serverId: selectedServerId, channelId: ch.id }
@@ -4142,10 +4738,10 @@ function ChatPage() {
                                 }
                               }}
                               className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
-                                isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-slate-200 hover:bg-white/5'
+                                isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-text-secondary hover:bg-white/5'
                               }`}
                             >
-                              <span className="text-slate-400">{ch.type === 'voice' ? '🔊' : '#'}</span>
+                              <span className="text-text-muted">{ch.type === 'voice' ? '🔊' : '#'}</span>
                               <span className={`text-sm ${
                                 hasMention 
                                   ? 'font-bold italic text-red-400' 
@@ -4154,6 +4750,37 @@ function ChatPage() {
                                     : 'font-medium'
                               }`}>{ch.name}</span>
                             </button>
+                            {/* Thread sub-channels below this channel */}
+                            {(threadsByServer[selectedServerId!] ?? [])
+                              .filter(t => t.channel_id === ch.id)
+                              .map(thread => {
+                                const isThreadSelected = selectedContext.kind === 'thread' && selectedContext.threadId === thread.thread_id
+                                return (
+                                  <button
+                                    key={thread.thread_id}
+                                    type="button"
+                                    onClick={() => {
+                                      const next: ChatContext = {
+                                        kind: 'thread',
+                                        serverId: selectedServerId!,
+                                        channelId: ch.id,
+                                        threadId: thread.thread_id,
+                                        threadName: thread.name,
+                                      }
+                                      selectContext(next)
+                                      requestHistoryFor(next)
+                                    }}
+                                    className={`flex w-full items-center gap-1.5 rounded-lg pl-5 pr-2 py-1 text-left transition ${
+                                      isThreadSelected ? 'bg-sky-500/10 text-sky-200' : 'text-text-muted hover:bg-white/5 hover:text-text-secondary'
+                                    }`}
+                                  >
+                                    <span className="text-xs shrink-0 opacity-40">└</span>
+                                    <span className="text-xs font-medium truncate">{thread.name}</span>
+                                    {thread.is_private && <span className="text-[10px] shrink-0 opacity-50">🔒</span>}
+                                  </button>
+                                )
+                              })}
+                            </React.Fragment>
                           )
                         })}
                       </div>
@@ -4167,11 +4794,11 @@ function ChatPage() {
 
         {/* Main chat area */}
         <main className="flex min-w-0 flex-1 flex-col">
-          <header className="border-b border-white/10 bg-slate-950/60 px-6 py-4">
+          <header className="border-b border-border-primary bg-bg-primary/60 px-6 py-4">
             <div className="flex items-center justify-between gap-4">
               <div className="flex items-center gap-4 min-w-0 flex-1">
                 <div className="min-w-0">
-                  <div className="text-xs font-medium text-slate-400">
+                  <div className="text-xs font-medium text-text-muted">
                     {selectedContext.kind === 'global'
                       ? 'Global Chat'
                       : selectedContext.kind === 'dm'
@@ -4190,23 +4817,75 @@ function ChatPage() {
                 </div>
               </div>
               <div className="flex items-center gap-3">
-                {selectedServerId && !isVoiceChannel && (
+                {/* Thread navigation */}
+                {selectedContext.kind === 'thread' && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Go back to the parent server channel
+                        const thread = activeThread ?? threadsByServer[selectedContext.serverId]?.find((t) => t.thread_id === selectedContext.threadId)
+                        const server = init?.servers?.find((s) => s.id === selectedContext.serverId)
+                        const firstCh = server?.channels?.find((ch) => (ch.type ?? 'text') === 'text')
+                        if (firstCh) {
+                          const ctx: ChatContext = { kind: 'server', serverId: selectedContext.serverId, channelId: firstCh.id }
+                          selectContext(ctx)
+                          requestHistoryFor(ctx)
+                        }
+                        void thread
+                      }}
+                      className="rounded-xl border border-border-primary bg-bg-primary/30 px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-secondary/50 transition"
+                    >
+                      ← Back
+                    </button>
+                    {(activeThread?.created_by === init?.username || init?.is_admin) && !activeThread?.is_closed && (
+                      <button
+                        type="button"
+                        onClick={() => wsClient.closeThread({ type: 'close_thread', thread_id: selectedContext.threadId })}
+                        className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-300 hover:bg-rose-500/20 transition"
+                      >
+                        Close Thread
+                      </button>
+                    )}
+                  </>
+                )}
+                {selectedServerId && !isVoiceChannel && selectedContext.kind !== 'thread' && (
                   <button
                     type="button"
                     onClick={() => setIsMembersSidebarOpen(!isMembersSidebarOpen)}
-                    className="rounded-xl border border-white/10 bg-slate-950/30 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-900/50 transition"
+                    className="rounded-xl border border-border-primary bg-bg-primary/30 px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-secondary/50 transition"
                     title={isMembersSidebarOpen ? 'Hide Members' : 'Show Members'}
                   >
                     {isMembersSidebarOpen ? '👥 Hide' : '👥 Show'}
                   </button>
                 )}
-                <div className="rounded-xl border border-white/10 bg-slate-950/30 px-2 py-1 text-[11px] text-slate-300">
+                {(selectedContext.kind === 'server' || selectedContext.kind === 'dm') && !isVoiceChannel && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowPinsPanel((prev) => !prev)
+                      if (!showPinsPanel) {
+                        // Load pinned messages for current context
+                        const ctxType = selectedContext.kind === 'dm' ? 'dm' : 'server'
+                        const ctxId = selectedContext.kind === 'dm'
+                          ? selectedContext.dmId
+                          : `${selectedContext.serverId}/${selectedContext.channelId}`
+                        wsClient.getPinnedMessages({ type: 'get_pinned_messages', context_type: ctxType, context_id: ctxId })
+                      }
+                    }}
+                    className={`rounded-xl border border-border-primary px-3 py-1.5 text-xs transition ${showPinsPanel ? 'bg-yellow-500/20 border-yellow-500/40 text-yellow-300' : 'bg-bg-primary/30 text-text-secondary hover:bg-bg-secondary/50'}`}
+                    title="Pinned messages"
+                  >
+                    📌 Pins
+                  </button>
+                )}
+                <div className="rounded-xl border border-border-primary bg-bg-primary/30 px-2 py-1 text-[11px] text-text-secondary">
                   {connectionStatus}
                 </div>
                 <img
                   src={adminSettings.server_logo || '/decentra-blurple.png'}
                   alt="Server Logo"
-                  className="h-10 w-10 object-contain"
+                  className="h-12 w-12 object-contain"
                   onError={(e) => {
                     const target = e.target as HTMLImageElement
                     target.src = '/decentra-blurple.png'
@@ -4221,7 +4900,7 @@ function ChatPage() {
             <section className="flex-1 flex flex-col overflow-hidden">
               {/* Voice controls panel */}
               {isInVoice && (
-                <div className="border-b border-white/10 bg-slate-950/60 px-6 py-3">
+                <div className="border-b border-border-primary bg-bg-primary/60 px-6 py-3">
                   <div className="flex items-center justify-center gap-3">
                     <button
                       type="button"
@@ -4229,7 +4908,7 @@ function ChatPage() {
                       className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
                         isVoiceMuted
                           ? 'bg-rose-500/20 border border-rose-500/40 text-rose-300 hover:bg-rose-500/30'
-                          : 'bg-slate-800/50 border border-white/10 text-slate-200 hover:bg-slate-700/50'
+                          : 'bg-bg-tertiary border border-border-primary text-text-secondary hover:bg-bg-tertiary/60'
                       }`}
                       title={isVoiceMuted ? 'Unmute' : 'Mute'}
                     >
@@ -4241,7 +4920,7 @@ function ChatPage() {
                       className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
                         isVideoEnabled
                           ? 'bg-sky-500/20 border border-sky-500/40 text-sky-300 hover:bg-sky-500/30'
-                          : 'bg-slate-800/50 border border-white/10 text-slate-200 hover:bg-slate-700/50'
+                          : 'bg-bg-tertiary border border-border-primary text-text-secondary hover:bg-bg-tertiary/60'
                       }`}
                       title={isVideoEnabled ? 'Stop Video' : 'Start Video'}
                     >
@@ -4253,11 +4932,19 @@ function ChatPage() {
                       className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
                         isScreenSharing
                           ? 'bg-purple-500/20 border border-purple-500/40 text-purple-300 hover:bg-purple-500/30'
-                          : 'bg-slate-800/50 border border-white/10 text-slate-200 hover:bg-slate-700/50'
+                          : 'bg-bg-tertiary border border-border-primary text-text-secondary hover:bg-bg-tertiary/60'
                       }`}
                       title={isScreenSharing ? 'Stop Sharing' : 'Share Screen'}
                     >
                       🖥️ {isScreenSharing ? 'Stop Share' : 'Screen Share'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsSoundboardOpen(true)}
+                      className="rounded-xl bg-bg-tertiary border border-border-primary px-4 py-2 text-sm font-semibold text-text-secondary hover:bg-bg-tertiary/60 transition"
+                      title="Open Soundboard"
+                    >
+                      🔊 Soundboard
                     </button>
                     <button
                       type="button"
@@ -4279,7 +4966,9 @@ function ChatPage() {
                       <div className="text-center">
                         <div className="text-6xl mb-4">🔊</div>
                         <h2 className="text-2xl font-semibold text-white mb-2">{selectedTitle}</h2>
-                        <p className="text-slate-400 mb-6">Click join to enter this voice channel</p>
+                        <p className="text-text-muted mb-6">
+                          {isVoiceConnecting ? 'Connecting to voice channel...' : 'Click join to enter this voice channel'}
+                        </p>
                         <button
                           type="button"
                           onClick={() => {
@@ -4287,9 +4976,14 @@ function ChatPage() {
                               joinVoiceChannel(selectedServerId, selectedContext.channelId)
                             }
                           }}
-                          className="rounded-xl bg-emerald-500 px-6 py-3 text-lg font-semibold text-white hover:bg-emerald-600 transition"
+                          disabled={isVoiceConnecting}
+                          className={`rounded-xl px-6 py-3 text-lg font-semibold text-white transition ${
+                            isVoiceConnecting 
+                              ? 'bg-slate-600 cursor-not-allowed' 
+                              : 'bg-emerald-500 hover:bg-emerald-600'
+                          }`}
                         >
-                          Join Voice Channel
+                          {isVoiceConnecting ? 'Connecting...' : 'Join Voice Channel'}
                         </button>
                       </div>
                     </div>
@@ -4311,21 +5005,40 @@ function ChatPage() {
                         return (
                           <div
                             key={participantUsername}
-                            className="relative rounded-2xl border border-white/10 bg-slate-900/40 overflow-hidden flex items-center justify-center min-h-[200px]"
+                            className="relative rounded-2xl border border-border-primary bg-bg-secondary/40 overflow-hidden flex items-center justify-center min-h-[200px]"
                           >
-                            {stream ? (
-                              <video
-                                ref={(video) => {
-                                  if (video && stream) {
-                                    video.srcObject = stream
-                                    video.play().catch(console.error)
-                                  }
-                                }}
-                                autoPlay
-                                playsInline
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
+                            {stream && (
+                              <>
+                                {/* Audio element for remote audio stream - always rendered when stream exists */}
+                                <audio
+                                  ref={(audio) => {
+                                    if (audio && stream && !isCurrentUser) {
+                                      audio.srcObject = stream
+                                      audio.play().catch(console.error)
+                                    }
+                                  }}
+                                  autoPlay
+                                  playsInline
+                                />
+                                {/* Video element for remote video/screen share */}
+                                {stream.getVideoTracks().length > 0 ? (
+                                  <video
+                                    ref={(video) => {
+                                      if (video && stream) {
+                                        video.srcObject = stream
+                                        video.play().catch(console.error)
+                                      }
+                                    }}
+                                    autoPlay
+                                    playsInline
+                                    muted={isCurrentUser}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : null}
+                              </>
+                            )}
+                            {/* Show avatar when no stream or no video track */}
+                            {(!stream || stream.getVideoTracks().length === 0) && (
                               <div className="flex flex-col items-center justify-center p-8">
                                 <AvatarWithStatus
                                   avatar={participant?.avatar ?? init?.avatar}
@@ -4363,9 +5076,9 @@ function ChatPage() {
               {/* Regular chat UI */}
               <section className="flex-1 overflow-auto px-6 py-5">
             <div className="mx-auto max-w-5xl">
-              <div className="rounded-2xl border border-white/10 bg-slate-900/20 p-4">
+              <div className="rounded-2xl border border-border-primary bg-bg-secondary/20 p-4">
                 {messages.length === 0 ? (
-                  <div className="text-sm text-slate-400">No messages yet.</div>
+                  <div className="text-sm text-text-muted">No messages yet.</div>
                 ) : (
                   <div className="flex flex-col gap-3">
                     {messages.map((m: WsChatMessage, idx: number) => (
@@ -4382,14 +5095,14 @@ function ChatPage() {
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-baseline gap-x-2">
                             <div 
-                              className="font-semibold text-slate-100" 
+                              className="font-semibold text-text-primary" 
                               style={getUsernameStyle(m)}
                             >
                               {m.username}
                             </div>
-                            <div className="text-xs text-slate-500">
+                            <div className="text-xs text-text-muted">
                               {new Date(m.timestamp).toLocaleString()}
-                              {m.edited_at && <span className="ml-1.5 text-slate-600">(edited)</span>}
+                              {m.edited_at && <span className="ml-1.5 text-text-muted">(edited)</span>}
                             </div>
                             {/* Action buttons - show on hover */}
                             <div className="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
@@ -4399,7 +5112,7 @@ function ChatPage() {
                                   <button
                                     type="button"
                                     onClick={() => setReplyingTo(m)}
-                                    className="text-slate-400 hover:text-sky-400 text-sm px-1.5 py-0.5 rounded"
+                                    className="text-text-muted hover:text-sky-400 text-sm px-1.5 py-0.5 rounded"
                                     title="Reply"
                                   >
                                     ↩️
@@ -4408,7 +5121,7 @@ function ChatPage() {
                                   <button
                                     type="button"
                                     onClick={() => toggleReactionPicker(m.id)}
-                                    className="text-slate-400 hover:text-slate-200 text-sm px-1.5 py-0.5 rounded"
+                                    className="text-text-muted hover:text-text-secondary text-sm px-1.5 py-0.5 rounded"
                                     title="Add reaction"
                                   >
                                     😊
@@ -4418,7 +5131,7 @@ function ChatPage() {
                                     <button
                                       type="button"
                                       onClick={() => startEditMessage(m)}
-                                      className="text-slate-400 hover:text-sky-400 text-xs px-1.5 py-0.5 rounded"
+                                      className="text-text-muted hover:text-sky-400 text-xs px-1.5 py-0.5 rounded"
                                       title="Edit message"
                                     >
                                       ✏️
@@ -4429,10 +5142,45 @@ function ChatPage() {
                                     <button
                                       type="button"
                                       onClick={() => confirmDeleteMessage(m)}
-                                      className="text-slate-400 hover:text-rose-400 text-xs px-1.5 py-0.5 rounded"
+                                      className="text-text-muted hover:text-rose-400 text-xs px-1.5 py-0.5 rounded"
                                       title="Delete message"
                                     >
                                       🗑️
+                                    </button>
+                                  )}
+                                  {/* Pin/Unpin button */}
+                                  {(selectedContext.kind === 'server' || selectedContext.kind === 'dm') && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (!m.id) return
+                                        if (m.pinned) {
+                                          wsClient.unpinMessage({ type: 'unpin_message', message_id: m.id })
+                                        } else {
+                                          wsClient.pinMessage({ type: 'pin_message', message_id: m.id })
+                                        }
+                                      }}
+                                      className={`text-xs px-1.5 py-0.5 rounded ${m.pinned ? 'text-yellow-400 hover:text-yellow-300' : 'text-text-muted hover:text-yellow-400'}`}
+                                      title={m.pinned ? 'Unpin message' : 'Pin message'}
+                                    >
+                                      📌
+                                    </button>
+                                  )}
+                                  {/* Start Thread button - only in server text channels */}
+                                  {selectedContext.kind === 'server' && m.id && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setCreateThreadParentMsg(m)
+                                        setCreateThreadName('')
+                                        setCreateThreadPrivate(false)
+                                        setCreateThreadInvited([])
+                                        setShowCreateThreadModal(true)
+                                      }}
+                                      className="text-text-muted hover:text-emerald-400 text-xs px-1.5 py-0.5 rounded"
+                                      title="Start thread"
+                                    >
+                                      🧵
                                     </button>
                                   )}
                                 </>
@@ -4442,10 +5190,10 @@ function ChatPage() {
                           
                           {/* Reply reference - show if this message is a reply */}
                           {m.reply_data && (
-                            <div className="mt-1 mb-1 pl-3 border-l-2 border-slate-600 text-xs text-slate-400">
+                            <div className="mt-1 mb-1 pl-3 border-l-2 border-border-secondary text-xs text-text-muted">
                               <div className="flex items-center gap-1">
                                 <span>↩️</span>
-                                <span className="font-medium text-slate-300">{m.reply_data.username}</span>
+                                <span className="font-medium text-text-secondary">{m.reply_data.username}</span>
                                 <span>•</span>
                                 <button
                                   type="button"
@@ -4473,7 +5221,7 @@ function ChatPage() {
                               <textarea
                                 value={editDraft}
                                 onChange={(e) => setEditDraft(e.target.value)}
-                                className="w-full rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40 resize-none"
+                                className="w-full rounded-lg border border-border-primary bg-bg-primary/40 px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-sky-500/40 resize-none"
                                 rows={3}
                                 autoFocus
                               />
@@ -4489,7 +5237,7 @@ function ChatPage() {
                                 <button
                                   type="button"
                                   onClick={cancelEditMessage}
-                                  className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-600"
+                                  className="rounded-lg bg-bg-tertiary px-3 py-1.5 text-xs font-semibold text-text-secondary hover:bg-bg-tertiary/60"
                                 >
                                   Cancel
                                 </button>
@@ -4500,9 +5248,20 @@ function ChatPage() {
                               {/* Normal message display */}
                               {m.content && (
                                 <>
-                                  <div className="mt-1 whitespace-pre-wrap text-sm text-slate-200">{linkifyText(m.content, (content) => renderMessageContent(content, m.context, m.context_id))}</div>
+                                  <div className="mt-1 whitespace-pre-wrap text-sm text-text-secondary">{linkifyText(m.content, (content) => renderMessageContent(content, m.context, m.context_id))}</div>
                                   <MessageEmbeds content={m.content} />
                                 </>
+                              )}
+                              {/* Delivery state indicator */}
+                              {m.id === deliveredMessageId && m.username === init?.username && (
+                                <div className="mt-0.5 text-[10px] text-text-muted text-right">✓ Delivered</div>
+                              )}
+                              {/* Pinned indicator */}
+                              {m.pinned && (
+                                <div className="mt-0.5 text-[10px] text-yellow-400/70 flex items-center gap-1">
+                                  <span>📌</span>
+                                  <span>Pinned by {m.pinned_by}</span>
+                                </div>
                               )}
                             </>
                           )}
@@ -4514,11 +5273,11 @@ function ChatPage() {
                                   key={att.attachment_id}
                                   href={`/api/download-attachment/${att.attachment_id}`}
                                   download={att.filename}
-                                  className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-slate-900/40 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800/40 hover:text-white transition w-fit"
+                                  className="inline-flex items-center gap-2 rounded-lg border border-border-primary bg-bg-secondary/40 px-3 py-2 text-sm text-text-secondary hover:bg-bg-tertiary/40 hover:text-white transition w-fit"
                                 >
                                   <span>📎</span>
                                   <span className="font-medium">{att.filename}</span>
-                                  <span className="text-xs text-slate-500">({(att.file_size / 1024).toFixed(1)}KB)</span>
+                                  <span className="text-xs text-text-muted">({(att.file_size / 1024).toFixed(1)}KB)</span>
                                 </a>
                               ))}
                             </div>
@@ -4551,7 +5310,7 @@ function ChatPage() {
                                       className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs border transition ${
                                         userReacted
                                           ? 'bg-sky-500/20 border-sky-500/40 text-sky-300'
-                                          : 'bg-slate-900/40 border-white/10 text-slate-300 hover:bg-slate-800/40'
+                                          : 'bg-bg-secondary/40 border-border-primary text-text-secondary hover:bg-bg-tertiary/40'
                                       }`}
                                       title={group.usernames.join(', ')}
                                     >
@@ -4567,15 +5326,15 @@ function ChatPage() {
                           {/* Reaction picker popup */}
                           {reactionPickerMessageId === m.id && (
                             <div className="mt-2 relative">
-                              <div className="absolute left-0 top-0 z-10 rounded-lg border border-white/10 bg-slate-900 p-3 shadow-xl max-w-xs">
-                                <div className="mb-2 text-xs font-semibold text-slate-400">Add Reaction</div>
+                              <div className="absolute left-0 top-0 z-10 rounded-lg border border-border-primary bg-bg-secondary p-3 shadow-xl max-w-xs">
+                                <div className="mb-2 text-xs font-semibold text-text-muted">Add Reaction</div>
                                 <div className="grid grid-cols-8 gap-1 max-h-32 overflow-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                                   {REACTION_EMOJIS.map(emoji => (
                                     <button
                                       key={emoji}
                                       type="button"
                                       onClick={() => addReaction(m.id, emoji)}
-                                      className="text-lg hover:bg-slate-800 rounded p-1 transition"
+                                      className="text-lg hover:bg-bg-tertiary rounded p-1 transition"
                                     >
                                       {emoji}
                                     </button>
@@ -4584,7 +5343,7 @@ function ChatPage() {
                                 <button
                                   type="button"
                                   onClick={() => setReactionPickerMessageId(null)}
-                                  className="mt-2 text-xs text-slate-400 hover:text-slate-200"
+                                  className="mt-2 text-xs text-text-muted hover:text-text-secondary"
                                 >
                                   Close
                                 </button>
@@ -4600,7 +5359,7 @@ function ChatPage() {
             </div>
           </section>
 
-          <div className="border-t border-white/10 bg-slate-950/60 px-6 py-4">
+          <div className="border-t border-border-primary bg-bg-primary/60 px-6 py-4">
             <div className="mx-auto max-w-5xl">
               {/* Selected files preview */}
               {selectedFiles.length > 0 && (
@@ -4626,8 +5385,8 @@ function ChatPage() {
 
               {/* Mention autocomplete */}
               {showMentionAutocomplete && selectedContext.kind === 'server' && (
-                <div className="mb-2 rounded-xl border border-white/10 bg-slate-900 p-2 shadow-xl max-h-48 overflow-y-auto">
-                  <div className="text-xs font-semibold text-slate-400 mb-1 px-2">Mention User</div>
+                <div className="mb-2 rounded-xl border border-border-primary bg-bg-secondary p-2 shadow-xl max-h-48 overflow-y-auto">
+                  <div className="text-xs font-semibold text-text-muted mb-1 px-2">Mention User</div>
                   {getFilteredMentionUsers().length > 0 ? (
                     getFilteredMentionUsers().map((member, index) => (
                       <button
@@ -4645,26 +5404,85 @@ function ChatPage() {
                           user_status={member.user_status}
                           size="sm"
                         />
-                        <span className="text-sm text-slate-200">{member.username}</span>
+                        <span className="text-sm text-text-secondary">{member.username}</span>
                       </button>
                     ))
                   ) : (
-                    <div className="text-xs text-slate-500 px-2 py-1">No matching users</div>
+                    <div className="text-xs text-text-muted px-2 py-1">No matching users</div>
                   )}
                 </div>
               )}
+
+              {/* Channel mention autocomplete (#) */}
+              {showChannelMentionAutocomplete && selectedContext.kind === 'server' && (
+                <div className="mb-2 rounded-xl border border-border-primary bg-bg-secondary p-2 shadow-xl max-h-48 overflow-y-auto">
+                  <div className="text-xs font-semibold text-text-muted mb-1 px-2">Jump to Channel</div>
+                  {getFilteredChannelMentions().length > 0 ? (
+                    getFilteredChannelMentions().map((channel, index) => (
+                      <button
+                        key={channel.id}
+                        type="button"
+                        onClick={() => insertChannelMention(channel.name, channel.id)}
+                        className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition ${
+                          index === selectedChannelMentionIndex ? 'bg-sky-500/20' : 'hover:bg-white/5'
+                        }`}
+                      >
+                        <span className="text-sky-400 font-medium">#</span>
+                        <span className="text-sm text-text-secondary">{channel.name}</span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="text-xs text-text-muted px-2 py-1">No matching channels</div>
+                  )}
+                </div>
+              )}
+
+              {/* Typing indicator */}
+              {(() => {
+                const ctxTypers = typingUsers[selectedKey] ?? []
+                if (ctxTypers.length === 0) return null
+                const names = ctxTypers.map((u) => u.username)
+                const label = names.length === 1
+                  ? `${names[0]} is typing…`
+                  : names.length === 2
+                    ? `${names[0]} and ${names[1]} are typing…`
+                    : `${names.slice(0, 2).join(', ')} and ${names.length - 2} others are typing…`
+                return (
+                  <div className="mb-1 flex items-center gap-2 px-1">
+                    {ctxTypers.slice(0, 3).map((u) => (
+                      <AvatarWithStatus
+                        key={u.username}
+                        avatar={u.avatar}
+                        avatar_type={u.avatar_type}
+                        avatar_data={u.avatar_data}
+                        size="sm"
+                      />
+                    ))}
+                    <span className="text-xs text-text-muted italic">{label}</span>
+                    <span className="flex gap-0.5">
+                      {[0, 1, 2].map((i) => (
+                        <span
+                          key={i}
+                          className="inline-block w-1 h-1 rounded-full bg-text-muted animate-bounce"
+                          style={{ animationDelay: `${i * 0.15}s` }}
+                        />
+                      ))}
+                    </span>
+                  </div>
+                )
+              })()}
               
               {/* Replying to indicator */}
               {replyingTo && (
-                <div className="mb-2 rounded-xl border border-white/10 bg-slate-900/40 p-3 flex items-start justify-between">
+                <div className="mb-2 rounded-xl border border-border-primary bg-bg-secondary/40 p-3 flex items-start justify-between">
                   <div className="flex-1">
-                    <div className="text-xs font-semibold text-slate-400 mb-1">Replying to {replyingTo.username}</div>
-                    <div className="text-sm text-slate-300 truncate">{renderMessageContent(replyingTo.content, replyingTo.context, replyingTo.context_id)}</div>
+                    <div className="text-xs font-semibold text-text-muted mb-1">Replying to {replyingTo.username}</div>
+                    <div className="text-sm text-text-secondary truncate">{renderMessageContent(replyingTo.content, replyingTo.context, replyingTo.context_id)}</div>
                   </div>
                   <button
                     type="button"
                     onClick={() => setReplyingTo(null)}
-                    className="ml-2 text-slate-400 hover:text-slate-200 text-lg"
+                    className="ml-2 text-text-muted hover:text-text-secondary text-lg"
                     title="Cancel reply"
                   >
                     ×
@@ -4690,7 +5508,7 @@ function ChatPage() {
                   }}
                   placeholder={isDragging ? "Drop files here..." : selectedFiles.length > 0 ? "Add a message (optional)…" : "Type a message…"}
                   disabled={isUploading}
-                  className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40 disabled:opacity-50"
+                  className="w-full rounded-2xl border border-border-primary bg-bg-primary/40 px-4 py-3 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-sky-500/40 disabled:opacity-50"
                 />
                 
                 {/* Emoji picker button */}
@@ -4699,15 +5517,15 @@ function ChatPage() {
                     type="button"
                     onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
                     disabled={isUploading}
-                    className="shrink-0 rounded-2xl border border-white/10 bg-slate-900/40 px-4 py-3 text-sm font-semibold text-slate-300 hover:bg-slate-800/40 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="shrink-0 rounded-2xl border border-border-primary bg-bg-secondary/40 px-4 py-3 text-sm font-semibold text-text-secondary hover:bg-bg-tertiary/40 disabled:cursor-not-allowed disabled:opacity-50"
                     title="Insert emoji"
                   >
                     😊
                   </button>
                   
                   {isEmojiPickerOpen && (
-                    <div className="absolute bottom-full right-0 mb-2 w-64 rounded-xl border border-white/10 bg-slate-900 p-3 shadow-xl">
-                      <div className="text-xs font-semibold text-slate-300 mb-2">Basic Emojis</div>
+                    <div className="absolute bottom-full right-0 mb-2 w-64 rounded-xl border border-border-primary bg-bg-secondary p-3 shadow-xl">
+                      <div className="text-xs font-semibold text-text-secondary mb-2">Basic Emojis</div>
                       <div className="grid grid-cols-8 gap-1 max-h-48 overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                         {['😀', '😃', '😄', '😁', '😅', '😂', '🤣', '😊', '😇', '🙂', '😉', '😌', '😍', '🥰', '😘', '😗', 
                           '😙', '😚', '😋', '😛', '😝', '😜', '🤪', '🤨', '🧐', '🤓', '😎', '🥸', '🤩', '🥳', '😏', '😒',
@@ -4726,7 +5544,7 @@ function ChatPage() {
                       </div>
                       {selectedContext.kind === 'server' && serverEmojis[selectedContext.serverId]?.length > 0 && (
                         <>
-                          <div className="text-xs font-semibold text-slate-300 mt-3 mb-2">Server Emojis</div>
+                          <div className="text-xs font-semibold text-text-secondary mt-3 mb-2">Server Emojis</div>
                           <div className="grid grid-cols-6 gap-2 max-h-32 overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                             {serverEmojis[selectedContext.serverId].map((emoji: any) => (
                               <button
@@ -4758,7 +5576,7 @@ function ChatPage() {
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={isUploading || adminSettings.allow_file_attachments === false}
-                  className="shrink-0 rounded-2xl border border-white/10 bg-slate-900/40 px-4 py-3 text-sm font-semibold text-slate-300 hover:bg-slate-800/40 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="shrink-0 rounded-2xl border border-border-primary bg-bg-secondary/40 px-4 py-3 text-sm font-semibold text-text-secondary hover:bg-bg-tertiary/40 disabled:cursor-not-allowed disabled:opacity-50"
                   title="Attach file"
                 >
                   📎
@@ -4767,7 +5585,7 @@ function ChatPage() {
                 <button
                   type="submit"
                   disabled={!canSend || isUploading}
-                  className="shrink-0 rounded-2xl bg-sky-500 px-5 py-3 text-sm font-semibold text-slate-950 shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="shrink-0 rounded-2xl bg-sky-500 px-5 py-3 text-sm font-semibold text-bg-primary shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isUploading ? 'Uploading...' : 'Send'}
                 </button>
@@ -4780,18 +5598,18 @@ function ChatPage() {
 
         {/* Members Sidebar - shows when in a server */}
         {selectedServerId && isMembersSidebarOpen && (
-          <aside className="w-[240px] shrink-0 border-l border-white/10 bg-slate-900/30">
+          <aside className="w-[240px] shrink-0 border-l border-border-primary bg-bg-secondary/30">
             <div className="flex h-full flex-col">
-              <div className="border-b border-white/10 px-4 py-3">
+              <div className="border-b border-border-primary px-4 py-3">
                 <div className="text-sm font-semibold text-white">Members</div>
-                <div className="text-xs text-slate-400 mt-0.5">
+                <div className="text-xs text-text-muted mt-0.5">
                   {serverMembers[selectedServerId]?.length ?? 0} online
                 </div>
               </div>
               
               <div className="flex-1 overflow-auto p-2">
                 {(!serverMembers[selectedServerId] || serverMembers[selectedServerId].length === 0) ? (
-                  <div className="px-3 py-2 text-sm text-slate-400">No members</div>
+                  <div className="px-3 py-2 text-sm text-text-muted">No members</div>
                 ) : (
                   <div className="space-y-1">
                     {/* Organize members by role */}
@@ -4844,11 +5662,163 @@ function ChatPage() {
           </aside>
         )}
 
+        {/* Pinned Messages Panel */}
+        {showPinsPanel && (selectedContext.kind === 'server' || selectedContext.kind === 'dm') && (
+          <aside className="w-[300px] shrink-0 border-l border-border-primary bg-bg-secondary/30 flex flex-col">
+            <div className="flex items-center justify-between border-b border-border-primary px-4 py-3">
+              <div className="text-sm font-semibold text-white">📌 Pinned Messages</div>
+              <button
+                type="button"
+                onClick={() => setShowPinsPanel(false)}
+                className="text-text-muted hover:text-white text-lg leading-none"
+              >
+                ×
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-3 space-y-2">
+              {(pinnedByContext[selectedKey] ?? []).length === 0 ? (
+                <div className="text-sm text-text-muted text-center py-8">No pinned messages</div>
+              ) : (
+                (pinnedByContext[selectedKey] ?? []).map((pm) => (
+                  <div
+                    key={pm.id}
+                    className="rounded-xl border border-border-primary bg-bg-primary/30 p-3 text-sm hover:bg-bg-secondary/40 transition cursor-pointer"
+                    onClick={() => {
+                      // Jump to the message
+                      if (pm.id) {
+                        const el = document.getElementById(`message-${pm.id}`)
+                        if (el) {
+                          el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                          el.classList.add('bg-yellow-500/10')
+                          setTimeout(() => el.classList.remove('bg-yellow-500/10'), 2000)
+                        }
+                      }
+                    }}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-semibold text-white text-xs">{pm.username}</span>
+                      <span className="text-text-muted text-xs">{new Date(pm.timestamp).toLocaleDateString()}</span>
+                      <button
+                        type="button"
+                        className="ml-auto text-text-muted hover:text-rose-400 text-xs"
+                        title="Unpin"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (pm.id) wsClient.unpinMessage({ type: 'unpin_message', message_id: pm.id })
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <div className="text-text-secondary text-xs line-clamp-3">{pm.content}</div>
+                    {pm.pinned_by && (
+                      <div className="text-text-muted text-[10px] mt-1">Pinned by {pm.pinned_by}</div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </aside>
+        )}
+
+        {/* Thread Creation Modal */}
+        {showCreateThreadModal && (
+          <div
+            className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60"
+            onClick={(e) => e.target === e.currentTarget && setShowCreateThreadModal(false)}
+          >
+            <div className="w-full max-w-md rounded-2xl border border-border-primary bg-bg-secondary p-6 shadow-2xl">
+              <div className="flex items-center justify-between mb-4">
+                <div className="text-lg font-semibold text-white">🧵 Create Thread</div>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateThreadModal(false)}
+                  className="text-text-muted hover:text-white text-xl"
+                >
+                  ×
+                </button>
+              </div>
+              {createThreadParentMsg && (
+                <div className="mb-3 rounded-lg border border-border-primary bg-bg-primary/30 p-2 text-xs text-text-muted">
+                  <span className="font-semibold text-text-secondary">{createThreadParentMsg.username}:</span>{' '}
+                  <span className="line-clamp-2">{createThreadParentMsg.content}</span>
+                </div>
+              )}
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs font-medium text-text-muted block mb-1">Thread Name</label>
+                  <input
+                    type="text"
+                    value={createThreadName}
+                    onChange={(e) => setCreateThreadName(e.target.value)}
+                    placeholder="Thread name..."
+                    className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    autoFocus
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="thread-private"
+                    checked={createThreadPrivate}
+                    onChange={(e) => setCreateThreadPrivate(e.target.checked)}
+                    className="rounded"
+                  />
+                  <label htmlFor="thread-private" className="text-sm text-text-secondary cursor-pointer">
+                    Private thread (invite-only)
+                  </label>
+                </div>
+                {createThreadPrivate && (
+                  <div>
+                    <label className="text-xs font-medium text-text-muted block mb-1">Invite Users (comma-separated)</label>
+                    <input
+                      type="text"
+                      placeholder="username1, username2..."
+                      onChange={(e) => setCreateThreadInvited(e.target.value.split(',').map((u) => u.trim()).filter(Boolean))}
+                      className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    />
+                  </div>
+                )}
+                <div className="flex gap-2 mt-4">
+                  <button
+                    type="button"
+                    disabled={!createThreadName.trim() || selectedContext.kind !== 'server'}
+                    onClick={() => {
+                      if (selectedContext.kind !== 'server' || !createThreadName.trim()) return
+                      wsClient.createThread({
+                        type: 'create_thread',
+                        server_id: selectedContext.serverId,
+                        parent_message_id: createThreadParentMsg?.id ?? null,
+                        name: createThreadName.trim(),
+                        is_private: createThreadPrivate,
+                        invited_users: createThreadPrivate ? createThreadInvited : [],
+                      })
+                      setShowCreateThreadModal(false)
+                      setCreateThreadName('')
+                      setCreateThreadParentMsg(null)
+                    }}
+                    className="flex-1 rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Create Thread
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowCreateThreadModal(false)}
+                    className="rounded-xl bg-bg-tertiary px-4 py-2 text-sm text-text-secondary hover:bg-bg-tertiary/60"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* User menu modal - centered overlay */}
         {isUserMenuOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setIsUserMenuOpen(false)}>
-            <div className="w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-              <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-6 py-4">
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={(e) => e.target === e.currentTarget && setIsUserMenuOpen(false)}>
+            <div className="relative w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex shrink-0 items-center justify-between border-b border-border-primary px-6 py-4">
                 <div className="flex items-center gap-3">
                   {init?.is_admin && !isAdminMode && (
                     <button
@@ -4875,7 +5845,7 @@ function ChatPage() {
                     setIsUserMenuOpen(false)
                     setIsAdminMode(false)
                   }}
-                  className="text-2xl text-slate-400 hover:text-slate-200"
+                  className="text-2xl text-text-muted hover:text-text-secondary"
                 >
                   ×
                 </button>
@@ -4885,7 +5855,7 @@ function ChatPage() {
                 {!isAdminMode ? (
                   <div className="space-y-6">
                     <div className="text-center">
-                      <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-slate-800 text-4xl overflow-hidden">
+                      <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-bg-tertiary text-4xl overflow-hidden">
                         {init?.avatar_type === 'image' && init?.avatar_data ? (
                           <img src={init.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
                         ) : (
@@ -4893,9 +5863,9 @@ function ChatPage() {
                         )}
                       </div>
                       <div className="mt-3 text-xl font-semibold text-white">{init?.username ?? 'User'}</div>
-                      {init?.bio && <div className="mt-1 text-sm text-slate-400">{init.bio}</div>}
+                      {init?.bio && <div className="mt-1 text-sm text-text-muted">{init.bio}</div>}
                       {init?.status_message && (
-                        <div className="mt-2 text-sm text-slate-300">{init.status_message}</div>
+                        <div className="mt-2 text-sm text-text-secondary">{init.status_message}</div>
                       )}
                     </div>
 
@@ -4940,8 +5910,8 @@ function ChatPage() {
                       </button>
                     </div>
 
-                    <div className="border-t border-white/10 pt-4">
-                      <div className="text-xs font-medium text-slate-400 mb-3">Create Server</div>
+                    <div className="border-t border-border-primary pt-4">
+                      <div className="text-xs font-medium text-text-muted mb-3">Create Server</div>
                       <div className="flex gap-2">
                         <input
                           value={serverName}
@@ -4962,105 +5932,10 @@ function ChatPage() {
                         </button>
                       </div>
                     </div>
-
-                    <div className="border-t border-white/10 pt-4">
-                      <div className="text-xs font-medium text-slate-400 mb-3">Join Server</div>
-                      <div className="flex gap-2">
-                        <input
-                          value={joinInviteCode}
-                          onChange={(e) => setJoinInviteCode(e.target.value)}
-                          placeholder="Enter invite code"
-                          className="flex-1 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            joinServerWithInvite()
-                            setIsUserMenuOpen(false)
-                          }}
-                          disabled={!joinInviteCode.trim() || wsClient.readyState !== WebSocket.OPEN}
-                          className="shrink-0 rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
-                        >
-                          Join
-                        </button>
-                      </div>
-                    </div>
-
-                    {contextServerId && (
-                      <div className="border-t border-white/10 pt-4">
-                        <div className="text-xs font-medium text-slate-400 mb-3">Server Invite</div>
-                        <div className="flex flex-wrap gap-2 mb-3">
-                          <button
-                            type="button"
-                            onClick={generateServerInvite}
-                            disabled={wsClient.readyState !== WebSocket.OPEN}
-                            className="rounded-xl bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
-                          >
-                            Generate
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => contextServerId && loadInviteUsage(contextServerId)}
-                            disabled={wsClient.readyState !== WebSocket.OPEN || isLoadingInviteUsage || !contextServerId}
-                            className="rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm font-semibold text-slate-100 hover:border-white/20 disabled:opacity-60"
-                          >
-                            {isLoadingInviteUsage ? 'Loading…' : 'Usage'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={copyLastInvite}
-                            disabled={!lastInviteCode}
-                            className="rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm font-semibold text-slate-100 hover:border-white/20 disabled:opacity-60"
-                          >
-                            Copy
-                          </button>
-                        </div>
-                        {lastInviteCode && (
-                          <div className="rounded-xl border border-white/10 bg-slate-950/30 px-3 py-2 text-xs text-slate-200">
-                            <div className="text-[11px] text-slate-400">Last code</div>
-                            <div className="mt-1 break-all font-mono">{lastInviteCode}</div>
-                          </div>
-                        )}
-                        {contextServerId && inviteUsageServerId === contextServerId && inviteUsageLogs && (
-                          <div className="mt-3">
-                            <div className="mb-2 text-[11px] font-medium text-slate-400">Invite usage</div>
-                            {inviteUsageLogs.length === 0 ? (
-                              <div className="text-xs text-slate-400">No invite usage yet.</div>
-                            ) : (
-                              <div className="space-y-2 max-h-48 overflow-auto">
-                                {inviteUsageLogs.map((log) => {
-                                  const firstUsed = log.first_used ? new Date(log.first_used).toLocaleString() : ''
-                                  const lastUsed = log.last_used ? new Date(log.last_used).toLocaleString() : ''
-                                  const users = (log.users ?? []).slice(0, 6).join(', ')
-                                  return (
-                                    <div key={log.invite_code} className="rounded-xl border border-white/10 bg-slate-950/30 p-2">
-                                      <div className="flex items-start justify-between gap-2">
-                                        <div className="break-all font-mono text-xs text-slate-100">{log.invite_code}</div>
-                                        <div className="text-xs font-semibold text-slate-200">{log.use_count} uses</div>
-                                      </div>
-                                      <div className="mt-1 text-[11px] text-slate-400">
-                                        {lastUsed ? `Last: ${lastUsed}` : 'Last: —'}
-                                        {firstUsed ? ` · First: ${firstUsed}` : ''}
-                                      </div>
-                                      {users && (
-                                        <div className="mt-1 text-[11px] text-slate-400">
-                                          Users: {users}
-                                          {(log.users?.length ?? 0) > 6 ? '…' : ''}
-                                        </div>
-                                      )}
-                                    </div>
-                                  )
-                                })}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )}
                   </div>
                 ) : (
-                  <div className="space-y-4 overflow-y-auto max-h-[calc(100vh-200px)]">
-                    <div className="flex items-center justify-between">
+                  <div className="flex flex-col max-h-[calc(100vh-200px)]">
+                    <div className="flex shrink-0 items-center justify-between px-6 py-4 border-b border-white/10">
                       <div className="text-lg font-semibold text-white">Admin Configuration</div>
                       <button
                         type="button"
@@ -5072,6 +5947,80 @@ function ChatPage() {
                       </button>
                     </div>
 
+                    {/* Tabs */}
+                    <div className="border-b border-white/10 px-6 flex flex-wrap gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('general')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'general'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        General
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('email')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'email'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Email & SMTP
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('announcements')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'announcements'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Announcements
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('license')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'license'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        License
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('webhooks')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'webhooks'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Webhooks
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('users')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'users'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Users
+                      </button>
+                    </div>
+
+                    <div className="overflow-y-auto flex-1 p-6 space-y-4">
+                      {/* General Tab */}
+                      {adminSettingsTab === 'general' && (
+                        <>
                     {/* General Settings */}
                     <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                       <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">General</h3>
@@ -5166,6 +6115,174 @@ function ChatPage() {
                             className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
                           />
                         </label>
+                        
+                        {/* Invite Management */}
+                        <div className="mt-6 pt-6 border-t border-white/10">
+                          <h4 className="mb-3 text-sm font-semibold text-white">Instance Invite Management</h4>
+                          
+                          {lastInviteCode && (
+                            <div className="mb-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3">
+                              <div className="text-xs font-medium text-emerald-200 mb-1">Invite Link</div>
+                              <div className="font-mono text-xs text-emerald-100 break-all mb-2">
+                                {`${window.location.origin}/signup?invite=${lastInviteCode}`}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(`${window.location.origin}/signup?invite=${lastInviteCode}`)
+                                  pushToast({ kind: 'success', message: 'Invite link copied!' })
+                                }}
+                                className="w-full rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+                              >
+                                Copy Link
+                              </button>
+                            </div>
+                          )}
+                          
+                          <label className="block mb-3">
+                            <div className="mb-1 text-xs text-slate-300">Max Uses (leave empty for unlimited)</div>
+                            <input
+                              type="number"
+                              min="1"
+                              placeholder="Unlimited"
+                              value={instanceInviteMaxUses ?? ''}
+                              onChange={(e) => setInstanceInviteMaxUses(e.target.value ? parseInt(e.target.value) : null)}
+                              className="w-full max-w-md rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+                            />
+                          </label>
+                          
+                          <button
+                            type="button"
+                            onClick={() => {
+                              wsClient.generateInvite({ 
+                                type: 'generate_invite',
+                                max_uses: instanceInviteMaxUses
+                              })
+                            }}
+                            disabled={wsClient.readyState !== WebSocket.OPEN}
+                            className="w-full mb-3 rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                          >
+                            Generate Instance Invite Link
+                          </button>
+                          
+                          <button
+                            type="button"
+                            onClick={() => {
+                              wsClient.listInstanceInvites()
+                              setShowInstanceInvitesList(true)
+                            }}
+                            disabled={wsClient.readyState !== WebSocket.OPEN}
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5 disabled:opacity-60"
+                          >
+                            View All Invites
+                          </button>
+                          
+                          {showInstanceInvitesList && instanceInvitesList && (
+                            <div className="mt-3 rounded-xl border border-white/10 bg-slate-950/40 p-3 max-h-64 overflow-auto">
+                              <div className="flex items-center justify-between mb-2">
+                                <div className="text-xs font-medium text-slate-400">Active Invites</div>
+                                <button
+                                  type="button"
+                                  onClick={() => setShowInstanceInvitesList(false)}
+                                  className="text-slate-400 hover:text-slate-200"
+                                >
+                                  ×
+                                </button>
+                              </div>
+                              {instanceInvitesList.length === 0 ? (
+                                <div className="text-xs text-slate-500">No invites generated yet</div>
+                              ) : (
+                                <div className="space-y-2">
+                                  {instanceInvitesList.map((invite) => (
+                                    <div key={invite.code} className="text-xs border border-white/5 rounded-lg p-2 bg-slate-950/40">
+                                      <div className="flex items-center justify-between mb-1">
+                                        <div className="font-mono text-slate-200">{invite.code}</div>
+                                        <div className={`px-2 py-0.5 rounded text-xs ${
+                                          invite.is_active ? 'bg-green-500/20 text-green-300' : 'bg-red-500/20 text-red-300'
+                                        }`}>
+                                          {invite.is_active ? 'Active' : 'Inactive'}
+                                        </div>
+                                      </div>
+                                      <div className="text-slate-400">
+                                        Uses: {invite.current_uses} / {invite.max_uses ?? '∞'}
+                                      </div>
+                                      <div className="text-slate-500 text-[10px]">
+                                        Created: {new Date(invite.created_at).toLocaleString()}
+                                      </div>
+                                      {invite.is_active && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            wsClient.revokeInvite({ type: 'revoke_instance_invite', code: invite.code })
+                                            // Refresh list after a delay
+                                            setTimeout(() => wsClient.listInstanceInvites(), 500)
+                                          }}
+                                          className="mt-1 w-full rounded bg-red-500/20 px-2 py-1 text-xs text-red-300 hover:bg-red-500/30"
+                                        >
+                                          Revoke
+                                        </button>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        
+                        {/* Soundboard Settings */}
+                        <div className="mt-6 pt-6 border-t border-white/10">
+                          <h4 className="mb-3 text-sm font-semibold text-white">Soundboard Settings</h4>
+                          
+                          <label className="flex items-center gap-3 mb-4">
+                            <input
+                              type="checkbox"
+                              checked={adminSettings.allow_soundboard === true}
+                              onChange={(e) => setAdminSettings({ ...adminSettings, allow_soundboard: e.target.checked })}
+                              className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
+                            />
+                            <div className="text-sm text-slate-200">Enable Soundboard</div>
+                          </label>
+                          
+                          <label className="block mb-3">
+                            <div className="mb-1 text-sm text-slate-200">Max Personal Sounds Per User</div>
+                            <input
+                              type="number"
+                              min="1"
+                              max="100"
+                              value={adminSettings.max_sounds_per_user || 10}
+                              onChange={(e) => setAdminSettings({ ...adminSettings, max_sounds_per_user: parseInt(e.target.value) || 10 })}
+                              className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                              disabled={!adminSettings.allow_soundboard}
+                            />
+                          </label>
+                          
+                          <label className="block mb-3">
+                            <div className="mb-1 text-sm text-slate-200">Max Server Sounds</div>
+                            <input
+                              type="number"
+                              min="1"
+                              max="200"
+                              value={adminSettings.max_server_sounds || 25}
+                              onChange={(e) => setAdminSettings({ ...adminSettings, max_server_sounds: parseInt(e.target.value) || 25 })}
+                              className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                              disabled={!adminSettings.allow_soundboard}
+                            />
+                          </label>
+                          
+                          <label className="block">
+                            <div className="mb-1 text-sm text-slate-200">Max Sound Duration (seconds)</div>
+                            <input
+                              type="number"
+                              min="1"
+                              max="30"
+                              value={adminSettings.max_sound_duration_seconds || 10}
+                              onChange={(e) => setAdminSettings({ ...adminSettings, max_sound_duration_seconds: parseInt(e.target.value) || 10 })}
+                              className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                              disabled={!adminSettings.allow_soundboard}
+                            />
+                          </label>
+                        </div>
 
                         <label className="block">
                           <div className="mb-1 text-sm text-slate-200">Max Servers Per User <span className="text-xs text-slate-400">(0 = unlimited)</span></div>
@@ -5192,7 +6309,12 @@ function ChatPage() {
                         </label>
                       </div>
                     </section>
+                      </>
+                    )}
 
+                    {/* Email Tab */}
+                    {adminSettingsTab === 'email' && (
+                      <>
                     {/* Email/SMTP Settings */}
                     <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                       <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Email & SMTP Settings</h3>
@@ -5318,7 +6440,12 @@ function ChatPage() {
                         </div>
                       </div>
                     </section>
+                      </>
+                    )}
 
+                    {/* Announcements Tab */}
+                    {adminSettingsTab === 'announcements' && (
+                      <>
                     {/* Announcements */}
                     <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                       <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Announcements</h3>
@@ -5358,12 +6485,42 @@ function ChatPage() {
                         </label>
                       </div>
                     </section>
+                      </>
+                    )}
 
+                    {/* License Tab */}
+                    {adminSettingsTab === 'license' && (
+                      <>
                     {/* License Management */}
                     <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                       <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">License Management</h3>
                       <LicensePanel />
                     </section>
+                      </>
+                    )}
+
+                    {/* Webhooks Tab */}
+                    {adminSettingsTab === 'webhooks' && (
+                      <>
+                    {/* Instance Webhooks */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Instance Webhooks</h3>
+                      <WebhookPanel isAdmin={true} />
+                    </section>
+                      </>
+                    )}
+
+                    {/* Users Tab */}
+                    {adminSettingsTab === 'users' && (
+                      <>
+                    {/* Registered Users */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">👥 Registered Users</h3>
+                      <UsersPanel />
+                    </section>
+                      </>
+                    )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -5373,9 +6530,9 @@ function ChatPage() {
 
         {/* Account Settings Modal */}
         {isAccountSettingsOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 overflow-auto p-4" onClick={() => setIsAccountSettingsOpen(false)}>
-            <div className="w-full max-w-3xl max-h-[90vh] overflow-auto rounded-2xl border border-white/10 bg-slate-900 shadow-2xl my-8" onClick={(e) => e.stopPropagation()}>
-              <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-slate-900 px-6 py-4">
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={(e) => e.target === e.currentTarget && setIsAccountSettingsOpen(false)}>
+            <div className="relative w-full max-w-3xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-white/10 px-6 py-4 flex-shrink-0">
                 <h2 className="text-xl font-semibold text-white">Account Settings</h2>
                 <button
                   type="button"
@@ -5386,461 +6543,766 @@ function ChatPage() {
                 </button>
               </div>
 
-              <div className="p-6 space-y-6">
-                {/* Account Section */}
-                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Account</h3>
-                  <div className="space-y-4">
-                    {/* Current Username */}
-                    <div>
-                      <div className="mb-1 text-sm text-slate-200">Username</div>
-                      <div className="text-sm text-slate-400 mb-2">{init?.username}</div>
-                      <div className="space-y-2">
-                        <input
-                          type="text"
-                          value={newUsername}
-                          onChange={(e) => setNewUsername(e.target.value)}
-                          placeholder="New username"
-                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        />
-                        <input
-                          type="password"
-                          value={usernamePassword}
-                          onChange={(e) => setUsernamePassword(e.target.value)}
-                          placeholder="Confirm with password"
-                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        />
-                        <button
-                          type="button"
-                          onClick={handleChangeUsername}
-                          disabled={!newUsername.trim() || !usernamePassword}
-                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          Change Username
-                        </button>
-                        {usernameChangeStatus && (
-                          <div className={`text-sm ${usernameChangeStatus.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
-                            {usernameChangeStatus.message}
-                          </div>
-                        )}
-                      </div>
-                    </div>
+              {/* Tabs */}
+              <div className="border-b border-white/10 px-6 flex flex-wrap gap-2 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setAccountSettingsTab('profile')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    accountSettingsTab === 'profile'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Profile
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAccountSettingsTab('security')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    accountSettingsTab === 'security'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Security
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAccountSettingsTab('notifications')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    accountSettingsTab === 'notifications'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Notifications
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAccountSettingsTab('keybinds')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    accountSettingsTab === 'keybinds'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Keybinds
+                </button>
+              </div>
 
-                    {/* Divider */}
-                    <div className="border-t border-white/5" />
+              {/* Tab Content */}
+              <div className="overflow-y-auto flex-1 p-6 space-y-4">
+                {accountSettingsTab === 'profile' && (
+                  <>
+                    {/* Profile Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Profile</h3>
+                      <div className="space-y-4">
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Bio</div>
+                          <textarea
+                            value={profileBio}
+                            onChange={(e) => setProfileBio(e.target.value)}
+                            maxLength={500}
+                            rows={3}
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="Tell others about yourself..."
+                          />
+                          <div className="mt-1 text-xs text-slate-400">{profileBio.length}/500 characters</div>
+                        </label>
 
-                    {/* Current Email */}
-                    <div>
-                      <div className="mb-1 text-sm text-slate-200">Email</div>
-                      <div className="text-sm text-slate-400 mb-2">{init?.email || 'No email set'}</div>
-                      <div className="space-y-2">
-                        <input
-                          type="email"
-                          value={newEmail}
-                          onChange={(e) => setNewEmail(e.target.value)}
-                          placeholder="New email address"
-                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        />
-                        <input
-                          type="password"
-                          value={emailPassword}
-                          onChange={(e) => setEmailPassword(e.target.value)}
-                          placeholder="Confirm with password"
-                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        />
-                        <button
-                          type="button"
-                          onClick={handleChangeEmail}
-                          disabled={!newEmail.trim() || !emailPassword}
-                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          Change Email
-                        </button>
-                        {emailChangeStatus && (
-                          <div className={`text-sm ${emailChangeStatus.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
-                            {emailChangeStatus.message}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </section>
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Status Message</div>
+                          <input
+                            type="text"
+                            value={profileStatus}
+                            onChange={(e) => setProfileStatus(e.target.value)}
+                            maxLength={100}
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="What's your status?"
+                          />
+                          <div className="mt-1 text-xs text-slate-400">{profileStatus.length}/100 characters</div>
+                        </label>
 
-                {/* Profile Section */}
-                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Profile</h3>
-                  <div className="space-y-4">
-                    <label className="block">
-                      <div className="mb-1 text-sm text-slate-200">Bio</div>
-                      <textarea
-                        value={profileBio}
-                        onChange={(e) => setProfileBio(e.target.value)}
-                        maxLength={500}
-                        rows={3}
-                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        placeholder="Tell others about yourself..."
-                      />
-                      <div className="mt-1 text-xs text-slate-400">{profileBio.length}/500 characters</div>
-                    </label>
-
-                    <label className="block">
-                      <div className="mb-1 text-sm text-slate-200">Status Message</div>
-                      <input
-                        type="text"
-                        value={profileStatus}
-                        onChange={(e) => setProfileStatus(e.target.value)}
-                        maxLength={100}
-                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        placeholder="What's your status?"
-                      />
-                      <div className="mt-1 text-xs text-slate-400">{profileStatus.length}/100 characters</div>
-                    </label>
-
-                    <div>
-                      <div className="mb-2 text-sm text-slate-200">User Status</div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handleChangeStatus('online')}
-                          className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
-                            userStatus === 'online'
-                              ? 'border-green-500/50 bg-green-500/20 text-green-300'
-                              : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
-                          }`}
-                        >
-                          <span className="h-2.5 w-2.5 rounded-full bg-green-500" />
-                          Online
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleChangeStatus('away')}
-                          className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
-                            userStatus === 'away'
-                              ? 'border-yellow-500/50 bg-yellow-500/20 text-yellow-300'
-                              : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
-                          }`}
-                        >
-                          <span className="h-2.5 w-2.5 rounded-full bg-yellow-500" />
-                          Away
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleChangeStatus('busy')}
-                          className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
-                            userStatus === 'busy'
-                              ? 'border-red-500/50 bg-red-500/20 text-red-300'
-                              : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
-                          }`}
-                        >
-                          <span className="h-2.5 w-2.5 rounded-full bg-red-500" />
-                          Busy
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleChangeStatus('offline')}
-                          className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
-                            userStatus === 'offline'
-                              ? 'border-gray-500/50 bg-gray-500/20 text-gray-300'
-                              : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
-                          }`}
-                        >
-                          <span className="h-2.5 w-2.5 rounded-full bg-gray-500" />
-                          Offline
-                        </button>
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={handleUpdateProfile}
-                      className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
-                    >
-                      Update Profile
-                    </button>
-                  </div>
-                </section>
-
-                {/* Avatar Section */}
-                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Avatar</h3>
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-4">
-                      <AvatarWithStatus
-                        avatar={init?.avatar}
-                        avatar_type={init?.avatar_type}
-                        avatar_data={init?.avatar_data}
-                        user_status={init?.user_status}
-                        size="xl"
-                      />
-                      <div className="flex-1">
-                        <div className="text-sm text-slate-200 mb-2">Current Avatar</div>
-                        <div className="text-xs text-slate-400">
-                          Type: {init?.avatar_type || 'emoji'}
-                        </div>
-                        <div className="text-xs text-slate-400">
-                          Status: {init?.user_status}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="mb-2 text-sm text-slate-200">Upload Image (PNG, JPG, or GIF, max 2MB)</div>
-                      <input
-                        type="file"
-                        accept="image/png,image/jpeg,image/gif"
-                        onChange={handleAvatarFileChange}
-                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 file:mr-4 file:rounded-lg file:border-0 file:bg-sky-500/20 file:px-3 file:py-1 file:text-sm file:text-sky-200 hover:file:bg-sky-500/30"
-                      />
-                      {avatarPreview && (
-                        <div className="mt-3 flex items-center gap-4">
-                          <img src={avatarPreview} alt="Preview" className="h-20 w-20 rounded-full object-cover border border-white/10" />
-                          <button
-                            type="button"
-                            onClick={handleUploadAvatar}
-                            className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
-                          >
-                            Upload Avatar
-                          </button>
-                        </div>
-                      )}
-                    </div>
-
-                    <div>
-                      <div className="mb-2 text-sm text-slate-200">Or choose an emoji</div>
-                      <div className="flex flex-wrap gap-2">
-                        {['👤', '😀', '😎', '🤖', '👾', '🐱', '🐶', '🦊', '🐼', '🦁', '🐯', '🐻'].map((emoji) => (
-                          <button
-                            key={emoji}
-                            type="button"
-                            onClick={() => handleSetEmojiAvatar(emoji)}
-                            className="flex h-12 w-12 items-center justify-center rounded-xl border border-white/10 bg-slate-950/40 text-2xl hover:bg-white/5"
-                          >
-                            {emoji}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </section>
-
-                {/* 2FA Section */}
-                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Two-Factor Authentication</h3>
-                  {!twoFASetup ? (
-                    <div className="space-y-4">
-                      <div className="text-sm text-slate-200">
-                        Add an extra layer of security to your account.
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={handleSetup2FA}
-                          className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400"
-                        >
-                          Enable 2FA
-                        </button>
-                      </div>
-                      
-                      {/* Disable 2FA Section */}
-                      <div className="border-t border-white/10 pt-4 mt-4">
-                        <div className="text-sm text-slate-200 mb-3">
-                          If you already have 2FA enabled and want to disable it:
-                        </div>
-                        <div className="space-y-3">
-                          <label className="block">
-                            <div className="mb-1 text-sm text-slate-200">Password</div>
-                            <input
-                              type="password"
-                              value={disable2FAPassword}
-                              onChange={(e) => setDisable2FAPassword(e.target.value)}
-                              placeholder="Your password"
-                              className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                            />
-                          </label>
-                          <label className="block">
-                            <div className="mb-1 text-sm text-slate-200">2FA Code or Backup Code</div>
-                            <input
-                              type="text"
-                              value={disable2FACode}
-                              onChange={(e) => setDisable2FACode(e.target.value)}
-                              placeholder="000000"
-                              className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                            />
-                          </label>
-                          <button
-                            type="button"
-                            onClick={handleDisable2FA}
-                            disabled={!disable2FAPassword || !disable2FACode}
-                            className="rounded-xl bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-400 disabled:opacity-60"
-                          >
-                            Disable 2FA
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="text-sm text-slate-200">Scan this QR code with your authenticator app:</div>
-                      <div className="flex justify-center">
-                        <img src={twoFASetup.qr_code} alt="2FA QR Code" className="rounded-xl border border-white/10 bg-white p-2" />
-                      </div>
-                      <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
-                        <div className="text-xs font-medium text-amber-200 mb-2">Backup Codes (save these safely!):</div>
-                        <div className="font-mono text-xs text-amber-100 space-y-1">
-                          {twoFASetup.backup_codes.map((code, idx) => (
-                            <div key={idx}>{code}</div>
-                          ))}
-                        </div>
-                      </div>
-                      <label className="block">
-                        <div className="mb-1 text-sm text-slate-200">Enter code from authenticator app to verify:</div>
-                        <input
-                          type="text"
-                          value={twoFACode}
-                          onChange={(e) => setTwoFACode(e.target.value)}
-                          placeholder="000000"
-                          maxLength={6}
-                          className="w-full max-w-xs rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        />
-                      </label>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={handleVerify2FASetup}
-                          disabled={!twoFACode.trim()}
-                          className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
-                        >
-                          Verify & Enable
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setTwoFASetup(null)}
-                          className="rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </section>
-
-                {/* Notifications Section */}
-                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Notifications</h3>
-                  <div className="space-y-4">
-                    {/* Browser Notifications Permission */}
-                    <div className="rounded-xl border border-white/10 bg-slate-950/20 p-3">
-                      <label className="block mb-2">
-                        <div className="text-sm font-medium text-slate-200">Browser Notifications</div>
-                        <div className="text-xs text-slate-400 mt-1">
-                          {notificationManager.isSupported() 
-                            ? 'Get desktop notifications for mentions, replies, and messages'
-                            : 'Browser notifications are not supported in your browser'}
-                        </div>
-                      </label>
-                      {notificationManager.isSupported() && (
-                        <div className="flex items-center gap-3">
-                          <div className="text-xs text-slate-300">
-                            Status: <span className={`font-semibold ${
-                              notificationPermission === 'granted' ? 'text-emerald-400' :
-                              notificationPermission === 'denied' ? 'text-red-400' :
-                              'text-amber-400'
-                            }`}>
-                              {notificationPermission === 'granted' ? 'Enabled' :
-                               notificationPermission === 'denied' ? 'Blocked' :
-                               'Not requested'}
-                            </span>
-                          </div>
-                          {notificationPermission !== 'granted' && notificationPermission !== 'denied' && (
+                        <div>
+                          <div className="mb-2 text-sm text-slate-200">User Status</div>
+                          <div className="grid grid-cols-2 gap-2">
                             <button
                               type="button"
-                              onClick={async () => {
-                                const permission = await notificationManager.requestPermission()
-                                setNotificationPermission(permission)
-                                if (permission === 'granted') {
-                                  pushToast({ kind: 'success', message: 'Browser notifications enabled' })
-                                  // Show test notification immediately
-                                  setTimeout(() => {
-                                    notificationManager.showNotification('Notifications Enabled!', {
-                                      body: 'You will now receive desktop notifications for messages, mentions, and replies.',
-                                      icon: '/favicon.ico',
-                                    })
-                                  }, 500)
-                                } else {
-                                  pushToast({ kind: 'error', message: 'Browser notifications permission denied' })
-                                }
-                              }}
-                              className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
+                              onClick={() => handleChangeStatus('online')}
+                              className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                                userStatus === 'online'
+                                  ? 'border-green-500/50 bg-green-500/20 text-green-300'
+                                  : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                              }`}
                             >
-                              Enable Notifications
+                              <span className="h-2.5 w-2.5 rounded-full bg-green-500" />
+                              Online
                             </button>
-                          )}
-                          {notificationPermission === 'granted' && (
                             <button
                               type="button"
-                              onClick={() => {
-                                notificationManager.showNotification('Test Notification', {
-                                  body: 'This is a test notification. If you see this, notifications are working!',
-                                  icon: '/favicon.ico',
-                                })
-                                pushToast({ kind: 'info', message: 'Test notification sent - check your system tray!' })
-                              }}
-                              className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+                              onClick={() => handleChangeStatus('away')}
+                              className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                                userStatus === 'away'
+                                  ? 'border-yellow-500/50 bg-yellow-500/20 text-yellow-300'
+                                  : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                              }`}
                             >
-                              Test Notification
+                              <span className="h-2.5 w-2.5 rounded-full bg-yellow-500" />
+                              Away
                             </button>
-                          )}
-                          {notificationPermission === 'denied' && (
-                            <div className="text-xs text-red-400">
-                              Please enable notifications in your browser settings
+                            <button
+                              type="button"
+                              onClick={() => handleChangeStatus('busy')}
+                              className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                                userStatus === 'busy'
+                                  ? 'border-red-500/50 bg-red-500/20 text-red-300'
+                                  : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                              }`}
+                            >
+                              <span className="h-2.5 w-2.5 rounded-full bg-red-500" />
+                              Busy
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleChangeStatus('offline')}
+                              className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                                userStatus === 'offline'
+                                  ? 'border-gray-500/50 bg-gray-500/20 text-gray-300'
+                                  : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                              }`}
+                            >
+                              <span className="h-2.5 w-2.5 rounded-full bg-gray-500" />
+                              Offline
+                            </button>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleUpdateProfile}
+                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                        >
+                          Update Profile
+                        </button>
+                      </div>
+                    </section>
+
+                    {/* Avatar Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Avatar</h3>
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-4">
+                          <AvatarWithStatus
+                            avatar={init?.avatar}
+                            avatar_type={init?.avatar_type}
+                            avatar_data={init?.avatar_data}
+                            user_status={init?.user_status}
+                            size="xl"
+                          />
+                          <div className="flex-1">
+                            <div className="text-sm text-slate-200 mb-2">Current Avatar</div>
+                            <div className="text-xs text-slate-400">
+                              Type: {init?.avatar_type || 'emoji'}
+                            </div>
+                            <div className="text-xs text-slate-400">
+                              Status: {init?.user_status}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="mb-2 text-sm text-slate-200">Upload Image (PNG, JPG, or GIF, max 2MB)</div>
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/gif"
+                            onChange={handleAvatarFileChange}
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 file:mr-4 file:rounded-lg file:border-0 file:bg-sky-500/20 file:px-3 file:py-1 file:text-sm file:text-sky-200 hover:file:bg-sky-500/30"
+                          />
+                          {avatarPreview && (
+                            <div className="mt-3 flex items-center gap-4">
+                              <img src={avatarPreview} alt="Preview" className="h-20 w-20 rounded-full object-cover border border-white/10" />
+                              <button
+                                type="button"
+                                onClick={handleUploadAvatar}
+                                className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                              >
+                                Upload Avatar
+                              </button>
                             </div>
                           )}
                         </div>
-                      )}
-                    </div>
-                    
-                    {/* Notification Mode */}
-                    <label className="block">
-                      <div className="mb-2 text-sm text-slate-200">Notification Mode</div>
-                      <div className="text-xs text-slate-400 mb-2">
-                        Controls when you receive notifications (only works when browser notifications are enabled)
-                      </div>
-                      <select
-                        value={notificationMode}
-                        onChange={(e) => setNotificationMode(e.target.value as 'all' | 'mentions' | 'none')}
-                        className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                      >
-                        <option value="all">All messages</option>
-                        <option value="mentions">Only mentions and replies</option>
-                        <option value="none">None</option>
-                      </select>
-                    </label>
-                    <button
-                      type="button"
-                      onClick={handleSetNotificationMode}
-                      className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
-                    >
-                      Save Notification Settings
-                    </button>
-                  </div>
-                </section>
 
-                {/* Password Reset Section */}
-                <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                  <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Password Reset</h3>
-                  <div className="space-y-4">
-                    <div className="text-sm text-slate-200">
-                      Request a password reset link to be sent to your registered email address.
+                        <div>
+                          <div className="mb-2 text-sm text-slate-200">Or choose an emoji</div>
+                          <div className="flex flex-wrap gap-2">
+                            {['👤', '😀', '😎', '🤖', '👾', '🐱', '🐶', '🦊', '🐼', '🦁', '🐯', '🐻'].map((emoji) => (
+                              <button
+                                key={emoji}
+                                type="button"
+                                onClick={() => handleSetEmojiAvatar(emoji)}
+                                className="flex h-12 w-12 items-center justify-center rounded-xl border border-white/10 bg-slate-950/40 text-2xl hover:bg-white/5"
+                              >
+                                {emoji}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+
+                    {/* Theme Section - NEW */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Theme</h3>
+                      <div className="space-y-4">
+                        <div className="text-sm text-slate-200 mb-3">Choose your preferred theme</div>
+                        <div className="space-y-2">
+                          <label className="flex items-center gap-3 p-3 rounded-xl border border-white/10 bg-slate-950/40 cursor-pointer hover:bg-white/5 transition">
+                            <input 
+                              type="radio" 
+                              name="theme" 
+                              value="dark"
+                              checked={themeMode === 'dark'}
+                              onChange={() => handleThemeChange('dark')}
+                              className="text-sky-500 focus:ring-sky-500" 
+                            />
+                            <div>
+                              <div className="text-sm font-medium text-slate-200">Dark</div>
+                              <div className="text-xs text-slate-400">Default dark theme</div>
+                            </div>
+                          </label>
+                          <label className="flex items-center gap-3 p-3 rounded-xl border border-white/10 bg-slate-950/40 cursor-pointer hover:bg-white/5 transition">
+                            <input 
+                              type="radio" 
+                              name="theme" 
+                              value="light"
+                              checked={themeMode === 'light'}
+                              onChange={() => handleThemeChange('light')}
+                              className="text-sky-500 focus:ring-sky-500" 
+                            />
+                            <div>
+                              <div className="text-sm font-medium text-slate-200">Light</div>
+                              <div className="text-xs text-slate-400">Light mode for daytime use</div>
+                            </div>
+                          </label>
+                          <label className="flex items-center gap-3 p-3 rounded-xl border border-white/10 bg-slate-950/40 cursor-pointer hover:bg-white/5 transition">
+                            <input 
+                              type="radio" 
+                              name="theme" 
+                              value="high_contrast"
+                              checked={themeMode === 'high_contrast'}
+                              onChange={() => handleThemeChange('high_contrast')}
+                              className="text-sky-500 focus:ring-sky-500" 
+                            />
+                            <div>
+                              <div className="text-sm font-medium text-slate-200">High Contrast</div>
+                              <div className="text-xs text-slate-400">Maximum contrast for accessibility</div>
+                            </div>
+                          </label>
+                        </div>
+                      </div>
+                    </section>
+                  </>
+                )}
+
+                {accountSettingsTab === 'security' && (
+                  <>
+                    {/* Account Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Account</h3>
+                      <div className="space-y-4">
+                        {/* Current Username */}
+                        <div>
+                          <div className="mb-1 text-sm text-slate-200">Username</div>
+                          <div className="text-sm text-slate-400 mb-2">{init?.username}</div>
+                          <div className="space-y-2">
+                            <input
+                              type="text"
+                              value={newUsername}
+                              onChange={(e) => setNewUsername(e.target.value)}
+                              placeholder="New username"
+                              className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                            <input
+                              type="password"
+                              value={usernamePassword}
+                              onChange={(e) => setUsernamePassword(e.target.value)}
+                              placeholder="Confirm with password"
+                              className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                            <button
+                              type="button"
+                              onClick={handleChangeUsername}
+                              disabled={!newUsername.trim() || !usernamePassword}
+                              className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Change Username
+                            </button>
+                            {usernameChangeStatus && (
+                              <div className={`text-sm ${usernameChangeStatus.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+                                {usernameChangeStatus.message}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Divider */}
+                        <div className="border-t border-white/5" />
+
+                        {/* Current Email */}
+                        <div>
+                          <div className="mb-1 text-sm text-slate-200">Email</div>
+                          <div className="text-sm text-slate-400 mb-2">{init?.email || 'No email set'}</div>
+                          <div className="space-y-2">
+                            <input
+                              type="email"
+                              value={newEmail}
+                              onChange={(e) => setNewEmail(e.target.value)}
+                              placeholder="New email address"
+                              className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                            <input
+                              type="password"
+                              value={emailPassword}
+                              onChange={(e) => setEmailPassword(e.target.value)}
+                              placeholder="Confirm with password"
+                              className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                            <button
+                              type="button"
+                              onClick={handleChangeEmail}
+                              disabled={!newEmail.trim() || !emailPassword}
+                              className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Change Email
+                            </button>
+                            {emailChangeStatus && (
+                              <div className={`text-sm ${emailChangeStatus.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+                                {emailChangeStatus.message}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+
+                    {/* 2FA Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Two-Factor Authentication</h3>
+                      {!twoFASetup ? (
+                        <div className="space-y-4">
+                          <div className="text-sm text-slate-200">
+                            Add an extra layer of security to your account.
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={handleSetup2FA}
+                              className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400"
+                            >
+                              Enable 2FA
+                            </button>
+                          </div>
+                          
+                          {/* Disable 2FA Section */}
+                          <div className="border-t border-white/10 pt-4 mt-4">
+                            <div className="text-sm text-slate-200 mb-3">
+                              If you already have 2FA enabled and want to disable it:
+                            </div>
+                            <div className="space-y-3">
+                              <label className="block">
+                                <div className="mb-1 text-sm text-slate-200">Password</div>
+                                <input
+                                  type="password"
+                                  value={disable2FAPassword}
+                                  onChange={(e) => setDisable2FAPassword(e.target.value)}
+                                  placeholder="Your password"
+                                  className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                                />
+                              </label>
+                              <label className="block">
+                                <div className="mb-1 text-sm text-slate-200">2FA Code or Backup Code</div>
+                                <input
+                                  type="text"
+                                  value={disable2FACode}
+                                  onChange={(e) => setDisable2FACode(e.target.value)}
+                                  placeholder="000000"
+                                  className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                                />
+                              </label>
+                              <button
+                                type="button"
+                                onClick={handleDisable2FA}
+                                disabled={!disable2FAPassword || !disable2FACode}
+                                className="rounded-xl bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-400 disabled:opacity-60"
+                              >
+                                Disable 2FA
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          <div className="text-sm text-slate-200">Scan this QR code with your authenticator app:</div>
+                          <div className="flex justify-center">
+                            <img src={twoFASetup.qr_code} alt="2FA QR Code" className="rounded-xl border border-white/10 bg-white p-2" />
+                          </div>
+                          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
+                            <div className="text-xs font-medium text-amber-200 mb-2">Backup Codes (save these safely!):</div>
+                            <div className="font-mono text-xs text-amber-100 space-y-1">
+                              {twoFASetup.backup_codes.map((code, idx) => (
+                                <div key={idx}>{code}</div>
+                              ))}
+                            </div>
+                          </div>
+                          <label className="block">
+                            <div className="mb-1 text-sm text-slate-200">Enter code from authenticator app to verify:</div>
+                            <input
+                              type="text"
+                              value={twoFACode}
+                              onChange={(e) => setTwoFACode(e.target.value)}
+                              placeholder="000000"
+                              maxLength={6}
+                              className="w-full max-w-xs rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                          </label>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={handleVerify2FASetup}
+                              disabled={!twoFACode.trim()}
+                              className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
+                            >
+                              Verify & Enable
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setTwoFASetup(null)}
+                              className="rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </section>
+
+                    {/* Password Reset Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Password Reset</h3>
+                      <div className="space-y-4">
+                        <div className="text-sm text-slate-200">
+                          Request a password reset link to be sent to your registered email address.
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleRequestPasswordReset}
+                          className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-orange-400"
+                        >
+                          Request Password Reset
+                        </button>
+                      </div>
+                    </section>
+                  </>
+                )}
+
+                {accountSettingsTab === 'notifications' && (
+                  <>
+                    {/* Notifications Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Notifications</h3>
+                      <div className="space-y-4">
+                        {/* Browser Notifications Permission */}
+                        <div className="rounded-xl border border-white/10 bg-slate-950/20 p-3">
+                          <label className="block mb-2">
+                            <div className="text-sm font-medium text-slate-200">Browser Notifications</div>
+                            <div className="text-xs text-slate-400 mt-1">
+                              {notificationManager.isSupported() 
+                                ? 'Get desktop notifications for mentions, replies, and messages'
+                                : 'Browser notifications are not supported in your browser'}
+                            </div>
+                          </label>
+                          {notificationManager.isSupported() && (
+                            <div className="flex items-center gap-3">
+                              <div className="text-xs text-slate-300">
+                                Status: <span className={`font-semibold ${
+                                  notificationPermission === 'granted' ? 'text-emerald-400' :
+                                  notificationPermission === 'denied' ? 'text-red-400' :
+                                  'text-amber-400'
+                                }`}>
+                                  {notificationPermission === 'granted' ? 'Enabled' :
+                                   notificationPermission === 'denied' ? 'Blocked' :
+                                   'Not requested'}
+                                </span>
+                              </div>
+                              {notificationPermission !== 'granted' && notificationPermission !== 'denied' && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    const permission = await notificationManager.requestPermission()
+                                    setNotificationPermission(permission)
+                                    if (permission === 'granted') {
+                                      pushToast({ kind: 'success', message: 'Browser notifications enabled' })
+                                      // Show test notification immediately
+                                      setTimeout(() => {
+                                        notificationManager.showNotification('Notifications Enabled!', {
+                                          body: 'You will now receive desktop notifications for messages, mentions, and replies.',
+                                          icon: '/favicon.ico',
+                                        })
+                                      }, 500)
+                                    } else {
+                                      pushToast({ kind: 'error', message: 'Browser notifications permission denied' })
+                                    }
+                                  }}
+                                  className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
+                                >
+                                  Enable Notifications
+                                </button>
+                              )}
+                              {notificationPermission === 'granted' && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    notificationManager.showNotification('Test Notification', {
+                                      body: 'This is a test notification. If you see this, notifications are working!',
+                                      icon: '/favicon.ico',
+                                    })
+                                    pushToast({ kind: 'info', message: 'Test notification sent - check your system tray!' })
+                                  }}
+                                  className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+                                >
+                                  Test Notification
+                                </button>
+                              )}
+                              {notificationPermission === 'denied' && (
+                                <div className="text-xs text-red-400">
+                                  Please enable notifications in your browser settings
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        
+                        {/* Notification Mode */}
+                        <label className="block">
+                          <div className="mb-2 text-sm text-slate-200">Notification Mode</div>
+                          <div className="text-xs text-slate-400 mb-2">
+                            Controls when you receive notifications (only works when browser notifications are enabled)
+                          </div>
+                          <select
+                            value={notificationMode}
+                            onChange={(e) => setNotificationMode(e.target.value as 'all' | 'mentions' | 'none')}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          >
+                            <option value="all">All messages</option>
+                            <option value="mentions">Only mentions and replies</option>
+                            <option value="none">None</option>
+                          </select>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={handleSetNotificationMode}
+                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                        >
+                          Save Notification Settings
+                        </button>
+                      </div>
+                    </section>
+                  </>
+                )}
+
+                {accountSettingsTab === 'keybinds' && (
+                  <>
+                    {/* Keybinds Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Voice Chat Keybinds</h3>
+                      <div className="space-y-3">
+                        <div className="text-sm text-slate-400 mb-4">
+                          Configure keyboard shortcuts for Voice Chat and Calls
+                        </div>
+                        
+                        {/* Push to Talk */}
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-slate-900/60 hover:bg-slate-900/80 transition">
+                          <div>
+                            <div className="text-sm font-medium text-slate-200">Push to Talk</div>
+                            <div className="text-xs text-slate-400">Hold to unmute while speaking</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <kbd className="px-3 py-1.5 text-sm font-mono font-semibold rounded bg-slate-800 text-sky-400 border border-sky-500/30">
+                              {keybinds.push_to_talk ? keybinds.push_to_talk.replace('Key', '') : 'V'}
+                            </kbd>
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 text-xs font-semibold rounded bg-sky-600 hover:bg-sky-500 text-white transition"
+                              onClick={() => handleStartRebind('push_to_talk')}
+                            >
+                              Change
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Toggle Mute */}
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-slate-900/60 hover:bg-slate-900/80 transition">
+                          <div>
+                            <div className="text-sm font-medium text-slate-200">Toggle Mute</div>
+                            <div className="text-xs text-slate-400">Mute/unmute microphone</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <kbd className="px-3 py-1.5 text-sm font-mono font-semibold rounded bg-slate-800 text-sky-400 border border-sky-500/30">
+                              {keybinds.toggle_mute ? keybinds.toggle_mute.replace('Key', '') : 'M'}
+                            </kbd>
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 text-xs font-semibold rounded bg-sky-600 hover:bg-sky-500 text-white transition"
+                              onClick={() => handleStartRebind('toggle_mute')}
+                            >
+                              Change
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Toggle Deafen */}
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-slate-900/60 hover:bg-slate-900/80 transition">
+                          <div>
+                            <div className="text-sm font-medium text-slate-200">Toggle Deafen</div>
+                            <div className="text-xs text-slate-400">Mute microphone and disable incoming audio</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <kbd className="px-3 py-1.5 text-sm font-mono font-semibold rounded bg-slate-800 text-sky-400 border border-sky-500/30">
+                              {keybinds.toggle_deafen ? keybinds.toggle_deafen.replace('Key', '') : 'D'}
+                            </kbd>
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 text-xs font-semibold rounded bg-sky-600 hover:bg-sky-500 text-white transition"
+                              onClick={() => handleStartRebind('toggle_deafen')}
+                            >
+                              Change
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Toggle Video */}
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-slate-900/60 hover:bg-slate-900/80 transition">
+                          <div>
+                            <div className="text-sm font-medium text-slate-200">Toggle Video</div>
+                            <div className="text-xs text-slate-400">Enable/disable camera</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <kbd className="px-3 py-1.5 text-sm font-mono font-semibold rounded bg-slate-800 text-sky-400 border border-sky-500/30">
+                              {keybinds.toggle_video ? keybinds.toggle_video.replace('Key', '') : 'C'}
+                            </kbd>
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 text-xs font-semibold rounded bg-sky-600 hover:bg-sky-500 text-white transition"
+                              onClick={() => handleStartRebind('toggle_video')}
+                            >
+                              Change
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Toggle Screen Share */}
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-slate-900/60 hover:bg-slate-900/80 transition">
+                          <div>
+                            <div className="text-sm font-medium text-slate-200">Toggle Screen Share</div>
+                            <div className="text-xs text-slate-400">Start/stop screen sharing</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <kbd className="px-3 py-1.5 text-sm font-mono font-semibold rounded bg-slate-800 text-sky-400 border border-sky-500/30">
+                              {keybinds.toggle_screen_share ? keybinds.toggle_screen_share.replace('Key', '') : 'S'}
+                            </kbd>
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 text-xs font-semibold rounded bg-sky-600 hover:bg-sky-500 text-white transition"
+                              onClick={() => handleStartRebind('toggle_screen_share')}
+                            >
+                              Change
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Answer/End Call */}
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-slate-900/60 hover:bg-slate-900/80 transition">
+                          <div>
+                            <div className="text-sm font-medium text-slate-200">Answer/End Call</div>
+                            <div className="text-xs text-slate-400">Answer incoming calls or end current call</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <kbd className="px-3 py-1.5 text-sm font-mono font-semibold rounded bg-slate-800 text-sky-400 border border-sky-500/30">
+                              {keybinds.answer_end_call ? keybinds.answer_end_call.replace('Key', '') : 'A'}
+                            </kbd>
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 text-xs font-semibold rounded bg-sky-600 hover:bg-sky-500 text-white transition"
+                              onClick={() => handleStartRebind('answer_end_call')}
+                            >
+                              Change
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 p-3 rounded-xl bg-sky-500/10 border border-sky-500/30">
+                          <div className="text-xs text-sky-300">
+                            💡 <span className="font-semibold">Tip:</span> Keybinds will not trigger while typing in text fields
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Keybind Rebind Dialog */}
+        {rebindingAction && (
+          <div 
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4"
+            onClick={(e) => e.target === e.currentTarget && handleCancelRebind()}
+          >
+            <div 
+              className="relative w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 shadow-2xl p-6"
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={handleKeybindCapture}
+              tabIndex={0}
+            >
+              <h3 className="text-xl font-semibold text-white mb-4">
+                Rebind {rebindingAction.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+              </h3>
+              
+              <div className="mb-6">
+                <div className="text-sm text-slate-300 mb-3">
+                  Press any key to set as the new keybind
+                </div>
+                
+                {rebindConflict && (
+                  <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 mb-3">
+                    <div className="text-sm text-red-300">
+                      ⚠️ This key is already bound to <span className="font-semibold">{rebindConflict.replace(/_/g, ' ')}</span>
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleRequestPasswordReset}
-                      className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-orange-400"
-                    >
-                      Request Password Reset
-                    </button>
                   </div>
-                </section>
+                )}
+                
+                <div className="p-4 rounded-xl bg-slate-800/60 border-2 border-dashed border-sky-500/50 text-center">
+                  <div className="text-3xl font-mono font-bold text-sky-400 mb-2">
+                    {keybinds[rebindingAction] ? keybinds[rebindingAction].replace('Key', '') : '?'}
+                  </div>
+                  <div className="text-xs text-slate-400">
+                    Current binding
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={handleCancelRebind}
+                  className="flex-1 px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-semibold transition"
+                >
+                  Cancel
+                </button>
               </div>
             </div>
           </div>
@@ -5848,8 +7310,8 @@ function ChatPage() {
 
         {/* Server Settings Modal */}
         {isServerSettingsOpen && selectedServerObj && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsServerSettingsOpen(false)}>
-            <div className="w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={(e) => e.target === e.currentTarget && setIsServerSettingsOpen(false)}>
+            <div className="relative w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
               <div className="flex items-center justify-between border-b border-white/10 px-6 py-4 flex-shrink-0">
                 <div className="flex items-center gap-3">
                   <span className="text-2xl">{selectedServerObj.icon ?? '🏠'}</span>
@@ -5864,8 +7326,221 @@ function ChatPage() {
                 </button>
               </div>
 
-              <div className="p-6 overflow-y-auto flex-1">
+              {/* Tabs */}
+              <div className="border-b border-white/10 px-6 flex flex-wrap gap-2 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setServerSettingsTab('overview')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'overview'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Overview
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setServerSettingsTab('channels')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'channels'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Channels
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setServerSettingsTab('roles')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'roles'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Roles & Permissions
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setServerSettingsTab('customization')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'customization'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Customization
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setServerSettingsTab('automations')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'automations'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Automations
+                </button>
+              </div>
+
+              <div className="p-6 overflow-y-auto flex-1 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                 <div className="space-y-6">
+                  {/* Overview Tab */}
+                  {serverSettingsTab === 'overview' && (
+                    <>
+                  {/* Server Icon Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Server Icon</h3>
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-4">
+                        <div className="flex h-16 w-16 items-center justify-center rounded-xl border border-white/10 bg-slate-950/40 text-3xl overflow-hidden">
+                          {selectedServerObj.icon_type === 'image' && selectedServerObj.icon_data ? (
+                            <img src={selectedServerObj.icon_data} alt="Server icon" className="h-full w-full object-cover" />
+                          ) : (
+                            <>{selectedServerObj.icon ?? '🏠'}</>
+                          )}
+                        </div>
+                        <div className="flex-1">
+                          <label className="block">
+                            <div className="mb-1 text-sm text-slate-200">Upload Image (.png, .jpg, .gif)</div>
+                            <input
+                              type="file"
+                              accept=".png,.jpg,.jpeg,.gif"
+                              onChange={(e) => {
+                                const file = e.target.files?.[0]
+                                if (file && selectedServerId) {
+                                  uploadServerIcon(selectedServerId, file)
+                                  e.target.value = ''
+                                }
+                              }}
+                              className="w-full text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-sky-500 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-slate-950 hover:file:bg-sky-400"
+                            />
+                          </label>
+                        </div>
+                        <div className="text-xs text-slate-400">
+                          Status: {init?.user_status}
+                        </div>
+                      </div>
+                      <div className="text-sm text-slate-400">
+                        Or pick an emoji:
+                      </div>
+                      <div className="grid grid-cols-10 gap-2">
+                        {['🏠', '🎮', '💬', '🎨', '🎵', '📚', '⚔️', '🌟', '🔥', '💎'].map((emoji) => (
+                          <button
+                            key={emoji}
+                            type="button"
+                            onClick={() => selectedServerId && setServerIconEmoji(selectedServerId, emoji)}
+                            className="text-2xl hover:bg-white/10 rounded-lg p-2 transition"
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </section>
+
+                  {/* Server Invite Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Server Invite</h3>
+                    <div className="space-y-3">
+                      {lastInviteCode && (
+                        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3">
+                          <div className="text-xs font-medium text-emerald-200 mb-1">Invite Link</div>
+                          <div className="font-mono text-xs text-emerald-100 break-all mb-2">
+                            {`${window.location.origin}/chat?server_invite=${lastInviteCode}`}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(`${window.location.origin}/chat?server_invite=${lastInviteCode}`)
+                              pushToast({ kind: 'success', message: 'Invite link copied!' })
+                            }}
+                            className="w-full rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+                          >
+                            Copy Link
+                          </button>
+                        </div>
+                      )}
+                      
+                      <div>
+                        <label className="block text-xs text-slate-300 mb-1">
+                          Max Uses (leave empty for unlimited)
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          placeholder="Unlimited"
+                          value={serverInviteMaxUses ?? ''}
+                          onChange={(e) => setServerInviteMaxUses(e.target.value ? parseInt(e.target.value) : null)}
+                          className="w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+                        />
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            wsClient.generateServerInvite({ 
+                              type: 'generate_server_invite', 
+                              server_id: selectedServerId,
+                              max_uses: serverInviteMaxUses
+                            })
+                          }
+                        }}
+                        disabled={wsClient.readyState !== WebSocket.OPEN}
+                        className="w-full rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                      >
+                        Generate New Invite Link
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            loadInviteUsage(selectedServerId)
+                          }
+                        }}
+                        disabled={isLoadingInviteUsage || wsClient.readyState !== WebSocket.OPEN}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5 disabled:opacity-60"
+                      >
+                        {isLoadingInviteUsage ? 'Loading...' : 'View Invite Usage'}
+                      </button>
+
+                      {inviteUsageLogs && inviteUsageServerId === selectedServerId && (
+                        <div className="mt-3 rounded-xl border border-white/10 bg-slate-950/40 p-3 max-h-48 overflow-auto">
+                          <div className="text-xs font-medium text-slate-400 mb-2">Invite Usage History</div>
+                          {inviteUsageLogs.length === 0 ? (
+                            <div className="text-xs text-slate-500">No invites used yet</div>
+                          ) : (
+                            <div className="space-y-2">
+                              {inviteUsageLogs.map((log, idx) => (
+                                <div key={idx} className="text-xs border-b border-white/5 pb-2 last:border-0">
+                                  <div className="text-slate-200 font-medium">{log.invite_code}</div>
+                                  <div className="text-slate-400">Used {log.use_count} time(s)</div>
+                                  {log.last_used && (
+                                    <div className="text-slate-500">Last: {new Date(log.last_used).toLocaleString()}</div>
+                                  )}
+                                  {log.users && log.users.length > 0 && (
+                                    <div className="text-slate-400">
+                                      Users: {log.users.slice(0, 6).join(', ')}{log.users.length > 6 ? ` +${log.users.length - 6} more` : ''}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                    </>
+                  )}
+
+                  {/* Channels Tab */}
+                  {serverSettingsTab === 'channels' && (
+                    <>
                   {/* Category Management Section */}
                   <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                     <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Categories</h3>
@@ -6271,176 +7946,12 @@ function ChatPage() {
                       )}
                     </div>
                   </section>
+                    </>
+                  )}
 
-                  {/* Server Invite Section */}
-                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Server Invite</h3>
-                    <div className="space-y-3">
-                      {lastInviteCode && (
-                        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3">
-                          <div className="text-xs font-medium text-emerald-200 mb-1">Invite Code</div>
-                          <div className="font-mono text-sm text-emerald-100">{lastInviteCode}</div>
-                        </div>
-                      )}
-                      
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (selectedServerId) {
-                            wsClient.generateServerInvite({ type: 'generate_server_invite', server_id: selectedServerId })
-                          }
-                        }}
-                        disabled={wsClient.readyState !== WebSocket.OPEN}
-                        className="w-full rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
-                      >
-                        Generate New Invite Code
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (selectedServerId) {
-                            loadInviteUsage(selectedServerId)
-                          }
-                        }}
-                        disabled={isLoadingInviteUsage || wsClient.readyState !== WebSocket.OPEN}
-                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5 disabled:opacity-60"
-                      >
-                        {isLoadingInviteUsage ? 'Loading...' : 'View Invite Usage'}
-                      </button>
-
-                      {inviteUsageLogs && inviteUsageServerId === selectedServerId && (
-                        <div className="mt-3 rounded-xl border border-white/10 bg-slate-950/40 p-3 max-h-48 overflow-auto">
-                          <div className="text-xs font-medium text-slate-400 mb-2">Invite Usage History</div>
-                          {inviteUsageLogs.length === 0 ? (
-                            <div className="text-xs text-slate-500">No invites used yet</div>
-                          ) : (
-                            <div className="space-y-2">
-                              {inviteUsageLogs.map((log, idx) => (
-                                <div key={idx} className="text-xs border-b border-white/5 pb-2 last:border-0">
-                                  <div className="text-slate-200 font-medium">{log.invite_code}</div>
-                                  <div className="text-slate-400">Used {log.use_count} time(s)</div>
-                                  {log.last_used && (
-                                    <div className="text-slate-500">{new Date(log.last_used).toLocaleString()}</div>
-                                  )}
-                                  {log.users && log.users.length > 0 && (
-                                    <div className="text-slate-400">Users: {log.users.join(', ')}</div>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </section>
-
-                  {/* Server Icon Section */}
-                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Server Icon</h3>
-                    <div className="space-y-3">
-                      <div className="flex items-center gap-4">
-                        <div className="flex h-16 w-16 items-center justify-center rounded-xl border border-white/10 bg-slate-950/40 text-3xl overflow-hidden">
-                          {selectedServerObj.icon_type === 'image' && selectedServerObj.icon_data ? (
-                            <img src={selectedServerObj.icon_data} alt="Server icon" className="h-full w-full object-cover" />
-                          ) : (
-                            <>{selectedServerObj.icon ?? '🏠'}</>
-                          )}
-                        </div>
-                        <div className="flex-1">
-                          <label className="block">
-                            <div className="mb-1 text-sm text-slate-200">Upload Image (.png, .jpg, .gif)</div>
-                            <input
-                              type="file"
-                              accept=".png,.jpg,.jpeg,.gif"
-                              onChange={(e) => {
-                                const file = e.target.files?.[0]
-                                if (file && selectedServerId) {
-                                  uploadServerIcon(selectedServerId, file)
-                                  e.target.value = ''
-                                }
-                              }}
-                              className="w-full text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-sky-500 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-slate-950 hover:file:bg-sky-400"
-                            />
-                          </label>
-                        </div>
-                      </div>
-                      <div className="text-sm text-slate-400">
-                        Or pick an emoji:
-                      </div>
-                      <div className="grid grid-cols-10 gap-2">
-                        {['🏠', '🎮', '💬', '🎨', '🎵', '📚', '⚔️', '🌟', '🔥', '💎'].map((emoji) => (
-                          <button
-                            key={emoji}
-                            type="button"
-                            onClick={() => selectedServerId && setServerIconEmoji(selectedServerId, emoji)}
-                            className="text-2xl hover:bg-white/10 rounded-lg p-2 transition"
-                          >
-                            {emoji}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </section>
-
-                  {/* Server Emojis Section */}
-                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Server Emojis</h3>
-                    <div className="space-y-3">
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={emojiName}
-                          onChange={(e) => setEmojiName(e.target.value)}
-                          placeholder="Emoji name (e.g., coolcat)"
-                          className="flex-1 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        />
-                        <input
-                          type="file"
-                          accept=".png,.jpg,.jpeg,.gif,.webp"
-                          onChange={(e) => setEmojiFile(e.target.files?.[0] || null)}
-                          className="hidden"
-                          id="emoji-upload"
-                        />
-                        <label
-                          htmlFor="emoji-upload"
-                          className="cursor-pointer rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
-                        >
-                          {emojiFile ? emojiFile.name : 'Choose File'}
-                        </label>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (emojiName && emojiFile && selectedServerId) {
-                              uploadServerEmoji(selectedServerId, emojiName, emojiFile)
-                            }
-                          }}
-                          disabled={!emojiName || !emojiFile}
-                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
-                        >
-                          Upload
-                        </button>
-                      </div>
-                      {selectedServerId && serverEmojis[selectedServerId]?.length > 0 && (
-                        <div className="grid grid-cols-8 gap-2 max-h-48 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
-                          {serverEmojis[selectedServerId].map((emoji: any) => (
-                            <div key={emoji.emoji_id} className="group relative">
-                              <img src={emoji.image_data} alt={emoji.name} className="w-8 h-8 object-contain" title={emoji.name} />
-                              <button
-                                type="button"
-                                onClick={() => deleteServerEmoji(emoji.emoji_id)}
-                                className="absolute -top-1 -right-1 hidden group-hover:block text-xs bg-rose-500 text-white rounded-full w-4 h-4 leading-none"
-                                title="Delete"
-                              >
-                                ×
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </section>
-
+                  {/* Roles Tab */}
+                  {serverSettingsTab === 'roles' && (
+                    <>
                   {/* Roles & Permissions Section */}
                   <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                     <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Roles & Permissions</h3>
@@ -6708,259 +8219,313 @@ function ChatPage() {
                       )}
                     </div>
                   </section>
+                    </>
+                  )}
 
-                  {/* Automations Section */}
+                  {/* Customization Tab */}
+                  {serverSettingsTab === 'customization' && (
+                    <>
+                  {/* Server Emojis Section */}
                   <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
-                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">🤖 Automations</h3>
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Server Emojis</h3>
                     <div className="space-y-3">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsViewingAutomations(!isViewingAutomations)
-                          if (!isViewingAutomations && selectedServerId) {
-                            // Load automations data
-                            wsClient.send({ type: 'get_scheduled_messages', server_id: selectedServerId })
-                            wsClient.send({ type: 'get_welcome_message', server_id: selectedServerId })
-                          }
-                        }}
-                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
-                      >
-                        {isViewingAutomations ? 'Hide Automations' : 'Manage Automations'}
-                      </button>
-
-                      {isViewingAutomations && (
-                        <div className="space-y-4">
-                          {/* Scheduled Messages */}
-                          <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3 space-y-3">
-                            <div className="text-sm font-semibold text-white">📅 Scheduled Messages</div>
-                            <div className="space-y-2">
-                              <select
-                                value={scheduleChannel}
-                                onChange={(e) => setScheduleChannel(e.target.value)}
-                                className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                              >
-                                <option value="">Select Channel</option>
-                                {(selectedServerObj?.channels ?? []).map((ch: any) => (
-                                  <option key={ch.id} value={ch.id}>
-                                    {ch.type === 'voice' ? '🔊' : '#'} {ch.name}
-                                  </option>
-                                ))}
-                              </select>
-                              <input
-                                type="datetime-local"
-                                value={scheduleDateTime}
-                                onChange={(e) => setScheduleDateTime(e.target.value)}
-                                className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                              />
-                              <textarea
-                                value={scheduleContent}
-                                onChange={(e) => setScheduleContent(e.target.value)}
-                                placeholder="Message to send later..."
-                                rows={2}
-                                className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500 resize-none"
-                              />
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={emojiName}
+                          onChange={(e) => setEmojiName(e.target.value)}
+                          placeholder="Emoji name (e.g., coolcat)"
+                          className="flex-1 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                        <input
+                          type="file"
+                          accept=".png,.jpg,.jpeg,.gif,.webp"
+                          onChange={(e) => setEmojiFile(e.target.files?.[0] || null)}
+                          className="hidden"
+                          id="emoji-upload"
+                        />
+                        <label
+                          htmlFor="emoji-upload"
+                          className="cursor-pointer rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                        >
+                          {emojiFile ? emojiFile.name : 'Choose File'}
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (emojiName && emojiFile && selectedServerId) {
+                              uploadServerEmoji(selectedServerId, emojiName, emojiFile)
+                            }
+                          }}
+                          disabled={!emojiName || !emojiFile}
+                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                        >
+                          Upload
+                        </button>
+                      </div>
+                      {selectedServerId && serverEmojis[selectedServerId]?.length > 0 && (
+                        <div className="grid grid-cols-8 gap-2 max-h-48 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                          {serverEmojis[selectedServerId].map((emoji: any) => (
+                            <div key={emoji.emoji_id} className="group relative">
+                              <img src={emoji.image_data} alt={emoji.name} className="w-8 h-8 object-contain" title={emoji.name} />
                               <button
                                 type="button"
-                                onClick={() => {
-                                  if (selectedServerId && scheduleChannel && scheduleDateTime && scheduleContent.trim()) {
-                                    wsClient.send({
-                                      type: 'create_scheduled_message',
-                                      server_id: selectedServerId,
-                                      channel_id: scheduleChannel,
-                                      content: scheduleContent,
-                                      scheduled_for: new Date(scheduleDateTime).toISOString()
-                                    })
-                                    setScheduleContent('')
-                                    setScheduleDateTime('')
-                                    pushToast({ kind: 'success', message: 'Message scheduled!' })
-                                  }
-                                }}
-                                disabled={!scheduleChannel || !scheduleDateTime || !scheduleContent.trim()}
-                                className="w-full rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                                onClick={() => deleteServerEmoji(emoji.emoji_id)}
+                                className="absolute -top-1 -right-1 hidden group-hover:block text-xs bg-rose-500 text-white rounded-full w-4 h-4 leading-none"
+                                title="Delete"
                               >
-                                Schedule Message
+                                ×
                               </button>
                             </div>
-                            {scheduledMessages.length > 0 && (
-                              <div className="mt-2 space-y-1 max-h-32 overflow-y-auto">
-                                {scheduledMessages.map((msg: any) => (
-                                  <div key={msg.id} className="flex items-start justify-between text-xs bg-slate-900/60 rounded p-2">
-                                    <div className="flex-1 min-w-0">
-                                      <div className="text-slate-300 truncate">{msg.content}</div>
-                                      <div className="text-slate-500 text-[10px]">
-                                        {new Date(msg.scheduled_for).toLocaleString()}
-                                      </div>
-                                    </div>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        wsClient.send({ type: 'delete_scheduled_message', message_id: msg.id })
-                                        setScheduledMessages(prev => prev.filter(m => m.id !== msg.id))
-                                      }}
-                                      className="text-rose-400 hover:text-rose-300 ml-2"
-                                    >
-                                      ×
-                                    </button>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Create Poll */}
-                          <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3 space-y-3">
-                            <div className="text-sm font-semibold text-white">📊 Create Poll</div>
-                            <div className="space-y-2">
-                              <input
-                                type="text"
-                                value={pollQuestion}
-                                onChange={(e) => setPollQuestion(e.target.value)}
-                                placeholder="Poll question..."
-                                className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                              />
-                              {pollOptions.map((opt, idx) => (
-                                <div key={idx} className="flex gap-2">
-                                  <input
-                                    type="text"
-                                    value={opt}
-                                    onChange={(e) => {
-                                      const newOpts = [...pollOptions]
-                                      newOpts[idx] = e.target.value
-                                      setPollOptions(newOpts)
-                                    }}
-                                    placeholder={`Option ${idx + 1}`}
-                                    className="flex-1 rounded-lg border border-white/10 bg-slate-900 px-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                                  />
-                                  {pollOptions.length > 2 && (
-                                    <button
-                                      type="button"
-                                      onClick={() => setPollOptions(prev => prev.filter((_, i) => i !== idx))}
-                                      className="text-rose-400 hover:text-rose-300 px-2"
-                                    >
-                                      ×
-                                    </button>
-                                  )}
-                                </div>
-                              ))}
-                              <button
-                                type="button"
-                                onClick={() => setPollOptions([...pollOptions, ''])}
-                                className="text-xs text-sky-400 hover:text-sky-300"
-                              >
-                                + Add Option
-                              </button>
-                              <div className="flex items-center gap-2">
-                                <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300">
-                                  <input
-                                    type="checkbox"
-                                    checked={pollAllowMultiple}
-                                    onChange={(e) => setPollAllowMultiple(e.target.checked)}
-                                    className="rounded border-white/10 text-sky-500 focus:ring-sky-500/40"
-                                  />
-                                  Allow multiple choices
-                                </label>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <label className="text-xs text-slate-400">Expires in (hours):</label>
-                                <input
-                                  type="number"
-                                  min="1"
-                                  max="168"
-                                  value={pollExpiresHours || ''}
-                                  onChange={(e) => setPollExpiresHours(e.target.value ? parseInt(e.target.value) : null)}
-                                  placeholder="Never"
-                                  className="w-20 rounded-lg border border-white/10 bg-slate-900 px-2 py-1 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                                />
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const validOptions = pollOptions.filter(o => o.trim())
-                                  if (selectedServerId && selectedContext?.kind === 'server' && pollQuestion.trim() && validOptions.length >= 2) {
-                                    wsClient.send({
-                                      type: 'create_poll',
-                                      server_id: selectedServerId,
-                                      channel_id: selectedContext.channelId,
-                                      question: pollQuestion,
-                                      options: validOptions,
-                                      allow_multiple: pollAllowMultiple,
-                                      expires_hours: pollExpiresHours
-                                    })
-                                    setPollQuestion('')
-                                    setPollOptions(['', ''])
-                                    setPollAllowMultiple(false)
-                                    setPollExpiresHours(null)
-                                    pushToast({ kind: 'success', message: 'Poll created!' })
-                                  }
-                                }}
-                                disabled={!pollQuestion.trim() || pollOptions.filter(o => o.trim()).length < 2}
-                                className="w-full rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
-                              >
-                                Post Poll to Current Channel
-                              </button>
-                            </div>
-                          </div>
-
-                          {/* Welcome Message */}
-                          <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3 space-y-3">
-                            <div className="text-sm font-semibold text-white">👋 Welcome Message</div>
-                            <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300">
-                              <input
-                                type="checkbox"
-                                checked={welcomeEnabled}
-                                onChange={(e) => setWelcomeEnabled(e.target.checked)}
-                                className="rounded border-white/10 text-sky-500 focus:ring-sky-500/40"
-                              />
-                              Send welcome message to new members
-                            </label>
-                            {welcomeEnabled && (
-                              <div className="space-y-2">
-                                <select
-                                  value={welcomeChannel}
-                                  onChange={(e) => setWelcomeChannel(e.target.value)}
-                                  className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
-                                >
-                                  <option value="">First channel (default)</option>
-                                  {(selectedServerObj?.channels ?? []).filter((ch: any) => ch.type === 'text').map((ch: any) => (
-                                    <option key={ch.id} value={ch.id}>
-                                      # {ch.name}
-                                    </option>
-                                  ))}
-                                </select>
-                                <textarea
-                                  value={welcomeMessage}
-                                  onChange={(e) => setWelcomeMessage(e.target.value)}
-                                  placeholder="Welcome message (use {user} for username)"
-                                  rows={2}
-                                  className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500 resize-none"
-                                />
-                                <div className="text-[10px] text-slate-500">Use {'{user}'} to mention the new member</div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    if (selectedServerId && welcomeMessage.trim()) {
-                                      wsClient.send({
-                                        type: 'set_welcome_message',
-                                        server_id: selectedServerId,
-                                        enabled: welcomeEnabled,
-                                        message: welcomeMessage,
-                                        channel_id: welcomeChannel || null
-                                      })
-                                      pushToast({ kind: 'success', message: 'Welcome message saved!' })
-                                    }
-                                  }}
-                                  disabled={!welcomeMessage.trim()}
-                                  className="w-full rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
-                                >
-                                  Save Welcome Message
-                                </button>
-                              </div>
-                            )}
-                          </div>
+                          ))}
                         </div>
                       )}
                     </div>
                   </section>
+                    </>
+                  )}
+
+                  {/* Automations Tab */}
+                  {serverSettingsTab === 'automations' && (
+                    <>
+                  {/* Scheduled Messages Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">📅 Scheduled Messages</h3>
+                    <div className="space-y-3">
+                      <select
+                        value={scheduleChannel}
+                        onChange={(e) => setScheduleChannel(e.target.value)}
+                        className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      >
+                        <option value="">Select Channel</option>
+                        {(selectedServerObj?.channels ?? []).filter((ch: any) => ch.type === 'text').map((ch: any) => (
+                          <option key={ch.id} value={ch.id}>
+                            # {ch.name}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="datetime-local"
+                        value={scheduleDateTime}
+                        onChange={(e) => setScheduleDateTime(e.target.value)}
+                        className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      />
+                      <textarea
+                        value={scheduleContent}
+                        onChange={(e) => setScheduleContent(e.target.value)}
+                        placeholder="Message to send later..."
+                        rows={3}
+                        className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40 resize-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId && scheduleChannel && scheduleDateTime && scheduleContent.trim()) {
+                            wsClient.send({
+                              type: 'create_scheduled_message',
+                              server_id: selectedServerId,
+                              channel_id: scheduleChannel,
+                              content: scheduleContent,
+                              scheduled_for: new Date(scheduleDateTime).toISOString()
+                            })
+                            setScheduleContent('')
+                            setScheduleDateTime('')
+                            pushToast({ kind: 'success', message: 'Message scheduled!' })
+                          }
+                        }}
+                        disabled={!scheduleChannel || !scheduleDateTime || !scheduleContent.trim()}
+                        className="w-full rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                      >
+                        Schedule Message
+                      </button>
+                      {scheduledMessages.length > 0 && (
+                        <div className="mt-3 space-y-2 max-h-48 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                          <div className="text-xs font-medium text-slate-400 mb-2">Scheduled Messages</div>
+                          {scheduledMessages.map((msg: any) => (
+                            <div key={msg.id} className="flex items-start justify-between text-xs bg-slate-900/60 rounded-lg p-2">
+                              <div className="flex-1 min-w-0">
+                                <div className="text-slate-300 truncate">{msg.content}</div>
+                                <div className="text-slate-500 text-[10px] mt-1">
+                                  {new Date(msg.scheduled_for).toLocaleString()}
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  wsClient.send({ type: 'delete_scheduled_message', message_id: msg.id })
+                                  setScheduledMessages(prev => prev.filter(m => m.id !== msg.id))
+                                }}
+                                className="text-rose-400 hover:text-rose-300 ml-2 text-sm"
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+
+                  {/* Create Poll Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">📊 Create Poll</h3>
+                    <div className="space-y-3">
+                      <input
+                        type="text"
+                        value={pollQuestion}
+                        onChange={(e) => setPollQuestion(e.target.value)}
+                        placeholder="Poll question..."
+                        className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      />
+                      {pollOptions.map((opt, idx) => (
+                        <div key={idx} className="flex gap-2">
+                          <input
+                            type="text"
+                            value={opt}
+                            onChange={(e) => {
+                              const newOpts = [...pollOptions]
+                              newOpts[idx] = e.target.value
+                              setPollOptions(newOpts)
+                            }}
+                            placeholder={`Option ${idx + 1}`}
+                            className="flex-1 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                          {pollOptions.length > 2 && (
+                            <button
+                              type="button"
+                              onClick={() => setPollOptions(prev => prev.filter((_, i) => i !== idx))}
+                              className="text-rose-400 hover:text-rose-300 px-2"
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => setPollOptions([...pollOptions, ''])}
+                        className="text-sm text-sky-400 hover:text-sky-300"
+                      >
+                        + Add Option
+                      </button>
+                      <div className="flex items-center gap-2">
+                        <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-300">
+                          <input
+                            type="checkbox"
+                            checked={pollAllowMultiple}
+                            onChange={(e) => setPollAllowMultiple(e.target.checked)}
+                            className="rounded border-white/10 text-sky-500 focus:ring-sky-500/40"
+                          />
+                          Allow multiple choices
+                        </label>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="text-sm text-slate-400">Expires in (hours):</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="168"
+                          value={pollExpiresHours || ''}
+                          onChange={(e) => setPollExpiresHours(e.target.value ? parseInt(e.target.value) : null)}
+                          placeholder="Never"
+                          className="w-24 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const validOptions = pollOptions.filter(o => o.trim())
+                          if (selectedServerId && selectedContext?.kind === 'server' && pollQuestion.trim() && validOptions.length >= 2) {
+                            wsClient.send({
+                              type: 'create_poll',
+                              server_id: selectedServerId,
+                              channel_id: selectedContext.channelId,
+                              question: pollQuestion,
+                              options: validOptions,
+                              allow_multiple: pollAllowMultiple,
+                              expires_hours: pollExpiresHours
+                            })
+                            setPollQuestion('')
+                            setPollOptions(['', ''])
+                            setPollAllowMultiple(false)
+                            setPollExpiresHours(null)
+                            pushToast({ kind: 'success', message: 'Poll created!' })
+                          }
+                        }}
+                        disabled={!pollQuestion.trim() || pollOptions.filter(o => o.trim()).length < 2 || selectedContext?.kind !== 'server'}
+                        className="w-full rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                      >
+                        Post Poll to Current Channel
+                      </button>
+                    </div>
+                  </section>
+
+                  {/* Welcome Message Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">👋 Welcome Message</h3>
+                    <div className="space-y-3">
+                      <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={welcomeEnabled}
+                          onChange={(e) => setWelcomeEnabled(e.target.checked)}
+                          className="rounded border-white/10 text-sky-500 focus:ring-sky-500/40"
+                        />
+                        Send welcome message to new members
+                      </label>
+                      {welcomeEnabled && (
+                        <div className="space-y-3">
+                          <select
+                            value={welcomeChannel}
+                            onChange={(e) => setWelcomeChannel(e.target.value)}
+                            className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          >
+                            <option value="">First channel (default)</option>
+                            {(selectedServerObj?.channels ?? []).filter((ch: any) => ch.type === 'text').map((ch: any) => (
+                              <option key={ch.id} value={ch.id}>
+                                # {ch.name}
+                              </option>
+                            ))}
+                          </select>
+                          <textarea
+                            value={welcomeMessage}
+                            onChange={(e) => setWelcomeMessage(e.target.value)}
+                            placeholder="Welcome message (use {user} for username)"
+                            rows={3}
+                            className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40 resize-none"
+                          />
+                          <div className="text-xs text-slate-500">Use {'{user}'} to mention the new member</div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (selectedServerId && welcomeMessage.trim()) {
+                                wsClient.send({
+                                  type: 'set_welcome_message',
+                                  server_id: selectedServerId,
+                                  enabled: welcomeEnabled,
+                                  message: welcomeMessage,
+                                  channel_id: welcomeChannel || null
+                                })
+                                pushToast({ kind: 'success', message: 'Welcome message saved!' })
+                              }
+                            }}
+                            disabled={!welcomeMessage.trim()}
+                            className="w-full rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                          >
+                            Save Welcome Message
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </section>
+
+                  {/* Webhooks Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">🔗 Webhooks</h3>
+                    <WebhookPanel serverId={selectedServerId || undefined} />
+                  </section>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -6969,8 +8534,8 @@ function ChatPage() {
 
         {/* Create/Edit Role Modal */}
         {isCreateRoleOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsCreateRoleOpen(false)}>
-            <div className="w-full max-w-md max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={(e) => e.target === e.currentTarget && setIsCreateRoleOpen(false)}>
+            <div className="relative w-full max-w-md max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
               <div className="flex items-center justify-between border-b border-white/10 px-6 py-4 flex-shrink-0">
                 <h2 className="text-xl font-semibold text-white">{selectedRole ? 'Edit Role' : 'Create Role'}</h2>
                 <button
@@ -7056,8 +8621,8 @@ function ChatPage() {
 
         {/* Delete Message Confirmation Modal */}
         {deletingMessageId && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={cancelDeleteMessage}>
-            <div className="rounded-2xl border border-white/10 bg-slate-900 p-6 shadow-xl max-w-md" onClick={(e) => e.stopPropagation()}>
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={(e) => e.target === e.currentTarget && cancelDeleteMessage()}>
+            <div className="relative rounded-2xl border border-white/10 bg-slate-900 p-6 shadow-xl max-w-md" onClick={(e) => e.stopPropagation()}>
               <div className="text-lg font-semibold text-white mb-3">Delete Message</div>
               <div className="text-sm text-slate-300 mb-4">Are you sure you want to delete this message? This action cannot be undone.</div>
               <div className="flex gap-3 justify-end">
@@ -7079,6 +8644,94 @@ function ChatPage() {
             </div>
           </div>
         )}
+        
+        {/* Soundboard Panel */}
+        {isInVoice && (
+          <SoundboardPanel
+            isOpen={isSoundboardOpen}
+            onClose={() => setIsSoundboardOpen(false)}
+            serverId={selectedServerId}
+            isServerAdmin={
+              selectedServerId
+                ? init?.servers?.some(s => s.id === selectedServerId && s.owner === init.username) ?? false
+                : false
+            }
+            onPlaySound={handlePlaySoundboard}
+            sendWebSocketMessage={(msg) => wsClient.send(msg)}
+          />
+        )}
+
+        {/* Server Invite Confirmation Modal */}
+        {showServerInviteModal && serverInviteInfo && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4" onClick={() => setShowServerInviteModal(false)}>
+            <div className="relative w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 shadow-2xl p-6" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                onClick={() => setShowServerInviteModal(false)}
+                className="absolute right-4 top-4 text-2xl text-slate-400 hover:text-slate-200"
+              >
+                ×
+              </button>
+              
+              <h2 className="text-2xl font-bold text-white mb-4">Join Server?</h2>
+              
+              <div className="flex items-center gap-4 mb-4">
+                {serverInviteInfo.server.icon_type === 'image' && serverInviteInfo.server.icon_data ? (
+                  <img 
+                    src={serverInviteInfo.server.icon_data} 
+                    alt={serverInviteInfo.server.name}
+                    className="h-16 w-16 rounded-xl object-cover"
+                  />
+                ) : (
+                  <div className="flex h-16 w-16 items-center justify-center rounded-xl bg-slate-800 text-3xl">
+                    {serverInviteInfo.server.icon || '🏠'}
+                  </div>
+                )}
+                
+                <div className="flex-1">
+                  <h3 className="text-xl font-semibold text-white">{serverInviteInfo.server.name}</h3>
+                  <p className="text-sm text-slate-400">{serverInviteInfo.server.member_count} members</p>
+                </div>
+              </div>
+              
+              {serverInviteInfo.server.description && (
+                <p className="text-sm text-slate-300 mb-4">{serverInviteInfo.server.description}</p>
+              )}
+              
+              <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 mb-4">
+                <p className="text-sm text-yellow-200">
+                  ⚠️ By clicking "Join", you will become a member of this server and be able to see all channels and messages.
+                </p>
+              </div>
+              
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowServerInviteModal(false)}
+                  className="flex-1 rounded-lg bg-slate-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-600"
+                  disabled={isJoiningServer}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsJoiningServer(true)
+                    wsClient.joinServerWithInvite({ 
+                      type: 'join_server_with_invite', 
+                      invite_code: serverInviteInfo.code 
+                    })
+                    // Modal will close when we receive server_joined message
+                  }}
+                  className="flex-1 rounded-lg bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                  disabled={isJoiningServer}
+                >
+                  {isJoiningServer ? 'Joining...' : 'Join Server'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -7086,9 +8739,13 @@ function ChatPage() {
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const authToken = useAppStore((s) => s.authToken)
+  const [searchParams] = useSearchParams()
   
   if (!authToken) {
-    return <Navigate to="/login" replace />
+    // Preserve server_invite parameter when redirecting to login
+    const serverInvite = searchParams.get('server_invite')
+    const redirectPath = serverInvite ? `/login?redirect=chat&server_invite=${serverInvite}` : '/login'
+    return <Navigate to={redirectPath} replace />
   }
   
   return <>{children}</>
