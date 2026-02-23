@@ -1556,6 +1556,113 @@ function ChatPage() {
     }
   }
 
+  const clearUnreadForContext = (ctx: ChatContext) => {
+    const prev = useAppStore.getState().init
+    if (!prev) return
+
+    if (ctx.kind === 'dm') {
+      // Clear DM unread count
+      const updatedDms = prev.dms?.map((dm) => {
+        if (dm.id === ctx.dmId) {
+          return {
+            ...dm,
+            unread_count: 0,
+            has_mention: false
+          }
+        }
+        return dm
+      })
+      setInit({ ...prev, dms: updatedDms })
+    } else if (ctx.kind === 'server') {
+      // Clear channel unread count
+      const updatedServers = prev.servers?.map((server) => {
+        if (server.id === ctx.serverId) {
+          const channelUnreads = { ...(server.channel_unreads ?? {}) }
+          channelUnreads[ctx.channelId] = {
+            unread_count: 0,
+            has_mention: false
+          }
+          
+          // Recalculate total server unreads
+          let totalUnread = 0
+          let hasAnyMention = false
+          Object.values(channelUnreads).forEach((ch: any) => {
+            totalUnread += ch.unread_count ?? 0
+            if (ch.has_mention) hasAnyMention = true
+          })
+          
+          return {
+            ...server,
+            unread_count: totalUnread,
+            has_mention: hasAnyMention,
+            channel_unreads: channelUnreads
+          }
+        }
+        return server
+      })
+      setInit({ ...prev, servers: updatedServers })
+    }
+  }
+
+  const handleSearchResultClick = (result: SearchResult) => {
+    // Navigate to the context where the message is
+    if (result.context_type === 'dm') {
+      const dm = init?.dms?.find(d => d.id === result.context_id)
+      if (dm) {
+        const next: ChatContext = { kind: 'dm', dmId: dm.id, username: dm.username }
+        selectContext(next)
+        requestHistoryFor(next)
+        setSelectedServerId(null)
+        setIsDmSidebarOpen(true)
+        
+        // Scroll to message after a short delay to allow messages to load
+        setTimeout(() => {
+          const messageElement = document.getElementById(`message-${result.id}`)
+          if (messageElement) {
+            messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            // Highlight the message briefly
+            messageElement.classList.add('bg-sky-500/20')
+            setTimeout(() => {
+              messageElement.classList.remove('bg-sky-500/20')
+            }, 2000)
+          }
+        }, 500)
+      }
+    } else if (result.context_type === 'server' && result.context_id) {
+      const [serverId, channelId] = result.context_id.split('/')
+      const server = init?.servers?.find(s => s.id === serverId)
+      
+      if (server) {
+        const channel = server.channels?.find(c => c.id === channelId)
+        if (channel) {
+          setSelectedServerId(serverId)
+          setIsDmSidebarOpen(false)
+          const next: ChatContext = { kind: 'server', serverId, channelId }
+          selectContext(next)
+          requestHistoryFor(next)
+          
+          // Request server members if not already loaded
+          if (!serverMembers[serverId]) {
+            wsClient.getServerMembers({ type: 'get_server_members', server_id: serverId })
+          }
+          
+          // Scroll to message after a short delay to allow messages to load
+          setTimeout(() => {
+            const messageElement = document.getElementById(`message-${result.id}`)
+            if (messageElement) {
+              messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              // Highlight the message briefly
+              messageElement.classList.add('bg-sky-500/20')
+              setTimeout(() => {
+                messageElement.classList.remove('bg-sky-500/20')
+              }, 2000)
+            }
+          }, 500)
+        }
+      }
+    }
+  }
+
   const setDefaultContextFromServers = (servers: Server[] | undefined) => {
     if (!servers?.length) return
     const firstServer = servers[0]
@@ -1604,6 +1711,7 @@ function ChatPage() {
     } else {
       setConnectionStatus('disconnected')
     }
+  }, [])
 
     ws.addEventListener('open', handleOpen)
     ws.addEventListener('open', sendAuth)
@@ -1684,6 +1792,15 @@ function ChatPage() {
           friend_requests_sent: msg.friend_requests_sent,
           friend_requests_received: msg.friend_requests_received,
         })
+      }
+    })
+
+        // Sync user status
+        console.log('Init message received, user_status:', msg.user_status)
+        if (msg.user_status) {
+          setUserStatus(msg.user_status)
+          console.log('Set userStatus to:', msg.user_status)
+        }
 
         // Sync user status
         console.log('Init message received, user_status:', msg.user_status)
@@ -1816,6 +1933,18 @@ function ChatPage() {
               : s,
           )
           setInit({ ...prev, servers: nextServers })
+          
+          // If the current channel was deleted, switch to the first available channel
+          const currentCtx = useAppStore.getState().selectedContext
+          if (currentCtx.kind === 'server' && currentCtx.serverId === msg.server_id && currentCtx.channelId === msg.channel_id) {
+            const updatedServer = nextServers.find(s => s.id === msg.server_id)
+            if (updatedServer && updatedServer.channels && updatedServer.channels.length > 0) {
+              const firstChannel = updatedServer.channels[0]
+              const next: ChatContext = { kind: 'server', serverId: msg.server_id, channelId: firstChannel.id }
+              selectContext(next)
+              requestHistoryFor(next)
+            }
+          }
         }
       }
 
@@ -1901,6 +2030,8 @@ function ChatPage() {
           setInit({ ...prev, servers: nextServers })
         }
       }
+    }
+  }
 
       if (msg.type === 'channel_deleted') {
         const prev = useAppStore.getState().init
@@ -2982,7 +3113,8 @@ function ChatPage() {
       setDraft('')
       setReplyingTo(null)
     }
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isServerSettingsOpen, selectedServerId])
 
   const sendMessageWithFiles = async (content: string, mentions: string[] = [], reply_to?: number) => {
     setIsUploading(true)
@@ -7286,6 +7418,9 @@ function ChatPage() {
                               className="w-full text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-sky-500 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-slate-950 hover:file:bg-sky-400"
                             />
                           </label>
+                        </div>
+                        <div className="text-xs text-slate-400">
+                          Status: {init?.user_status}
                         </div>
                       </div>
                       <div className="text-sm text-slate-400">
