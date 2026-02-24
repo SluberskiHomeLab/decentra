@@ -5,6 +5,7 @@ import { clearStoredAuth, getStoredAuth, setStoredAuth } from '../auth/storage'
 import { contextKey, useAppStore } from '../store/appStore'
 import { useToastStore } from '../store/toastStore'
 import { VoiceChat } from '../lib/VoiceChat'
+import { VoiceChatSFU } from '../lib/VoiceChatSFU'
 import type { ChatContext, TypingUser } from '../store/appStore'
 import type { Attachment, Reaction, Server, ServerMember, Thread, WsChatMessage, WsMessage } from '../types/protocol'
 import { LicensePanel } from '../components/admin/LicensePanel'
@@ -151,6 +152,8 @@ export function ChatPage() {
 
   // Voice/Video chat state
   const [voiceChat, setVoiceChat] = useState<any>(null)
+  // SFU instance — active when the current voice channel uses LiveKit
+  const [voiceChatSFU, setVoiceChatSFU] = useState<VoiceChatSFU | null>(null)
   const [isInVoice, setIsInVoice] = useState(false)
   const [isVoiceConnecting, setIsVoiceConnecting] = useState(false)
   const [voiceParticipants, setVoiceParticipants] = useState<string[]>([])
@@ -1508,8 +1511,52 @@ export function ChatPage() {
       }
 
       // Voice/Video chat handlers
-      if (msg.type === 'voice_channel_joined' && voiceChat) {
-        voiceChat.handleVoiceJoined(msg.participants)
+      if (msg.type === 'voice_channel_joined') {
+        const livekitToken: string | null = (msg as any).livekit_token ?? null
+        const livekitUrl: string | null   = (msg as any).livekit_url   ?? null
+        const participants: string[]      = (msg as any).participants   ?? []
+        const serverId: string            = (msg as any).server_id      ?? ''
+        const channelId: string           = (msg as any).channel_id     ?? ''
+
+        if (livekitToken && livekitUrl && voiceChat) {
+          // ── SFU path — LiveKit is configured on this server ──
+          // Cancel the P2P pending join so VoiceChat.ts does not create peer connections.
+          voiceChat.cancelPendingJoin?.()
+
+          const sfu = new VoiceChatSFU(wsClient, init?.username ?? '')
+          sfu.setOnStateChange(() => {
+            setIsVoiceMuted(sfu.getIsMuted())
+            setIsVideoEnabled(sfu.getIsVideoEnabled())
+            setIsScreenSharing(sfu.getIsScreenSharing())
+            setIsInVoice(sfu.getIsInVoice())
+            setIsVoiceConnecting(sfu.getIsConnecting())
+          })
+          sfu.setOnRemoteStreamChange((peer, stream) => {
+            setRemoteStreams((prev) => {
+              const m = new Map(prev)
+              if (stream) m.set(peer, stream)
+              else m.delete(peer)
+              return m
+            })
+          })
+          sfu.setOnParticipantsChange(setVoiceParticipants)
+
+          // Transfer device preferences from the P2P instance
+          const devices = voiceChat.getSelectedDevices?.() ?? {}
+          if (devices.microphone) sfu.setMicrophone(devices.microphone)
+          if (devices.speaker)    sfu.setSpeaker(devices.speaker)
+          if (devices.camera)     sfu.setCamera(devices.camera)
+          if (devices.screenShareResolution && devices.screenShareFramerate) {
+            sfu.setScreenShareSettings(devices.screenShareResolution, devices.screenShareFramerate)
+          }
+
+          setVoiceChatSFU(sfu)
+          // Connect to LiveKit (acquires mic, publishes, subscribes)
+          sfu.connect(livekitUrl, livekitToken, serverId, channelId, voiceChat?.getIsMuted?.() ?? false)
+        } else if (voiceChat) {
+          // ── P2P fallback — LiveKit not configured (or DM call) ──
+          voiceChat.handleVoiceJoined(participants)
+        }
       }
 
       if (msg.type === 'voice_state_update') {
@@ -1539,7 +1586,11 @@ export function ChatPage() {
             setVoiceParticipants(participantUsernames)
             const isUserInVoice = participantUsernames.includes(init?.username)
             setIsInVoice(isUserInVoice)
-            voiceChat.handleVoiceJoined(participantUsernames)
+            // Only trigger P2P peer connection setup when SFU is NOT active;
+            // in SFU mode participant streams arrive via LiveKit RoomEvents.
+            if (!voiceChatSFU) {
+              voiceChat.handleVoiceJoined(participantUsernames)
+            }
             console.log('Updated voice participants:', participantUsernames)
           }
         }
@@ -1550,28 +1601,29 @@ export function ChatPage() {
       }
 
       if (msg.type === 'user_joined_voice' && voiceChat) {
-        voiceChat.handleUserJoinedVoice(msg.username)
+        if (!voiceChatSFU) voiceChat.handleUserJoinedVoice(msg.username)
       }
 
       if (msg.type === 'user_left_voice' && voiceChat) {
-        voiceChat.handleUserLeftVoice(msg.username)
+        if (!voiceChatSFU) voiceChat.handleUserLeftVoice(msg.username)
+        else voiceChatSFU.handleUserLeftVoice(msg.username)
       }
 
-      if (msg.type === 'webrtc_offer' && voiceChat) {
+      if (msg.type === 'webrtc_offer' && voiceChat && !voiceChatSFU) {
         const fromUsername = (msg as any).from_username ?? (msg as any).from
         if (fromUsername) {
           voiceChat.handleWebRTCOffer(fromUsername, msg.offer)
         }
       }
 
-      if (msg.type === 'webrtc_answer' && voiceChat) {
+      if (msg.type === 'webrtc_answer' && voiceChat && !voiceChatSFU) {
         const fromUsername = (msg as any).from_username ?? (msg as any).from
         if (fromUsername) {
           voiceChat.handleWebRTCAnswer(fromUsername, msg.answer)
         }
       }
 
-      if (msg.type === 'webrtc_ice_candidate' && voiceChat) {
+      if (msg.type === 'webrtc_ice_candidate' && voiceChat && !voiceChatSFU) {
         const fromUsername = (msg as any).from_username ?? (msg as any).from
         if (fromUsername) {
           voiceChat.handleICECandidate(fromUsername, msg.candidate)
@@ -1589,9 +1641,10 @@ export function ChatPage() {
           return
         }
         
-        // Play the sound remotely
-        if (soundId) {
-          voiceChat.playRemoteSoundboard(soundId).catch((err: any) => {
+        // Play the sound remotely (works for both P2P and SFU modes)
+        const activeRemoteVC = voiceChatSFU ?? voiceChat
+        if (soundId && activeRemoteVC) {
+          activeRemoteVC.playRemoteSoundboard(soundId).catch((err: any) => {
             console.error('Failed to play remote soundboard sound:', err)
           })
           
@@ -1613,14 +1666,16 @@ export function ChatPage() {
 
     // Register keybind callbacks
     keybindManager.on('push_to_talk', () => {
-      if (voiceChat && voiceChat.getIsInVoice()) {
-        voiceChat.toggleMute()
+      const avc = voiceChatSFU ?? voiceChat
+      if (avc && avc.getIsInVoice()) {
+        avc.toggleMute()
       }
     })
 
     keybindManager.on('toggle_mute', () => {
-      if (voiceChat && voiceChat.getIsInVoice()) {
-        voiceChat.toggleMute()
+      const avc = voiceChatSFU ?? voiceChat
+      if (avc && avc.getIsInVoice()) {
+        avc.toggleMute()
       }
     })
 
@@ -1630,14 +1685,16 @@ export function ChatPage() {
     })
 
     keybindManager.on('toggle_video', () => {
-      if (voiceChat && voiceChat.getIsInVoice()) {
-        voiceChat.toggleVideo()
+      const avc = voiceChatSFU ?? voiceChat
+      if (avc && avc.getIsInVoice()) {
+        avc.toggleVideo()
       }
     })
 
     keybindManager.on('toggle_screen_share', () => {
-      if (voiceChat && voiceChat.getIsInVoice()) {
-        voiceChat.toggleScreenShare()
+      const avc = voiceChatSFU ?? voiceChat
+      if (avc && avc.getIsInVoice()) {
+        avc.toggleScreenShare()
       }
     })
 
@@ -2562,29 +2619,43 @@ export function ChatPage() {
   } */
 
   const leaveVoice = () => {
+    if (voiceChatSFU) {
+      // SFU mode: disconnect LiveKit + send leave WS message
+      voiceChatSFU.disconnect()
+      wsClient.send({ type: 'leave_voice_channel' })
+      setVoiceChatSFU(null)
+      setIsInVoice(false)
+      setVoiceParticipants([])
+      setRemoteStreams(new Map())
+      return
+    }
     if (!voiceChat) return
     voiceChat.leaveVoice()
   }
 
   const toggleVoiceMute = () => {
-    if (!voiceChat) return
-    voiceChat.toggleMute()
+    const avc = voiceChatSFU ?? voiceChat
+    if (!avc) return
+    avc.toggleMute()
   }
 
   const toggleVoiceVideo = () => {
-    if (!voiceChat) return
-    voiceChat.toggleVideo()
+    const avc = voiceChatSFU ?? voiceChat
+    if (!avc) return
+    avc.toggleVideo()
   }
 
   const toggleVoiceScreenShare = () => {
-    if (!voiceChat) return
-    voiceChat.toggleScreenShare()
+    const avc = voiceChatSFU ?? voiceChat
+    if (!avc) return
+    avc.toggleScreenShare()
   }
   
   const handlePlaySoundboard = async (soundId: string, soundName: string) => {
-    if (!voiceChat) return
+    const avc = voiceChatSFU ?? voiceChat
+    if (!avc) return
     try {
-      await voiceChat.playSoundboard(soundId)
+      await avc.playSoundboard(soundId)
       pushToast({ kind: 'info', message: `Playing: ${soundName}` })
     } catch (error) {
       pushToast({ kind: 'error', message: 'Failed to play sound' })

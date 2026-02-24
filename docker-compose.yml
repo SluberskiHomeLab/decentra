@@ -22,6 +22,21 @@ services:
       timeout: 5s
       retries: 5
 
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: decentra-livekit
+    command: --config /etc/livekit.yaml
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "7880:7880"       # HTTP/WS signaling
+      - "7881:7881/tcp"   # WebRTC TCP fallback
+      - "7882:7882/udp"   # WebRTC UDP
+      - "3478:3478/udp"   # TURN UDP relay
+    networks:
+      - decentra-network
+    restart: unless-stopped
+
   server:
     build:
       context: ./server
@@ -31,12 +46,20 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - DECENTRA_ENCRYPTION_KEY=${DECENTRA_ENCRYPTION_KEY}
       - DECENTRA_LICENSE_KEY=${DECENTRA_LICENSE_KEY:-}
+      # LiveKit SFU — token signing. Change key/secret before going to production.
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-devsecret_change_me_in_production}
+      # URL the *browser* uses to reach LiveKit (must be reachable from client machines).
+      # In production set this to wss://your-domain.com:7880
+      - LIVEKIT_URL=${LIVEKIT_URL:-ws://localhost:7880}
     networks:
       - decentra-network
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+      livekit:
+        condition: service_started
 
   frontend:
     build:

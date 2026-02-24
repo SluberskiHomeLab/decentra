@@ -83,6 +83,20 @@ JWT_SECRET_KEY = _load_jwt_secret_key()
 JWT_ALGORITHM = 'HS256'
 JWT_EXPIRATION_HOURS = 24  # Token expires after 24 hours
 
+# ── LiveKit SFU Configuration ───────────────────────────────────────────────
+# These env vars must match the keys: block in livekit.yaml.
+# LIVEKIT_URL is the WebSocket URL that BROWSERS use to connect to LiveKit;
+# set to wss://your-domain.com:7880 in production.
+LIVEKIT_API_KEY    = os.environ.get('LIVEKIT_API_KEY', '')
+LIVEKIT_API_SECRET = os.environ.get('LIVEKIT_API_SECRET', '')
+LIVEKIT_URL        = os.environ.get('LIVEKIT_URL', 'ws://localhost:7880')
+# Optional external TURN for the P2P DM-call path (LiveKit's built-in TURN
+# handles SFU traffic automatically).
+TURN_URL        = os.environ.get('TURN_URL', '')
+TURN_USERNAME   = os.environ.get('TURN_USERNAME', '')
+TURN_CREDENTIAL = os.environ.get('TURN_CREDENTIAL', '')
+# ────────────────────────────────────────────────────────────────────────────
+
 # Store pending signups temporarily (in-memory)
 # Format: {username: {password_hash, email, invite_code, inviter_username}}
 # NOTE: This is an in-memory store and will be cleared on server restart.
@@ -246,6 +260,36 @@ def verify_jwt_token(token):
         return None  # Token has expired
     except jwt.InvalidTokenError:
         return None  # Invalid token
+
+
+def generate_livekit_token(room_name: str, participant_identity: str, participant_name: str = '') -> str | None:
+    """
+    Generate a signed LiveKit room-join JWT for a participant.
+
+    Returns None if LIVEKIT_API_KEY or LIVEKIT_API_SECRET are not configured,
+    which means the server is running without the SFU — callers fall back to
+    the existing P2P WebRTC path.
+    """
+    if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
+        return None
+
+    import time
+    now = int(time.time())
+    claims = {
+        'iss': LIVEKIT_API_KEY,
+        'sub': participant_identity,
+        'exp': now + 86400,   # 24-hour token lifetime
+        'nbf': now,
+        'video': {
+            'room': room_name,
+            'roomJoin': True,
+            'canPublish': True,
+            'canSubscribe': True,
+        },
+    }
+    if participant_name:
+        claims['name'] = participant_name
+    return jwt.encode(claims, LIVEKIT_API_SECRET, algorithm='HS256')
 
 
 def check_password_reset_rate_limit(identifier: str) -> bool:
@@ -4595,6 +4639,22 @@ async def handler(websocket):
                                     'state': 'joined',
                                     'voice_members': voice_members_list
                                 }))
+
+                                # Send voice_channel_joined directly to the joining user.
+                                # Includes a LiveKit token so the client can switch to SFU
+                                # mode; token is None when LiveKit is not configured.
+                                room_name = f"{server_id}__{channel_id}"
+                                livekit_token = generate_livekit_token(
+                                    room_name, username, username
+                                )
+                                await websocket.send_str(json.dumps({
+                                    'type': 'voice_channel_joined',
+                                    'server_id': server_id,
+                                    'channel_id': channel_id,
+                                    'participants': [m['username'] for m in voice_members_list],
+                                    'livekit_token': livekit_token,
+                                    'livekit_url': LIVEKIT_URL if livekit_token else None,
+                                }))
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} joined voice channel {channel_id}")
                     
                     elif data.get('type') == 'leave_voice_channel':
@@ -6980,8 +7040,38 @@ async def main():
     # Create aiohttp application
     app = web.Application()
     app.router.add_get('/ws', websocket_handler)
-    
-    # Setup REST API routes
+
+    # ── Voice / ICE-server endpoint ──────────────────────────────────────────
+    async def ice_servers_handler(request: web.Request) -> web.Response:
+        """
+        Return ICE server configuration for browser WebRTC clients.
+
+        Always includes Google STUN as a fallback.  If TURN credentials are
+        configured via env vars, a TURN entry is appended so that users behind
+        symmetric NAT can still connect on the P2P DM-call path.
+        (SFU traffic goes through LiveKit's own built-in TURN relay.)
+        """
+        ice: list[dict] = [
+            {'urls': 'stun:stun.l.google.com:19302'},
+            {'urls': 'stun:stun1.l.google.com:19302'},
+        ]
+        if TURN_URL and TURN_USERNAME and TURN_CREDENTIAL:
+            ice.append({
+                'urls': TURN_URL,
+                'username': TURN_USERNAME,
+                'credential': TURN_CREDENTIAL,
+            })
+        # Also expose LiveKit's built-in TURN for the P2P path if LiveKit is up
+        if LIVEKIT_URL:
+            # Derive TURN hostname from the LiveKit URL
+            import urllib.parse
+            parsed = urllib.parse.urlparse(LIVEKIT_URL)
+            turn_host = parsed.hostname or 'localhost'
+            ice.append({'urls': f'turn:{turn_host}:3478'})
+        return web.json_response({'ice_servers': ice})
+
+    app.router.add_get('/api/voice/ice-servers', ice_servers_handler)
+    # ─────────────────────────────────────────────────────────────────────────
     setup_api_routes(app, db, verify_jwt_token, broadcast_to_server, send_to_user, get_or_create_dm, get_avatar_data)
     
     # Run the server with SSL
