@@ -261,9 +261,14 @@ class Database:
                             color VARCHAR(7) DEFAULT '#99AAB5',
                             position INTEGER DEFAULT 0,
                             permissions JSONB DEFAULT '{}',
+                            hoist BOOLEAN DEFAULT FALSE,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
                         )
+                    ''')
+                    # Idempotent migration: add hoist column if missing (upgrade from older schema)
+                    cursor.execute('''
+                        ALTER TABLE server_roles ADD COLUMN IF NOT EXISTS hoist BOOLEAN DEFAULT FALSE
                     ''')
                     
                     # User roles junction table
@@ -275,6 +280,30 @@ class Database:
                             PRIMARY KEY (server_id, username, role_id),
                             FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
                             FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE,
+                            FOREIGN KEY (role_id) REFERENCES server_roles(role_id) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Per-channel role permission overrides
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS channel_role_permissions (
+                            channel_id VARCHAR(255) NOT NULL,
+                            role_id VARCHAR(255) NOT NULL,
+                            permissions JSONB DEFAULT '{}',
+                            PRIMARY KEY (channel_id, role_id),
+                            FOREIGN KEY (channel_id) REFERENCES channels(channel_id) ON DELETE CASCADE,
+                            FOREIGN KEY (role_id) REFERENCES server_roles(role_id) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Per-category role permission overrides
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS category_role_permissions (
+                            category_id VARCHAR(255) NOT NULL,
+                            role_id VARCHAR(255) NOT NULL,
+                            permissions JSONB DEFAULT '{}',
+                            PRIMARY KEY (category_id, role_id),
+                            FOREIGN KEY (category_id) REFERENCES categories(category_id) ON DELETE CASCADE,
                             FOREIGN KEY (role_id) REFERENCES server_roles(role_id) ON DELETE CASCADE
                         )
                     ''')
@@ -2213,11 +2242,14 @@ class Database:
     
     # Role operations
     def create_role(self, role_id: str, server_id: str, name: str, color: str,
-                    position: int = 0, permissions: Dict = None) -> bool:
+                    position: int = 0, permissions: Dict = None, hoist: bool = False) -> bool:
         """Create a new server role."""
         try:
             if permissions is None:
                 permissions = {}
+            # Coerce list format to dict
+            if isinstance(permissions, list):
+                permissions = {k: True for k in permissions}
             
             print(f"[DB] Attempting to create role: id={role_id}, server={server_id}, name={name}", flush=True)
             
@@ -2225,9 +2257,9 @@ class Database:
                 cursor = conn.cursor()
                 print(f"[DB] Executing INSERT for role {role_id}", flush=True)
                 cursor.execute('''
-                    INSERT INTO server_roles (role_id, server_id, name, color, position, permissions)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                ''', (role_id, server_id, name, color, position, json.dumps(permissions)))
+                    INSERT INTO server_roles (role_id, server_id, name, color, position, permissions, hoist)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ''', (role_id, server_id, name, color, position, json.dumps(permissions), hoist))
                 print(f"[DB] INSERT executed successfully", flush=True)
                 return True
         except psycopg2.IntegrityError as e:
@@ -2244,7 +2276,7 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT role_id, server_id, name, color, position, permissions, created_at
+                SELECT role_id, server_id, name, color, position, permissions, hoist, created_at
                 FROM server_roles
                 WHERE server_id = %s
                 ORDER BY position DESC
@@ -2255,6 +2287,9 @@ class Database:
                 # Parse JSON permissions
                 if isinstance(role['permissions'], str):
                     role['permissions'] = json.loads(role['permissions'])
+                # Coerce list format
+                if isinstance(role['permissions'], list):
+                    role['permissions'] = {k: True for k in role['permissions']}
                 roles.append(role)
             return roles
     
@@ -2263,7 +2298,7 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT role_id, server_id, name, color, position, permissions, created_at
+                SELECT role_id, server_id, name, color, position, permissions, hoist, created_at
                 FROM server_roles
                 WHERE role_id = %s
             ''', (role_id,))
@@ -2272,13 +2307,18 @@ class Database:
                 role = dict(row)
                 if isinstance(role['permissions'], str):
                     role['permissions'] = json.loads(role['permissions'])
+                if isinstance(role['permissions'], list):
+                    role['permissions'] = {k: True for k in role['permissions']}
                 return role
             return None
     
     def update_role(self, role_id: str, name: str = None, color: str = None, 
-                    position: int = None, permissions: Dict = None) -> bool:
+                    position: int = None, permissions: Dict = None, hoist: bool = None) -> bool:
         """Update a role."""
         try:
+            # Coerce list format to dict
+            if isinstance(permissions, list):
+                permissions = {k: True for k in permissions}
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 updates = []
@@ -2293,6 +2333,9 @@ class Database:
                 if position is not None:
                     updates.append("position = %s")
                     values.append(position)
+                if hoist is not None:
+                    updates.append("hoist = %s")
+                    values.append(hoist)
                 if permissions is not None:
                     updates.append("permissions = %s")
                     values.append(json.dumps(permissions))
@@ -2352,7 +2395,7 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT r.role_id, r.server_id, r.name, r.color, r.position, r.permissions
+                SELECT r.role_id, r.server_id, r.name, r.color, r.position, r.permissions, r.hoist
                 FROM server_roles r
                 JOIN user_roles ur ON r.role_id = ur.role_id
                 WHERE ur.server_id = %s AND ur.username = %s
@@ -2363,6 +2406,8 @@ class Database:
                 role = dict(row)
                 if isinstance(role['permissions'], str):
                     role['permissions'] = json.loads(role['permissions'])
+                if isinstance(role['permissions'], list):
+                    role['permissions'] = {k: True for k in role['permissions']}
                 roles.append(role)
             return roles
     
@@ -2374,8 +2419,170 @@ class Database:
                 SELECT username FROM user_roles WHERE role_id = %s
             ''', (role_id,))
             return [row['username'] for row in cursor.fetchall()]
+
+    def update_role_positions(self, server_id: str, positions: List[Dict]) -> bool:
+        """Bulk update role positions. positions is a list of {role_id, position} dicts."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                for entry in positions:
+                    cursor.execute(
+                        'UPDATE server_roles SET position = %s WHERE role_id = %s AND server_id = %s',
+                        (entry['position'], entry['role_id'], server_id)
+                    )
+                return True
+        except Exception as e:
+            print(f"Error updating role positions: {e}")
+            return False
+
+    # Channel permission override helpers
+    def get_channel_all_overrides(self, channel_id: str) -> List[Dict]:
+        """Get all role permission overrides for a channel."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT crp.channel_id, crp.role_id, crp.permissions,
+                       sr.name AS role_name, sr.color AS role_color
+                FROM channel_role_permissions crp
+                JOIN server_roles sr ON crp.role_id = sr.role_id
+                WHERE crp.channel_id = %s
+            ''', (channel_id,))
+            results = []
+            for row in cursor.fetchall():
+                entry = dict(row)
+                if isinstance(entry['permissions'], str):
+                    entry['permissions'] = json.loads(entry['permissions'])
+                results.append(entry)
+            return results
+
+    def set_channel_role_permissions(self, channel_id: str, role_id: str, permissions: Dict) -> bool:
+        """Upsert role permission overrides for a channel."""
+        try:
+            if isinstance(permissions, list):
+                permissions = {k: True for k in permissions}
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO channel_role_permissions (channel_id, role_id, permissions)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (channel_id, role_id) DO UPDATE SET permissions = EXCLUDED.permissions
+                ''', (channel_id, role_id, json.dumps(permissions)))
+                return True
+        except Exception as e:
+            print(f"Error setting channel role permissions: {e}")
+            return False
+
+    def delete_channel_role_permissions(self, channel_id: str, role_id: str) -> bool:
+        """Remove a role's permission override from a channel."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'DELETE FROM channel_role_permissions WHERE channel_id = %s AND role_id = %s',
+                    (channel_id, role_id)
+                )
+                return True
+        except Exception as e:
+            print(f"Error deleting channel role permissions: {e}")
+            return False
+
+    # Category permission override helpers
+    def get_category_all_overrides(self, category_id: str) -> List[Dict]:
+        """Get all role permission overrides for a category."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT crp.category_id, crp.role_id, crp.permissions,
+                       sr.name AS role_name, sr.color AS role_color
+                FROM category_role_permissions crp
+                JOIN server_roles sr ON crp.role_id = sr.role_id
+                WHERE crp.category_id = %s
+            ''', (category_id,))
+            results = []
+            for row in cursor.fetchall():
+                entry = dict(row)
+                if isinstance(entry['permissions'], str):
+                    entry['permissions'] = json.loads(entry['permissions'])
+                results.append(entry)
+            return results
+
+    def set_category_role_permissions(self, category_id: str, role_id: str, permissions: Dict) -> bool:
+        """Upsert role permission overrides for a category."""
+        try:
+            if isinstance(permissions, list):
+                permissions = {k: True for k in permissions}
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO category_role_permissions (category_id, role_id, permissions)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (category_id, role_id) DO UPDATE SET permissions = EXCLUDED.permissions
+                ''', (category_id, role_id, json.dumps(permissions)))
+                return True
+        except Exception as e:
+            print(f"Error setting category role permissions: {e}")
+            return False
+
+    def delete_category_role_permissions(self, category_id: str, role_id: str) -> bool:
+        """Remove a role's permission override from a category."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'DELETE FROM category_role_permissions WHERE category_id = %s AND role_id = %s',
+                    (category_id, role_id)
+                )
+                return True
+        except Exception as e:
+            print(f"Error deleting category role permissions: {e}")
+            return False
+
+    def has_channel_permission(self, server_id: str, username: str, channel_id: str, permission: str) -> bool:
+        """Check if a user has a permission in a specific channel, considering overrides.
+        First checks base server role permissions, then applies channel-specific overrides.
+        Channel overrides can grant or explicitly deny (False) a permission.
+        """
+        # Owner always has all permissions
+        server = self.get_server(server_id)
+        if not server:
+            return False
+        if server['owner'] == username:
+            return True
+
+        # Get user's roles (highest position first)
+        user_roles = self.get_user_roles(server_id, username)
+        
+        # Collect channel overrides for this user's roles
+        channel_overrides = self.get_channel_all_overrides(channel_id)
+        override_map = {o['role_id']: o['permissions'] for o in channel_overrides}
+        
+        # Union of base permissions + override logic:
+        # Explicit True override grants access; explicit False denies for that role.
+        # If any role grants via base perms or override → allow.
+        # If all roles are denied → deny.
+        has_base = False
+        for role in user_roles:
+            perms = role.get('permissions', {})
+            if isinstance(perms, list):
+                perms = {k: True for k in perms}
+            # Administrator always wins
+            if perms.get('administrator', False):
+                return True
+            if perms.get(permission, False):
+                has_base = True
+            # Apply per-channel override
+            role_id = role['role_id']
+            if role_id in override_map:
+                override = override_map[role_id]
+                if isinstance(override, list):
+                    override = {k: True for k in override}
+                if override.get(permission) is True:
+                    return True
+                if override.get(permission) is False:
+                    has_base = False  # Explicit deny overrides base grant for this role
+        return has_base
+
     
-    # Ban operations
     def ban_user_from_server(self, server_id: str, username: str, banned_by: str, reason: str = None) -> bool:
         """Ban a user from a server."""
         try:

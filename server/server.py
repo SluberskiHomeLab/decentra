@@ -145,6 +145,13 @@ def serialize_role(role):
     # Map role_id to id for frontend compatibility
     if 'role_id' in serialized:
         serialized['id'] = serialized['role_id']
+    # Ensure hoist field is present
+    if 'hoist' not in serialized:
+        serialized['hoist'] = False
+    # Ensure permissions is always a dict
+    perms = serialized.get('permissions', {})
+    if isinstance(perms, list):
+        serialized['permissions'] = {k: True for k in perms}
     return serialized
 
 
@@ -646,6 +653,9 @@ def has_permission(server_id, username, permission):
     user_roles = db.get_user_roles(server_id, username)
     for role in user_roles:
         perms = role.get('permissions', {})
+        # Coerce legacy array format to dict
+        if isinstance(perms, list):
+            perms = {k: True for k in perms}
         
         # Administrator role has all permissions
         if perms.get('administrator', False):
@@ -730,8 +740,10 @@ async def broadcast(message, exclude=None):
             await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def broadcast_to_server(server_id, message, exclude=None):
-    """Broadcast a message to all members of a server, or to all users if server_id is None."""
+async def broadcast_to_server(server_id, message, exclude=None, channel_id=None):
+    """Broadcast a message to all members of a server, or to all users if server_id is None.
+    If channel_id is provided, only members with view_channel permission for that channel receive it.
+    """
     if server_id is None:
         # Broadcast to all connected users (for instance webhooks)
         tasks = []
@@ -748,7 +760,23 @@ async def broadcast_to_server(server_id, message, exclude=None):
         tasks = []
         for client_ws, client_username in clients.items():
             if client_username in server_members and client_ws != exclude:
-                tasks.append(client_ws.send_str(message))
+                # If channel_id provided, enforce view_channel permission
+                if channel_id:
+                    server = db.get_server(server_id)
+                    # Owners always see all channels
+                    if server and server['owner'] == client_username:
+                        tasks.append(client_ws.send_str(message))
+                        continue
+                    # Check channel overrides — if any override exists, enforce
+                    overrides = db.get_channel_all_overrides(channel_id)
+                    if overrides:
+                        if db.has_channel_permission(server_id, client_username, channel_id, 'view_channel'):
+                            tasks.append(client_ws.send_str(message))
+                    else:
+                        # No overrides set — default allow
+                        tasks.append(client_ws.send_str(message))
+                else:
+                    tasks.append(client_ws.send_str(message))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -1574,7 +1602,8 @@ async def handler(websocket):
                         context = data.get('context', 'global')  # 'global', 'server', or 'dm'
                         context_id = data.get('context_id', None)
                         message_key = data.get('messageKey')  # Extract messageKey for file attachment correlation
-                        mentions = data.get('mentions', [])  # Extract mentions
+                        mentions = data.get('mentions', [])  # Extract user mentions
+                        role_mentions = data.get('role_mentions', [])  # Extract role mentions (list of role IDs)
                         reply_to = data.get('reply_to')  # Extract reply_to message ID
                         nonce = data.get('nonce')  # Extract nonce for delivery confirmation
                         
@@ -1617,6 +1646,18 @@ async def handler(websocket):
                                     members = db.get_server_members(server_id)
                                     member_usernames = {m['username'] for m in members}
                                     if username in member_usernames:
+                                        # Enforce send_messages permission (channel override aware)
+                                        channel_overrides = db.get_channel_all_overrides(channel_id)
+                                        can_send = True
+                                        if channel_overrides:
+                                            # Overrides exist — check explicitly
+                                            can_send = db.has_channel_permission(server_id, username, channel_id, 'send_messages')
+                                        if not can_send and server['owner'] != username:
+                                            await websocket.send_str(json.dumps({
+                                                'type': 'error',
+                                                'message': 'You do not have permission to send messages in this channel'
+                                            }))
+                                            continue
                                         # Save message to database and get ID
                                         message_id = db.save_message(username, msg_content, 'server', context_id, reply_to)
                                         
@@ -1638,6 +1679,24 @@ async def handler(websocket):
                                                         'context_id': context_id
                                                     }
                                                     await send_to_user(mentioned_user, json.dumps(notification))
+                                        
+                                        # Process role mentions — notify all members of each mentioned role
+                                        if role_mentions and message_id:
+                                            already_notified = set(valid_mentions) if mentions else set()
+                                            for role_mention_id in role_mentions:
+                                                role_members = db.get_role_members(role_mention_id)
+                                                for role_member in role_members:
+                                                    if role_member != username and role_member not in already_notified and role_member in member_usernames:
+                                                        already_notified.add(role_member)
+                                                        await send_to_user(role_member, json.dumps({
+                                                            'type': 'role_mention_notification',
+                                                            'message_id': message_id,
+                                                            'mentioned_by': username,
+                                                            'role_id': role_mention_id,
+                                                            'content': msg_content[:100],
+                                                            'context_type': 'server',
+                                                            'context_id': context_id
+                                                        }))
                                         
                                         # Send reply notification
                                         if reply_to and replied_to_user and replied_to_user != username:
@@ -1667,13 +1726,16 @@ async def handler(websocket):
                                         # Add mentions to message object
                                         if mentions:
                                             msg_obj['mentions'] = [m for m in mentions if m in member_usernames]
+                                        # Add role mentions to message object
+                                        if role_mentions:
+                                            msg_obj['role_mentions'] = role_mentions
                                         
                                         # Add nonce for delivery confirmation (only sender sees it)
                                         if nonce:
                                             msg_obj['nonce'] = nonce
                                         
-                                        # Broadcast to server members
-                                        await broadcast_to_server(server_id, json.dumps(msg_obj))
+                                        # Broadcast to server members (filtered by view_channel if overrides set)
+                                        await broadcast_to_server(server_id, json.dumps(msg_obj), channel_id=channel_id)
                                         print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} sent message in {server_id}/{channel_id}")
                         
                         elif context == 'dm' and context_id:
@@ -3693,6 +3755,10 @@ async def handler(websocket):
                         role_name = data.get('name', '').strip()
                         color = data.get('color', '#99AAB5')
                         permissions = data.get('permissions', {})
+                        hoist = data.get('hoist', False)
+                        # Coerce array format to dict {key: True}
+                        if isinstance(permissions, list):
+                            permissions = {k: True for k in permissions}
                         
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] server_id={server_id}, role_name={role_name}, color={color}", flush=True)
                         
@@ -3708,7 +3774,7 @@ async def handler(websocket):
                                 position = max([r['position'] for r in existing_roles] + [0]) + 1
                                 
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Creating role with position {position}")
-                                if db.create_role(role_id, server_id, role_name, color, position, permissions):
+                                if db.create_role(role_id, server_id, role_name, color, position, permissions, hoist):
                                     print(f"[{datetime.now().strftime('%H:%M:%S')}] Role created in DB, fetching...")
                                     role = db.get_role(role_id)
                                     print(f"[{datetime.now().strftime('%H:%M:%S')}] Role fetched: {role}")
@@ -3739,12 +3805,16 @@ async def handler(websocket):
                         role_name = data.get('name')
                         color = data.get('color')
                         permissions = data.get('permissions')
+                        hoist = data.get('hoist')  # None means unchanged
+                        # Coerce array format to dict {key: True}
+                        if isinstance(permissions, list):
+                            permissions = {k: True for k in permissions}
                         
                         role = db.get_role(role_id)
                         if role:
                             server = db.get_server(role['server_id'])
                             if server and username == server['owner']:
-                                if db.update_role(role_id, role_name, color, None, permissions):
+                                if db.update_role(role_id, role_name, color, None, permissions, hoist):
                                     updated_role = db.get_role(role_id)
                                     
                                     # Broadcast to all server members
@@ -3896,6 +3966,150 @@ async def handler(websocket):
                                 'username': target_username,
                                 'roles': [serialize_role(r) for r in roles]
                             }))
+                    
+                    elif data.get('type') == 'reorder_roles':
+                        # Move a role up or down by one position slot
+                        server_id = data.get('server_id', '')
+                        role_id = data.get('role_id', '')
+                        direction = data.get('direction', '')  # 'up' or 'down'
+                        
+                        server = db.get_server(server_id)
+                        if not server or username != server['owner']:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Only the server owner can reorder roles'
+                            }))
+                        elif direction not in ('up', 'down'):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'direction must be up or down'
+                            }))
+                        else:
+                            roles = sorted(db.get_server_roles(server_id), key=lambda r: r['position'])
+                            idx = next((i for i, r in enumerate(roles) if r['role_id'] == role_id), None)
+                            if idx is not None:
+                                swap_idx = idx + 1 if direction == 'up' else idx - 1
+                                if 0 <= swap_idx < len(roles):
+                                    # Swap positions
+                                    p1 = roles[idx]['position']
+                                    p2 = roles[swap_idx]['position']
+                                    db.update_role_positions(server_id, [
+                                        {'role_id': roles[idx]['role_id'], 'position': p2},
+                                        {'role_id': roles[swap_idx]['role_id'], 'position': p1},
+                                    ])
+                                    updated_roles = db.get_server_roles(server_id)
+                                    await broadcast_to_server(server_id, json.dumps({
+                                        'type': 'roles_reordered',
+                                        'server_id': server_id,
+                                        'roles': [serialize_role(r) for r in updated_roles]
+                                    }))
+                    
+                    elif data.get('type') == 'get_channel_permissions':
+                        channel_id = data.get('channel_id', '')
+                        server_id = data.get('server_id', '')
+                        
+                        server = db.get_server(server_id)
+                        if server and (username == server['owner'] or has_permission(server_id, username, 'manage_channels')):
+                            overrides = db.get_channel_all_overrides(channel_id)
+                            await websocket.send_str(json.dumps({
+                                'type': 'channel_permissions',
+                                'channel_id': channel_id,
+                                'overrides': overrides
+                            }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'No permission to view channel permissions'
+                            }))
+                    
+                    elif data.get('type') == 'set_channel_role_permissions':
+                        channel_id = data.get('channel_id', '')
+                        role_id = data.get('role_id', '')
+                        permissions = data.get('permissions', {})
+                        server_id = data.get('server_id', '')
+                        
+                        if isinstance(permissions, list):
+                            permissions = {k: True for k in permissions}
+                        
+                        server = db.get_server(server_id)
+                        if not server or not (username == server['owner'] or has_permission(server_id, username, 'manage_channels')):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'No permission to set channel permissions'
+                            }))
+                        else:
+                            if db.set_channel_role_permissions(channel_id, role_id, permissions):
+                                overrides = db.get_channel_all_overrides(channel_id)
+                                await broadcast_to_server(server_id, json.dumps({
+                                    'type': 'channel_permissions_updated',
+                                    'server_id': server_id,
+                                    'channel_id': channel_id,
+                                    'overrides': overrides
+                                }))
+                    
+                    elif data.get('type') == 'delete_channel_role_permissions':
+                        channel_id = data.get('channel_id', '')
+                        role_id = data.get('role_id', '')
+                        server_id = data.get('server_id', '')
+                        
+                        server = db.get_server(server_id)
+                        if not server or not (username == server['owner'] or has_permission(server_id, username, 'manage_channels')):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'No permission to delete channel permissions'
+                            }))
+                        else:
+                            if db.delete_channel_role_permissions(channel_id, role_id):
+                                overrides = db.get_channel_all_overrides(channel_id)
+                                await broadcast_to_server(server_id, json.dumps({
+                                    'type': 'channel_permissions_updated',
+                                    'server_id': server_id,
+                                    'channel_id': channel_id,
+                                    'overrides': overrides
+                                }))
+                    
+                    elif data.get('type') == 'get_category_permissions':
+                        category_id = data.get('category_id', '')
+                        server_id = data.get('server_id', '')
+                        
+                        server = db.get_server(server_id)
+                        if server and (username == server['owner'] or has_permission(server_id, username, 'manage_categories')):
+                            overrides = db.get_category_all_overrides(category_id)
+                            await websocket.send_str(json.dumps({
+                                'type': 'category_permissions',
+                                'category_id': category_id,
+                                'overrides': overrides
+                            }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'No permission to view category permissions'
+                            }))
+                    
+                    elif data.get('type') == 'set_category_role_permissions':
+                        category_id = data.get('category_id', '')
+                        role_id = data.get('role_id', '')
+                        permissions = data.get('permissions', {})
+                        server_id = data.get('server_id', '')
+                        
+                        if isinstance(permissions, list):
+                            permissions = {k: True for k in permissions}
+                        
+                        server = db.get_server(server_id)
+                        if not server or not (username == server['owner'] or has_permission(server_id, username, 'manage_categories')):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'No permission to set category permissions'
+                            }))
+                        else:
+                            if db.set_category_role_permissions(category_id, role_id, permissions):
+                                overrides = db.get_category_all_overrides(category_id)
+                                await broadcast_to_server(server_id, json.dumps({
+                                    'type': 'category_permissions_updated',
+                                    'server_id': server_id,
+                                    'category_id': category_id,
+                                    'overrides': overrides
+                                }))
                     
                     # Ban management handlers
                     elif data.get('type') == 'ban_member':

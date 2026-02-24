@@ -164,6 +164,8 @@ export function ChatPage() {
   const [mentionSearch, setMentionSearch] = useState('')
   const [mentionStartPos, _setMentionStartPos] = useState<number>(0)
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0)
+  // Role mentions accumulated while composing
+  const [pendingRoleMentions, setPendingRoleMentions] = useState<string[]>([])
   // const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
   // const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([])
   // const [speakerDevices, setSpeakerDevices] = useState<MediaDeviceInfo[]>([])
@@ -188,7 +190,11 @@ export function ChatPage() {
   const [roleName, setRoleName] = useState('')
   const [roleColor, setRoleColor] = useState('#99AAB5')
   const [rolePermissions, setRolePermissions] = useState<string[]>([])
+  const [roleHoist, setRoleHoist] = useState(false)
   const [memberRoles, setMemberRoles] = useState<Record<string, any[]>>({})
+  const [channelOverrides, setChannelOverrides] = useState<Record<string, any[]>>({})
+  // categoryOverrides populated for future category-level permission UI
+  const [, setCategoryOverrides] = useState<Record<string, any[]>>({})
   const [isViewingMemberRoles, setIsViewingMemberRoles] = useState(false)
   const [selectedMemberForRole, setSelectedMemberForRole] = useState<string | null>(null)
   
@@ -962,6 +968,42 @@ export function ChatPage() {
         }))
       }
       
+      if (msg.type === 'roles_reordered') {
+        setServerRoles((prev) => ({
+          ...prev,
+          [msg.server_id]: msg.roles ?? [],
+        }))
+      }
+      
+      if (msg.type === 'channel_permissions_updated') {
+        setChannelOverrides((prev) => ({
+          ...prev,
+          [msg.channel_id]: msg.overrides ?? [],
+        }))
+      }
+      
+      // Initial load of channel/category permissions
+      if (msg.type === 'channel_permissions') {
+        setChannelOverrides((prev) => ({
+          ...prev,
+          [msg.channel_id]: msg.overrides ?? [],
+        }))
+      }
+      
+      if (msg.type === 'category_permissions') {
+        setCategoryOverrides((prev) => ({
+          ...prev,
+          [msg.category_id]: msg.overrides ?? [],
+        }))
+      }
+      
+      if (msg.type === 'category_permissions_updated') {
+        setCategoryOverrides((prev) => ({
+          ...prev,
+          [msg.category_id]: msg.overrides ?? [],
+        }))
+      }
+      
       // Ban management messages
       if (msg.type === 'server_bans') {
         setServerBans((prev) => ({
@@ -1710,43 +1752,40 @@ export function ChatPage() {
 
   // Helper function to organize members by role
   const organizeMembersByRole = (serverId: string, members: any[]) => {
-    const roleGroups: Record<string, { role: any | null; members: any[] }> = {}
+    const roleGroups: Record<string, { role: any | null; members: any[]; position: number }> = {}
     
     members.forEach((member) => {
       const memberKey = `${serverId}:${member.username}`
       const userRoles = memberRoles[memberKey] || []
       
-      // Get the highest role (first in the array)
-      const highestRole = userRoles.length > 0 ? userRoles[0] : null
-      const roleName = highestRole?.name || 'No Role'
+      // Find the highest-position hoisted role
+      const hoistedRole = userRoles.find((r: any) => r.hoist) ?? null
+      const groupKey = hoistedRole ? hoistedRole.name : 'Online'
       
-      if (!roleGroups[roleName]) {
-        roleGroups[roleName] = {
-          role: highestRole,
-          members: []
+      if (!roleGroups[groupKey]) {
+        roleGroups[groupKey] = {
+          role: hoistedRole,
+          members: [],
+          // Use role position for sorting; "Online" (no hoist) group at bottom (position -1)
+          position: hoistedRole ? (hoistedRole.position ?? 0) : -1,
         }
       }
       
-      roleGroups[roleName].members.push(member)
+      roleGroups[groupKey].members.push(member)
     })
     
     // Sort members within each role group alphabetically
     Object.values(roleGroups).forEach((group) => {
-      group.members.sort((a, b) => a.username.localeCompare(b.username))
+      group.members.sort((a: any, b: any) => a.username.localeCompare(b.username))
     })
     
-    // Convert to array and sort by role name
+    // Convert to array and sort by role position DESCENDING (highest position = top)
     const sortedGroups = Object.entries(roleGroups)
       .map(([roleName, group]) => ({
         roleName,
         ...group
       }))
-      .sort((a, b) => {
-        // "No Role" should be at the bottom
-        if (a.roleName === 'No Role') return 1
-        if (b.roleName === 'No Role') return -1
-        return a.roleName.localeCompare(b.roleName)
-      })
+      .sort((a, b) => b.position - a.position)
     
     return sortedGroups
   }
@@ -1799,7 +1838,7 @@ export function ChatPage() {
         // Send as thread message
         wsClient.sendThreadMessage({ type: 'thread_message', thread_id: selectedContext.threadId, content, nonce })
       } else if (selectedContext.kind === 'server') {
-        wsClient.sendMessage({ type: 'message', content, context: 'server', context_id: `${selectedContext.serverId}/${selectedContext.channelId}`, mentions, reply_to, nonce })
+        wsClient.sendMessage({ type: 'message', content, context: 'server', context_id: `${selectedContext.serverId}/${selectedContext.channelId}`, mentions, role_mentions: pendingRoleMentions, reply_to, nonce })
       } else if (selectedContext.kind === 'dm') {
         wsClient.sendMessage({ type: 'message', content, context: 'dm', context_id: selectedContext.dmId, mentions, reply_to, nonce })
       } else {
@@ -1807,6 +1846,7 @@ export function ChatPage() {
       }
       pendingNoncesRef.current.add(nonce)
       setDraft('')
+      setPendingRoleMentions([])
       setReplyingTo(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2062,11 +2102,13 @@ export function ChatPage() {
       name: roleName.trim(),
       color: roleColor,
       permissions: rolePermissions,
+      hoist: roleHoist,
     })
     setIsCreateRoleOpen(false)
     setRoleName('')
     setRoleColor('#3B82F6')
     setRolePermissions([])
+    setRoleHoist(false)
   }
 
   const updateRole = () => {
@@ -2078,12 +2120,14 @@ export function ChatPage() {
       name: roleName.trim(),
       color: roleColor,
       permissions: rolePermissions,
+      hoist: roleHoist,
     })
     setIsCreateRoleOpen(false)
     setSelectedRole(null)
     setRoleName('')
     setRoleColor('#3B82F6')
     setRolePermissions([])
+    setRoleHoist(false)
   }
 
   const deleteRole = (roleId: string) => {
@@ -2099,7 +2143,14 @@ export function ChatPage() {
     setSelectedRole(role.id)
     setRoleName(role.name)
     setRoleColor(role.color || '#3B82F6')
-    setRolePermissions(role.permissions || [])
+    // Convert permissions dict {key: true} → string[] for checkbox UI
+    const perms = role.permissions || {}
+    if (Array.isArray(perms)) {
+      setRolePermissions(perms)
+    } else {
+      setRolePermissions(Object.keys(perms).filter((k) => perms[k] === true))
+    }
+    setRoleHoist(role.hoist || false)
     setIsCreateRoleOpen(true)
   }
 
@@ -2238,6 +2289,18 @@ export function ChatPage() {
       setShowChannelMentionAutocomplete(false)
       setChannelMentionSearch('')
     }
+
+    // ── User/role mention autocomplete ('@') ──────────────────────────
+    const atMatch = textBeforeCursor.match(/@([\w]*)$/)
+    if (atMatch && selectedContext.kind === 'server') {
+      setShowMentionAutocomplete(true)
+      setMentionSearch(atMatch[1])
+      _setMentionStartPos(atMatch.index!)
+      setSelectedMentionIndex(0)
+    } else {
+      setShowMentionAutocomplete(false)
+      setMentionSearch('')
+    }
   }
 
   const insertMention = (username: string) => {
@@ -2268,10 +2331,32 @@ export function ChatPage() {
   const getFilteredMentionUsers = () => {
     if (!selectedContext || selectedContext.kind !== 'server') return []
     const members = serverMembers[selectedContext.serverId] || []
-    if (!mentionSearch) return members.slice(0, 10)
-    return members.filter((m: ServerMember) => 
-      m.username.toLowerCase().startsWith(mentionSearch.toLowerCase())
-    ).slice(0, 10)
+    const roles = serverRoles[selectedContext.serverId] || []
+    
+    const matchedMembers = !mentionSearch
+      ? members.slice(0, 8)
+      : members.filter((m: ServerMember) =>
+          m.username.toLowerCase().startsWith(mentionSearch.toLowerCase())
+        ).slice(0, 8)
+    
+    const matchedRoles = !mentionSearch
+      ? roles.slice(0, 5)
+      : roles.filter((r: any) => r.name.toLowerCase().startsWith(mentionSearch.toLowerCase())).slice(0, 5)
+    
+    // Roles tagged with type 'role' for the dropdown to differentiate
+    return [
+      ...matchedRoles.map((r: any) => ({ type: 'role' as const, id: r.id, username: r.name, color: r.color })),
+      ...matchedMembers.map((m: ServerMember) => ({ type: 'user' as const, id: m.username, username: m.username, color: undefined })),
+    ]
+  }
+
+  const insertRoleMention = (roleId: string, roleName: string) => {
+    const before = draft.slice(0, mentionStartPos)
+    const after = draft.slice(mentionStartPos + mentionSearch.length + 1)
+    setDraft(`${before}@${roleName} ${after}`)
+    setShowMentionAutocomplete(false)
+    setMentionSearch('')
+    setPendingRoleMentions((prev) => prev.includes(roleId) ? prev : [...prev, roleId])
   }
 
   const renderMessageContent = (content: string, messageContext?: string, messageContextId?: string | null): React.ReactNode => (
@@ -2342,7 +2427,12 @@ export function ChatPage() {
     
     if (e.key === 'Enter' || e.key === 'Tab') {
       e.preventDefault()
-      insertMention(filteredUsers[selectedMentionIndex].username)
+      const item = filteredUsers[selectedMentionIndex]
+      if (item.type === 'role') {
+        insertRoleMention(item.id, item.username)
+      } else {
+        insertMention(item.username)
+      }
       return true
     }
     
@@ -3729,29 +3819,45 @@ export function ChatPage() {
               {/* Mention autocomplete */}
               {showMentionAutocomplete && selectedContext.kind === 'server' && (
                 <div className="mb-2 rounded-xl border border-border-primary bg-bg-secondary p-2 shadow-xl max-h-48 overflow-y-auto">
-                  <div className="text-xs font-semibold text-text-muted mb-1 px-2">Mention User</div>
+                  <div className="text-xs font-semibold text-text-muted mb-1 px-2">Mention User or Role</div>
                   {getFilteredMentionUsers().length > 0 ? (
-                    getFilteredMentionUsers().map((member, index) => (
+                    getFilteredMentionUsers().map((item, index) => (
                       <button
-                        key={member.username}
+                        key={`${item.type}-${item.id}`}
                         type="button"
-                        onClick={() => insertMention(member.username)}
+                        onClick={() => {
+                          if (item.type === 'role') {
+                            insertRoleMention(item.id, item.username)
+                          } else {
+                            insertMention(item.username)
+                          }
+                        }}
                         className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition ${
                           index === selectedMentionIndex ? 'bg-sky-500/20' : 'hover:bg-white/5'
                         }`}
                       >
-                        <AvatarWithStatus
-                          avatar={member.avatar}
-                          avatar_type={member.avatar_type}
-                          avatar_data={member.avatar_data}
-                          user_status={member.user_status}
-                          size="sm"
-                        />
-                        <span className="text-sm text-text-secondary">{member.username}</span>
+                        {item.type === 'role' ? (
+                          <>
+                            <div className="h-4 w-4 rounded-full flex-shrink-0" style={{ backgroundColor: item.color || '#3B82F6' }} />
+                            <span className="text-sm font-semibold" style={{ color: item.color || '#3B82F6' }}>@{item.username}</span>
+                            <span className="text-xs text-slate-500 ml-1">Role</span>
+                          </>
+                        ) : (
+                          <>
+                            <AvatarWithStatus
+                              avatar={(item as any).avatar}
+                              avatar_type={(item as any).avatar_type}
+                              avatar_data={(item as any).avatar_data}
+                              user_status={(item as any).user_status}
+                              size="sm"
+                            />
+                            <span className="text-sm text-text-secondary">{item.username}</span>
+                          </>
+                        )}
                       </button>
                     ))
                   ) : (
-                    <div className="text-xs text-text-muted px-2 py-1">No matching users</div>
+                    <div className="text-xs text-text-muted px-2 py-1">No matching users or roles</div>
                   )}
                 </div>
               )}
@@ -5684,7 +5790,15 @@ export function ChatPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setServerSettingsTab('channels')}
+                  onClick={() => {
+                    setServerSettingsTab('channels')
+                    // Load channel permission overrides for all server channels
+                    if (selectedServerId && selectedServerObj) {
+                      ;(selectedServerObj.channels ?? []).forEach((ch: any) => {
+                        wsClient.send({ type: 'get_channel_permissions', server_id: selectedServerId, channel_id: ch.id })
+                      })
+                    }
+                  }}
                   className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
                     serverSettingsTab === 'channels'
                       ? 'border-sky-500 text-sky-400'
@@ -6281,6 +6395,84 @@ export function ChatPage() {
                                   ))}
                               </select>
                             </label>
+
+                            {/* Per-channel role permission overrides */}
+                            {selectedServerId && serverRoles[selectedServerId]?.length > 0 && (
+                              <div className="mt-2">
+                                <div className="text-xs text-slate-400 mb-1">Channel Role Permissions</div>
+                                <div className="space-y-1">
+                                  {(serverRoles[selectedServerId] || []).map((role: any) => {
+                                    const key = channel.id
+                                    const overrides = channelOverrides[key] || []
+                                    const roleOverride = overrides.find((o: any) => o.role_id === role.id) || {}
+                                    const overridePerms: Record<string, boolean | null> = roleOverride.permissions || {}
+                                    return (
+                                      <details key={role.id} className="rounded border border-white/10 bg-slate-950/40">
+                                        <summary className="flex items-center gap-2 px-2 py-1 cursor-pointer text-xs text-slate-300">
+                                          <div className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: role.color || '#3B82F6' }} />
+                                          {role.name}
+                                        </summary>
+                                        <div className="px-3 pb-2 pt-1 space-y-1">
+                                          {(['view_channel', 'send_messages', 'attach_files', 'embed_links', 'mention_everyone', 'read_message_history'] as const).map((perm) => {
+                                            const val = overridePerms[perm]
+                                            return (
+                                              <div key={perm} className="flex items-center justify-between">
+                                                <span className="text-xs text-slate-300">{perm.replace(/_/g, ' ')}</span>
+                                                <div className="flex gap-1">
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                      const newPerms = { ...overridePerms, [perm]: true }
+                                                      wsClient.send({ type: 'set_channel_role_permissions', server_id: selectedServerId, channel_id: channel.id, role_id: role.id, permissions: newPerms })
+                                                      setChannelOverrides(prev => {
+                                                        const existing = (prev[channel.id] || []).filter((o: any) => o.role_id !== role.id)
+                                                        return { ...prev, [channel.id]: [...existing, { ...roleOverride, role_id: role.id, permissions: newPerms }] }
+                                                      })
+                                                    }}
+                                                    className={`rounded px-1.5 py-0.5 text-xs ${val === true ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
+                                                  >✓</button>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                      const newPerms = { ...overridePerms, [perm]: false }
+                                                      wsClient.send({ type: 'set_channel_role_permissions', server_id: selectedServerId, channel_id: channel.id, role_id: role.id, permissions: newPerms })
+                                                      setChannelOverrides(prev => {
+                                                        const existing = (prev[channel.id] || []).filter((o: any) => o.role_id !== role.id)
+                                                        return { ...prev, [channel.id]: [...existing, { ...roleOverride, role_id: role.id, permissions: newPerms }] }
+                                                      })
+                                                    }}
+                                                    className={`rounded px-1.5 py-0.5 text-xs ${val === false ? 'bg-rose-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
+                                                  >✗</button>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                                                      const { [perm]: _, ...rest } = overridePerms
+                                                      if (Object.keys(rest).length === 0) {
+                                                        wsClient.send({ type: 'delete_channel_role_permissions', server_id: selectedServerId, channel_id: channel.id, role_id: role.id })
+                                                        setChannelOverrides(prev => ({ ...prev, [channel.id]: (prev[channel.id] || []).filter((o: any) => o.role_id !== role.id) }))
+                                                      } else {
+                                                        wsClient.send({ type: 'set_channel_role_permissions', server_id: selectedServerId, channel_id: channel.id, role_id: role.id, permissions: rest })
+                                                        setChannelOverrides(prev => {
+                                                          const existing = (prev[channel.id] || []).filter((o: any) => o.role_id !== role.id)
+                                                          return { ...prev, [channel.id]: [...existing, { ...roleOverride, role_id: role.id, permissions: rest }] }
+                                                        })
+                                                      }
+                                                    }}
+                                                    className="rounded px-1.5 py-0.5 text-xs bg-slate-700 text-slate-400 hover:bg-slate-600"
+                                                    title="Reset to default"
+                                                  >–</button>
+                                                </div>
+                                              </div>
+                                            )
+                                          })}
+                                        </div>
+                                      </details>
+                                    )
+                                  })}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         ))
                       })()}
@@ -6309,6 +6501,7 @@ export function ChatPage() {
                           setRoleName('')
                           setRoleColor('#3B82F6')
                           setRolePermissions([])
+                          setRoleHoist(false)
                           setIsCreateRoleOpen(true)
                         }}
                         className="w-full rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
@@ -6331,11 +6524,32 @@ export function ChatPage() {
                                 <div>
                                   <div className="text-sm font-semibold text-white">{role.name}</div>
                                   <div className="text-xs text-slate-400">
-                                    {role.permissions?.length || 0} permission(s)
+                                    {Object.keys(role.permissions || {}).filter(k => (role.permissions || {})[k]).length} permission(s)
+                                    {role.hoist && <span className="ml-1 text-sky-400">[hoisted]</span>}
                                   </div>
                                 </div>
                               </div>
-                              <div className="flex gap-2">
+                              <div className="flex gap-1">
+                                <button
+                                  type="button"
+                                  title="Move up"
+                                  onClick={() => {
+                                    if (selectedServerId) {
+                                      wsClient.send({ type: 'reorder_roles', server_id: selectedServerId, role_id: role.id, direction: 'up' })
+                                    }
+                                  }}
+                                  className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-400 hover:text-white hover:bg-slate-600"
+                                >↑</button>
+                                <button
+                                  type="button"
+                                  title="Move down"
+                                  onClick={() => {
+                                    if (selectedServerId) {
+                                      wsClient.send({ type: 'reorder_roles', server_id: selectedServerId, role_id: role.id, direction: 'down' })
+                                    }
+                                  }}
+                                  className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-400 hover:text-white hover:bg-slate-600"
+                                >↓</button>
                                 <button
                                   type="button"
                                   onClick={() => openEditRole(role)}
@@ -6911,6 +7125,19 @@ export function ChatPage() {
                       onChange={(e) => setRoleColor(e.target.value)}
                       className="w-full h-10 rounded-xl border border-white/10 bg-slate-950/40 cursor-pointer"
                     />
+                  </label>
+
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={roleHoist}
+                      onChange={(e) => setRoleHoist(e.target.checked)}
+                      className="rounded border-white/10 bg-slate-950/40 text-sky-500 focus:ring-sky-500/40"
+                    />
+                    <div>
+                      <div className="text-sm text-slate-200">Hoist role</div>
+                      <div className="text-xs text-slate-500">Display this role's members separately in the member list</div>
+                    </div>
                   </label>
 
                   <div>

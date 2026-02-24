@@ -40,6 +40,93 @@ export type ServerPermissions = {
   can_delete_messages?: boolean
 }
 
+// --- Role system types ---
+
+export type RolePermissions = {
+  administrator?: boolean
+  manage_server?: boolean
+  manage_channels?: boolean
+  manage_categories?: boolean
+  manage_roles?: boolean
+  create_invite?: boolean
+  ban_members?: boolean
+  delete_messages?: boolean
+  edit_messages?: boolean
+  send_files?: boolean
+  access_settings?: boolean
+  manage_emojis?: boolean
+  send_messages?: boolean
+  read_messages?: boolean
+  view_channel?: boolean
+  [key: string]: boolean | undefined
+}
+
+export type Role = {
+  id: string
+  role_id?: string
+  server_id: string
+  name: string
+  color: string
+  position: number
+  permissions: RolePermissions
+  hoist: boolean
+  created_at?: string
+}
+
+export type ChannelPermissionOverride = {
+  channel_id: string
+  role_id: string
+  role_name: string
+  role_color: string
+  permissions: RolePermissions
+}
+
+export type CategoryPermissionOverride = {
+  category_id: string
+  role_id: string
+  role_name: string
+  role_color: string
+  permissions: RolePermissions
+}
+
+export type WsRoleCreated = {
+  type: 'role_created'
+  server_id: string
+  role: Role
+}
+
+export type WsRoleUpdated = {
+  type: 'role_updated'
+  server_id: string
+  role: Role
+}
+
+export type WsRoleDeleted = {
+  type: 'role_deleted'
+  server_id: string
+  role_id: string
+}
+
+export type WsRolesReordered = {
+  type: 'roles_reordered'
+  server_id: string
+  roles: Role[]
+}
+
+export type WsChannelPermissionsUpdated = {
+  type: 'channel_permissions_updated'
+  server_id: string
+  channel_id: string
+  overrides: ChannelPermissionOverride[]
+}
+
+export type WsCategoryPermissionsUpdated = {
+  type: 'category_permissions_updated'
+  server_id: string
+  category_id: string
+  overrides: CategoryPermissionOverride[]
+}
+
 export type UnreadChannelInfo = {
   unread_count: number
   has_mention: boolean
@@ -151,6 +238,7 @@ export type WsChatMessage = {
   reactions?: Reaction[]
   attachments?: Attachment[]
   mentions?: string[]
+  role_mentions?: string[]
   user_status?: 'online' | 'away' | 'busy' | 'offline'
   role_color?: string
   pinned?: boolean
@@ -688,6 +776,7 @@ export type WsOutboundSendMessage = {
   context?: 'global' | 'server' | 'dm'
   context_id?: string | null
   mentions?: string[]
+  role_mentions?: string[]
   messageKey?: string
   reply_to?: number
   nonce?: string
