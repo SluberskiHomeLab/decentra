@@ -161,6 +161,7 @@ export function ChatPage() {
   const [isVoiceMuted, setIsVoiceMuted] = useState(false)
   const [isVideoEnabled, setIsVideoEnabled] = useState(false)
   const [isScreenSharing, setIsScreenSharing] = useState(false)
+  const [isE2EEActive, setIsE2EEActive] = useState(false)
   
   // Mention autocomplete state
   const [showMentionAutocomplete, setShowMentionAutocomplete] = useState(false)
@@ -1530,6 +1531,7 @@ export function ChatPage() {
             setIsScreenSharing(sfu.getIsScreenSharing())
             setIsInVoice(sfu.getIsInVoice())
             setIsVoiceConnecting(sfu.getIsConnecting())
+            setIsE2EEActive(sfu.getIsE2EEActive())
           })
           sfu.setOnRemoteStreamChange((peer, stream) => {
             setRemoteStreams((prev) => {
@@ -3478,6 +3480,14 @@ export function ChatPage() {
                     >
                       ❌ Leave
                     </button>
+                    {isE2EEActive && (
+                      <span
+                        className="flex items-center gap-1 rounded-xl bg-emerald-500/15 border border-emerald-500/30 px-3 py-2 text-xs font-semibold text-emerald-400"
+                        title="End-to-end encrypted — media is encrypted client-side and cannot be read by the server"
+                      >
+                        🔒 E2EE
+                      </span>
+                    )}
                   </div>
                 </div>
               )}

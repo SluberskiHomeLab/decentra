@@ -18,6 +18,8 @@ from aiohttp import web
 import os
 import base64
 import hashlib
+import hmac as _hmac_mod
+import time
 import jwt
 import pyotp
 import qrcode
@@ -90,11 +92,13 @@ JWT_EXPIRATION_HOURS = 24  # Token expires after 24 hours
 LIVEKIT_API_KEY    = os.environ.get('LIVEKIT_API_KEY', '')
 LIVEKIT_API_SECRET = os.environ.get('LIVEKIT_API_SECRET', '')
 LIVEKIT_URL        = os.environ.get('LIVEKIT_URL', 'ws://localhost:7880')
-# Optional external TURN for the P2P DM-call path (LiveKit's built-in TURN
-# handles SFU traffic automatically).
-TURN_URL        = os.environ.get('TURN_URL', '')
-TURN_USERNAME   = os.environ.get('TURN_USERNAME', '')
-TURN_CREDENTIAL = os.environ.get('TURN_CREDENTIAL', '')
+# ── Coturn TURN Relay ───────────────────────────────────────────────────────
+# Self-hosted Coturn instance for ICE relay (both P2P DM calls and SFU fallback).
+# COTURN_SECRET must match the static-auth-secret in coturn/coturn.conf.
+# COTURN_URL is the TURN URI clients connect to (e.g., turn:your-domain.com:3478).
+COTURN_SECRET = os.environ.get('COTURN_SECRET', '')
+COTURN_URL    = os.environ.get('COTURN_URL', 'turn:localhost:3478')
+COTURN_REALM  = os.environ.get('COTURN_REALM', 'decentra.local')
 # ────────────────────────────────────────────────────────────────────────────
 
 # Store pending signups temporarily (in-memory)
@@ -273,12 +277,11 @@ def generate_livekit_token(room_name: str, participant_identity: str, participan
     if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
         return None
 
-    import time
     now = int(time.time())
     claims = {
         'iss': LIVEKIT_API_KEY,
         'sub': participant_identity,
-        'exp': now + 86400,   # 24-hour token lifetime
+        'exp': now + 3600,    # 1-hour token lifetime (hardened from 24 h)
         'nbf': now,
         'video': {
             'room': room_name,
@@ -286,6 +289,7 @@ def generate_livekit_token(room_name: str, participant_identity: str, participan
             'canPublish': True,
             'canSubscribe': True,
         },
+        'metadata': json.dumps({'room': room_name}),
     }
     if participant_name:
         claims['name'] = participant_name
@@ -7041,33 +7045,57 @@ async def main():
     app = web.Application()
     app.router.add_get('/ws', websocket_handler)
 
-    # ── Voice / ICE-server endpoint ──────────────────────────────────────────
+    # ── Voice / ICE-server endpoint (hardened) ────────────────────────────────
     async def ice_servers_handler(request: web.Request) -> web.Response:
         """
-        Return ICE server configuration for browser WebRTC clients.
+        Return ICE server configuration with time-limited HMAC credentials.
 
-        Always includes Google STUN as a fallback.  If TURN credentials are
-        configured via env vars, a TURN entry is appended so that users behind
-        symmetric NAT can still connect on the P2P DM-call path.
-        (SFU traffic goes through LiveKit's own built-in TURN relay.)
+        SECURITY CHANGES:
+        - Requires a valid session token (Authorization header or ?token= param).
+        - Returns ONLY the self-hosted Coturn TURN relay — no third-party STUN.
+        - Generates short-lived HMAC-SHA1 credentials (RFC 8489) valid for 1 hour.
+        - With iceTransportPolicy:'relay' enforced on the client, all media is
+          routed through Coturn and peers never see each other's real IP addresses.
         """
-        ice: list[dict] = [
-            {'urls': 'stun:stun.l.google.com:19302'},
-            {'urls': 'stun:stun1.l.google.com:19302'},
-        ]
-        if TURN_URL and TURN_USERNAME and TURN_CREDENTIAL:
+        # ── Authenticate ──
+        token = None
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            token = auth_header[7:]
+        if not token:
+            token = request.query.get('token')
+        if not token:
+            return web.json_response({'error': 'Authentication required'}, status=401)
+        user_info = verify_jwt_token(token)
+        if not user_info:
+            return web.json_response({'error': 'Invalid or expired token'}, status=401)
+
+        # ── Generate time-limited Coturn HMAC credentials ──
+        # Format: username = "<expiry_timestamp>:<user_id>"
+        # credential = Base64(HMAC-SHA1(static_secret, username))
+        # Valid for 1 hour.  Coturn validates these using use-auth-secret mode.
+        import hmac as _hmac
+        ttl = 3600  # 1 hour
+        expiry = int(time.time()) + ttl
+        turn_username = f'{expiry}:{user_info["username"]}'
+        turn_credential = base64.b64encode(
+            _hmac.new(COTURN_SECRET.encode(), turn_username.encode(), hashlib.sha1).digest()
+        ).decode()
+
+        ice: list[dict] = []
+        if COTURN_URL and COTURN_SECRET:
             ice.append({
-                'urls': TURN_URL,
-                'username': TURN_USERNAME,
-                'credential': TURN_CREDENTIAL,
+                'urls': COTURN_URL,
+                'username': turn_username,
+                'credential': turn_credential,
             })
-        # Also expose LiveKit's built-in TURN for the P2P path if LiveKit is up
-        if LIVEKIT_URL:
-            # Derive TURN hostname from the LiveKit URL
-            import urllib.parse
-            parsed = urllib.parse.urlparse(LIVEKIT_URL)
-            turn_host = parsed.hostname or 'localhost'
-            ice.append({'urls': f'turn:{turn_host}:3478'})
+            # Also offer TURN-over-TCP for restrictive networks
+            tcp_url = COTURN_URL.replace('turn:', 'turn:') + '?transport=tcp'
+            ice.append({
+                'urls': tcp_url,
+                'username': turn_username,
+                'credential': turn_credential,
+            })
         return web.json_response({'ice_servers': ice})
 
     app.router.add_get('/api/voice/ice-servers', ice_servers_handler)

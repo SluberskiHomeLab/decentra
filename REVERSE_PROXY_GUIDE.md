@@ -12,9 +12,14 @@ This guide covers placing Decentra behind a reverse proxy using five common opti
 | LiveKit Signaling | 7880 | 7880 | HTTP/WS | Proxied or exposed directly |
 | LiveKit WebRTC TCP | 7881 | 7881 | TCP | Must be exposed directly — not proxiable |
 | LiveKit WebRTC UDP | 7882 | 7882 | UDP | Must be exposed directly — not proxiable |
-| LiveKit TURN | 3478 | 3478 | UDP | Must be exposed directly — not proxiable |
+| Coturn TURN UDP | 3478 | 3478 | UDP | Must be exposed directly — not proxiable |
+| Coturn TURN TCP | 3478 | 3478 | TCP | Must be exposed directly — not proxiable |
+| Coturn TURN TLS | 5349 | 5349 | TCP | Must be exposed directly — not proxiable |
+| Coturn Relay Range | 49152–49200 | 49152–49200 | UDP | TURN media relay; must be exposed directly |
 
-> **Important:** The frontend container speaks **HTTPS** internally (self-signed certificate). Your reverse proxy must either terminate TLS and proxy to `https://localhost:8765` with SSL verification disabled, or pass the connection through (SSL passthrough). WebRTC UDP/TCP ports **cannot** be proxied by an HTTP reverse proxy — they must reach LiveKit directly.
+> **Important:** The frontend container speaks **HTTPS** internally (self-signed certificate). Your reverse proxy must either terminate TLS and proxy to `https://localhost:8765` with SSL verification disabled, or pass the connection through (SSL passthrough). WebRTC/TURN ports **cannot** be proxied by an HTTP reverse proxy — they must be forwarded directly to the host.
+>
+> **Security:** Decentra enforces `iceTransportPolicy: 'relay'`, which means **all** voice/video media is routed through the self-hosted Coturn TURN server. If Coturn is unreachable from clients, voice calls will not connect. Ensure the Coturn ports above are open in your firewall.
 
 ---
 
@@ -559,7 +564,9 @@ Regardless of which reverse proxy you choose, ensure these ports are open on you
 | 443 | TCP | HTTPS (app traffic) |
 | 7881 | TCP | LiveKit WebRTC TCP fallback |
 | 7882 | UDP | LiveKit WebRTC media |
-| 3478 | UDP | LiveKit TURN relay |
+| 3478 | UDP+TCP | Coturn TURN relay (required — relay-only ICE is enforced) |
+| 5349 | TCP | Coturn TURN over TLS (recommended for restrictive networks) |
+| 49152–49200 | UDP | Coturn TURN media relay range |
 
 ```bash
 # UFW quick reference
@@ -568,8 +575,13 @@ sudo ufw allow 443/tcp
 sudo ufw allow 7881/tcp
 sudo ufw allow 7882/udp
 sudo ufw allow 3478/udp
+sudo ufw allow 3478/tcp
+sudo ufw allow 5349/tcp
+sudo ufw allow 49152:49200/udp
 sudo ufw enable
 ```
+
+> **Note:** Since `iceTransportPolicy: 'relay'` is enforced client-side, all voice/video traffic routes through Coturn. If Coturn ports are unreachable, voice calls will fail silently.
 
 ---
 
@@ -581,8 +593,11 @@ After configuring a reverse proxy, update your `.env` to match your domain:
 # Use wss:// for the LiveKit URL so the browser connects over WebSocket Secure
 LIVEKIT_URL=wss://livekit.example.com
 
-# If LiveKit signaling is proxied on the same domain under a path (advanced)
-# LIVEKIT_URL=wss://chat.example.com/livekit
+# Coturn TURN relay — set to your public domain/IP
+COTURN_URL=turn:chat.example.com:3478
+COTURN_REALM=chat.example.com
+# Generate a strong secret: python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+COTURN_SECRET=YOUR_COTURN_SECRET_HERE
 ```
 
 Then restart Decentra:

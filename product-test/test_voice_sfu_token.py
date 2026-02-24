@@ -6,8 +6,12 @@ Verifies that:
      that contains 'livekit_token' and 'livekit_url' fields when the server has
      LIVEKIT_API_KEY/LIVEKIT_API_SECRET configured.
   2. The returned token is a valid 3-part JWT signed with HS256 whose payload
-     contains the expected LiveKit claims (room, roomJoin, correct identity).
-  3. The /api/voice/ice-servers REST endpoint returns a well-formed ICE server list.
+     contains the expected LiveKit claims (room, roomJoin, correct identity)
+     and expires within 1 hour (hardened from previous 24-hour lifetime).
+  3. The /api/voice/ice-servers REST endpoint:
+     - Requires a valid session token (returns 401 without one).
+     - Returns ONLY self-hosted Coturn TURN entries (no Google STUN).
+     - Each TURN entry includes time-limited HMAC credentials.
   4. Direct-call (DM) voice signalling still produces *no* livekit_token (P2P path
      is preserved for calls that are not server voice channels).
 
@@ -81,10 +85,20 @@ def login(username: str, password: str) -> str:
 
 
 def test_ice_servers_endpoint(token: str) -> None:
-    """Test /api/voice/ice-servers returns valid ICE config."""
+    """Test /api/voice/ice-servers returns valid, authenticated, TURN-only config."""
+    # ── Test 1: Request without token should return 401 ──
+    resp_no_auth = requests.get(
+        f'{BASE_URL}/api/voice/ice-servers',
+        verify=False,
+        timeout=10,
+    )
+    assert resp_no_auth.status_code == 401, f'Expected 401 without token, got {resp_no_auth.status_code}'
+    print(f'{PASS} /api/voice/ice-servers returns 401 without authentication')
+
+    # ── Test 2: Request with valid token ──
     resp = requests.get(
         f'{BASE_URL}/api/voice/ice-servers',
-        params={'token': token},
+        headers={'Authorization': f'Bearer {token}'},
         verify=False,
         timeout=10,
     )
@@ -93,10 +107,25 @@ def test_ice_servers_endpoint(token: str) -> None:
     assert 'ice_servers' in data, f'Missing ice_servers key: {data}'
     assert isinstance(data['ice_servers'], list), 'ice_servers must be a list'
     assert len(data['ice_servers']) > 0, 'ice_servers must not be empty'
-    # Every entry must have a urls field
+
+    # Every entry must be a TURN entry with credentials (no STUN allowed)
     for entry in data['ice_servers']:
         assert 'urls' in entry, f'ICE entry missing urls: {entry}'
-    print(f'{PASS} /api/voice/ice-servers returned {len(data["ice_servers"])} ICE server(s)')
+        assert 'turn:' in entry['urls'], f'Expected TURN-only, got: {entry["urls"]}'
+        assert 'username' in entry, f'ICE entry missing username (HMAC cred): {entry}'
+        assert 'credential' in entry, f'ICE entry missing credential (HMAC cred): {entry}'
+        # Username should be in format "<expiry_timestamp>:<username>"
+        parts = entry['username'].split(':')
+        assert len(parts) >= 2, f'TURN username not in expiry:user format: {entry["username"]}'
+        expiry_ts = int(parts[0])
+        assert expiry_ts > time.time(), f'TURN credential already expired: {expiry_ts}'
+
+    # No Google STUN entries should be present
+    for entry in data['ice_servers']:
+        assert 'stun.l.google.com' not in entry.get('urls', ''), \
+            f'Google STUN should not be present: {entry}'
+
+    print(f'{PASS} /api/voice/ice-servers returned {len(data["ice_servers"])} TURN server(s) with HMAC credentials')
 
 
 async def test_voice_channel_joined_sfu(token1: str) -> None:
@@ -165,6 +194,9 @@ async def test_voice_channel_joined_sfu(token1: str) -> None:
             assert payload.get('sub') == USER1, f'sub claim should be username: {payload}'
             expiry = payload.get('exp', 0)
             assert expiry > time.time(), 'Token is already expired!'
+            # Hardened: token should expire within 1 hour (3600s), not 24h
+            assert expiry <= time.time() + 3700, \
+                f'Token expiry too far in future (expected <=1h): exp={expiry}, now={time.time()}'
 
             print(f'{PASS} voice_channel_joined contained valid LiveKit JWT (room={expected_room}, sub={USER1})')
             print(f'{PASS} livekit_url = {lk_url}')

@@ -64,28 +64,36 @@ export class VoiceChat {
     // Load device preferences
     this.loadDevicePreferences()
 
-    // ICE servers — start with Google STUN; refreshed from backend before each join
+    // ICE servers — no third-party STUN; fetched from backend before each join.
+    // With iceTransportPolicy:'relay', all media goes through our self-hosted
+    // Coturn TURN server, preventing IP address leakage between peers.
     this.iceServers = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-      ],
+      iceServers: [],
+      iceTransportPolicy: 'relay' as RTCIceTransportPolicy,
+      bundlePolicy: 'max-bundle' as RTCBundlePolicy,
     }
   }
 
-  /** Fetch ICE server list from the backend (includes TURN if configured). */
+  /** Fetch ICE server list from the backend (authenticated, returns Coturn TURN credentials). */
   private async fetchIceServers(): Promise<void> {
-    try {
-      const token = localStorage.getItem('token')
-      const res = await fetch(`/api/voice/ice-servers${token ? `?token=${encodeURIComponent(token)}` : ''}`)
-      if (res.ok) {
-        const data = await res.json()
-        if (Array.isArray(data.ice_servers) && data.ice_servers.length > 0) {
-          this.iceServers = { iceServers: data.ice_servers }
-        }
-      }
-    } catch {
-      // Non-fatal — fall back to the default ICE config already set
+    const token = localStorage.getItem('token')
+    if (!token) {
+      throw new Error('No auth token available — cannot fetch ICE servers')
+    }
+    const res = await fetch('/api/voice/ice-servers', {
+      headers: { 'Authorization': `Bearer ${token}` },
+    })
+    if (!res.ok) {
+      throw new Error(`ICE server request failed (HTTP ${res.status})`)
+    }
+    const data = await res.json()
+    if (!Array.isArray(data.ice_servers) || data.ice_servers.length === 0) {
+      throw new Error('Server returned no TURN credentials — voice relay is not configured')
+    }
+    this.iceServers = {
+      iceServers: data.ice_servers,
+      iceTransportPolicy: 'relay' as RTCIceTransportPolicy,
+      bundlePolicy: 'max-bundle' as RTCBundlePolicy,
     }
   }
 

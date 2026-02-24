@@ -32,7 +32,22 @@ services:
       - "7880:7880"       # HTTP/WS signaling
       - "7881:7881/tcp"   # WebRTC TCP fallback
       - "7882:7882/udp"   # WebRTC UDP
-      - "3478:3478/udp"   # TURN UDP relay
+    networks:
+      - decentra-network
+    restart: unless-stopped
+
+  coturn:
+    image: coturn/coturn:latest
+    container_name: decentra-coturn
+    volumes:
+      - ./coturn/coturn.conf:/etc/coturn/turnserver.conf:ro
+    ports:
+      - "3478:3478/udp"    # TURN UDP relay
+      - "3478:3478/tcp"    # TURN TCP relay
+      - "5349:5349/tcp"    # TURN TLS
+      - "49152-49200:49152-49200/udp"  # TURN relay port range
+    environment:
+      - COTURN_SECRET=${COTURN_SECRET}
     networks:
       - decentra-network
     restart: unless-stopped
@@ -52,6 +67,10 @@ services:
       # URL the *browser* uses to reach LiveKit (must be reachable from client machines).
       # In production set this to wss://your-domain.com:7880
       - LIVEKIT_URL=${LIVEKIT_URL:-ws://localhost:7880}
+      # Coturn TURN relay — used for P2P DM calls and ICE relay
+      - COTURN_SECRET=${COTURN_SECRET}
+      - COTURN_URL=${COTURN_URL:-turn:localhost:3478}
+      - COTURN_REALM=${COTURN_REALM:-decentra.local}
     networks:
       - decentra-network
     restart: unless-stopped
@@ -59,6 +78,8 @@ services:
       postgres:
         condition: service_healthy
       livekit:
+        condition: service_started
+      coturn:
         condition: service_started
 
   frontend:

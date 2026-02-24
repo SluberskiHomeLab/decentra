@@ -11,21 +11,20 @@ port: 7880
 rtc:
   tcp_port: 7881
   udp_port: 7882
-  # Set use_external_ip: true when the host is behind NAT (production VPS)
-  use_external_ip: false
+  # SECURITY: Set use_external_ip: true when the host is behind NAT (production VPS).
+  # Without this, WebRTC connectivity silently fails behind NAT.
+  use_external_ip: true
   # UDP port range for media; narrow range avoids large Docker port-mapping overhead
   port_range_start: 50000
   port_range_end: 50200
+  # Prevent LiveKit from establishing direct P2P between participants.
+  # All media MUST go through the SFU for E2EE key distribution to work correctly.
+  allow_peer_to_peer: false
 
-# TURN relay: requires a domain (hostname) for certificate-based auth.
-# To enable, uncomment and set your hostname:
-#
+# TURN relay is handled by a dedicated Coturn instance (see docker-compose.yml).
+# LiveKit's built-in TURN is disabled to avoid port conflicts with Coturn.
 # turn:
-#   enabled: true
-#   domain: your-livekit-host.example.com
-#   udp_port: 3478
-#   tls_port: 5349
-#   external_tls: false
+#   enabled: false
 
 # API key / secret: must match LIVEKIT_API_KEY / LIVEKIT_API_SECRET env vars on the server
 # Format:  <key>: <secret>
