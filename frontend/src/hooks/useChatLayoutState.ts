@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { Keybinds } from '../store/settingsStore'
 
-export type ServerSettingsTab = 'overview' | 'channels' | 'roles' | 'customization' | 'automations'
+export type ServerSettingsTab = 'overview' | 'channels' | 'roles' | 'customization' | 'automations' | 'members' | 'audit'
 export type AdminSettingsTab = 'general' | 'email' | 'announcements' | 'license' | 'webhooks' | 'users'
 export type AccountSettingsTab = 'profile' | 'security' | 'notifications' | 'keybinds'
 

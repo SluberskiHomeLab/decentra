@@ -406,6 +406,40 @@ export type WsServerMembers = {
   members: ServerMember[]
 }
 
+// --- Kick / Audit log types ---
+
+export type WsKickedFromServer = {
+  type: 'kicked_from_server'
+  server_id: string
+  server_name?: string
+  reason?: string
+  kicked_by: string
+}
+
+export type WsMemberKicked = {
+  type: 'member_kicked'
+  server_id: string
+  username: string
+  kicked_by: string
+  reason?: string
+}
+
+export type AuditLogEntry = {
+  id: number
+  server_id: string
+  action: string
+  actor: string | null
+  target: string | null
+  detail: Record<string, any>
+  created_at: string
+}
+
+export type WsServerAuditLog = {
+  type: 'server_audit_log'
+  server_id: string
+  entries: AuditLogEntry[]
+}
+
 export type Ws2FASetup = {
   type: '2fa_setup'
   secret: string

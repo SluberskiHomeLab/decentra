@@ -323,6 +323,24 @@ class Database:
                             FOREIGN KEY (banned_by) REFERENCES users(username)
                         )
                     ''')
+
+                    # Server audit log table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS server_audit_log (
+                            id SERIAL PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            action VARCHAR(100) NOT NULL,
+                            actor VARCHAR(255),
+                            target VARCHAR(255),
+                            detail JSONB DEFAULT '{}',
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
+                        )
+                    ''')
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_audit_log_server_id
+                        ON server_audit_log(server_id, created_at DESC)
+                    ''')
                     
                     # Email verification codes table
                     cursor.execute('''
@@ -2674,6 +2692,63 @@ class Database:
         except Exception as e:
             print(f"Error getting user ban info: {e}")
             return None
+
+    def remove_server_member(self, server_id: str, username: str) -> bool:
+        """Remove a member from a server (kick, without banning)."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'DELETE FROM server_members WHERE server_id = %s AND username = %s',
+                    (server_id, username)
+                )
+                cursor.execute(
+                    'DELETE FROM user_roles WHERE server_id = %s AND username = %s',
+                    (server_id, username)
+                )
+                return True
+        except Exception as e:
+            print(f"Error kicking user: {e}")
+            return False
+
+    def add_audit_log_entry(self, server_id: str, action: str, actor: str = None,
+                            target: str = None, detail: Dict = None) -> bool:
+        """Append an entry to the server audit log."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO server_audit_log (server_id, action, actor, target, detail)
+                    VALUES (%s, %s, %s, %s, %s)
+                ''', (server_id, action, actor, target,
+                      json.dumps(detail) if detail else '{}'))
+                return True
+        except Exception as e:
+            print(f"Error adding audit log entry: {e}")
+            return False
+
+    def get_server_audit_log(self, server_id: str, limit: int = 200) -> List[Dict]:
+        """Get audit log entries for a server, newest first."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT id, server_id, action, actor, target, detail, created_at
+                    FROM server_audit_log
+                    WHERE server_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                ''', (server_id, limit))
+                rows = []
+                for row in cursor.fetchall():
+                    entry = dict(row)
+                    if isinstance(entry.get('created_at'), datetime):
+                        entry['created_at'] = entry['created_at'].isoformat()
+                    rows.append(entry)
+                return rows
+        except Exception as e:
+            print(f"Error getting audit log: {e}")
+            return []
     
     # Message operations
     def save_message(self, username: str, content: str, context_type: str, context_id: Optional[str] = None, reply_to: Optional[int] = None) -> int:

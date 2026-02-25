@@ -3447,6 +3447,9 @@ async def handler(websocket):
                                 old_name = server['name']
                                 db.update_server_name(server_id, new_name)
                                 
+                                db.add_audit_log_entry(server_id, 'server_rename', actor=username,
+                                                       detail={'old_name': old_name, 'new_name': new_name})
+
                                 # Notify all server members
                                 await broadcast_to_server(server_id, json.dumps({
                                     'type': 'server_renamed',
@@ -3633,6 +3636,9 @@ async def handler(websocket):
                                 }), exclude=websocket)
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} joined server {server_id} via invite")
                                 
+                                db.add_audit_log_entry(server_id, 'member_join', actor=username,
+                                                       target=username, detail={'invite_code': invite_code})
+
                                 # Send welcome message if enabled
                                 welcome = db.get_welcome_message(server_id)
                                 if welcome and welcome['enabled'] and welcome['message']:
@@ -3939,6 +3945,9 @@ async def handler(websocket):
                                     'action': 'added'
                                 }))
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} assigned role {role_id} to {target_username}")
+                                db.add_audit_log_entry(server_id, 'role_assign', actor=username,
+                                                       target=target_username,
+                                                       detail={'role_id': role_id, 'role_name': role.get('name', '')})
                             else:
                                 await websocket.send_str(json.dumps({
                                     'type': 'error',
@@ -3978,6 +3987,8 @@ async def handler(websocket):
                                 'action': 'removed'
                             }))
                             print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} removed role {role_id} from {target_username}")
+                            db.add_audit_log_entry(server_id, 'role_remove', actor=username,
+                                                   target=target_username, detail={'role_id': role_id})
                         else:
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
@@ -4233,6 +4244,8 @@ async def handler(websocket):
                             }))
                             
                             print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} banned {target_username} from server {server_id}")
+                            db.add_audit_log_entry(server_id, 'member_ban', actor=username,
+                                                   target=target_username, detail={'reason': reason})
                         else:
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
@@ -4277,6 +4290,8 @@ async def handler(websocket):
                             }))
                             
                             print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} unbanned {target_username} from server {server_id}")
+                            db.add_audit_log_entry(server_id, 'member_unban', actor=username,
+                                                   target=target_username)
                         else:
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
@@ -4314,6 +4329,104 @@ async def handler(websocket):
                             } for ban in bans]
                         }))
                     
+                    elif data.get('type') == 'kick_member':
+                        server_id = data.get('server_id', '')
+                        target_username = data.get('username', '').strip()
+                        reason = data.get('reason', '').strip()
+
+                        server = db.get_server(server_id)
+                        if not server:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Server not found'
+                            }))
+                            continue
+
+                        if not has_permission(server_id, username, 'ban_members'):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'You do not have permission to kick members'
+                            }))
+                            continue
+
+                        if target_username == server['owner']:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Cannot kick the server owner'
+                            }))
+                            continue
+
+                        if target_username == username:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Cannot kick yourself'
+                            }))
+                            continue
+
+                        if not db.get_user(target_username):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'User not found'
+                            }))
+                            continue
+
+                        members = db.get_server_members(server_id)
+                        if target_username not in [m['username'] for m in members]:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'User is not a member of this server'
+                            }))
+                            continue
+
+                        if db.remove_server_member(server_id, target_username):
+                            await send_to_user(target_username, json.dumps({
+                                'type': 'kicked_from_server',
+                                'server_id': server_id,
+                                'server_name': server['name'],
+                                'reason': reason,
+                                'kicked_by': username
+                            }))
+                            await broadcast_to_server(server_id, json.dumps({
+                                'type': 'member_kicked',
+                                'server_id': server_id,
+                                'username': target_username,
+                                'kicked_by': username,
+                                'reason': reason
+                            }))
+                            db.add_audit_log_entry(server_id, 'member_kick', actor=username,
+                                                   target=target_username, detail={'reason': reason})
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} kicked {target_username} from server {server_id}")
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Failed to kick user'
+                            }))
+
+                    elif data.get('type') == 'get_server_audit_log':
+                        server_id = data.get('server_id', '')
+
+                        server = db.get_server(server_id)
+                        if not server:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Server not found'
+                            }))
+                            continue
+
+                        if not has_permission(server_id, username, 'access_settings'):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'You do not have permission to view the audit log'
+                            }))
+                            continue
+
+                        entries = db.get_server_audit_log(server_id, limit=200)
+                        await websocket.send_str(json.dumps({
+                            'type': 'server_audit_log',
+                            'server_id': server_id,
+                            'entries': entries
+                        }))
+
                     # Channel creation handlers
                     elif data.get('type') == 'create_channel':
                         server_id = data.get('server_id', '')

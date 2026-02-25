@@ -7,7 +7,7 @@ import { useToastStore } from '../store/toastStore'
 import { VoiceChat } from '../lib/VoiceChat'
 import { VoiceChatSFU } from '../lib/VoiceChatSFU'
 import type { ChatContext, TypingUser } from '../store/appStore'
-import type { Attachment, Reaction, Server, ServerMember, Thread, WsChatMessage, WsMessage } from '../types/protocol'
+import type { Attachment, AuditLogEntry, Reaction, Server, ServerMember, Thread, WsChatMessage, WsMessage } from '../types/protocol'
 import { LicensePanel } from '../components/admin/LicensePanel'
 import { WebhookPanel } from '../components/admin/WebhookPanel'
 import { UsersPanel } from '../components/admin/UsersPanel'
@@ -207,6 +207,11 @@ export function ChatPage() {
   const [isViewingBans, setIsViewingBans] = useState(false)
   const [banUsername, setBanUsername] = useState('')
   const [banReason, setBanReason] = useState('')
+  // Kick state
+  const [kickTargetUsername, setKickTargetUsername] = useState<string | null>(null)
+  const [kickReason, setKickReason] = useState('')
+  // Audit log state
+  const [serverAuditLog, setServerAuditLog] = useState<Record<string, AuditLogEntry[]>>({})
   const [disable2FAPassword, setDisable2FAPassword] = useState('')
   const [disable2FACode, setDisable2FACode] = useState('')
   const [notificationMode, setNotificationMode] = useState<'all' | 'mentions' | 'none'>('all')
@@ -1111,6 +1116,26 @@ export function ChatPage() {
           const servers = (prev.servers ?? []).filter((s) => s.id !== msg.server_id)
           setInit({ ...prev, servers })
         }
+      }
+
+      if (msg.type === 'kicked_from_server') {
+        pushToast({ kind: 'error', message: `You have been kicked from ${msg.server_name || 'the server'}. Reason: ${msg.reason || 'No reason provided'}` })
+        const prev = useAppStore.getState().init
+        if (prev && msg.server_id) {
+          const servers = (prev.servers ?? []).filter((s: any) => s.id !== msg.server_id)
+          setInit({ ...prev, servers })
+        }
+      }
+
+      if (msg.type === 'member_kicked') {
+        pushToast({ kind: 'info', message: `${msg.username} has been kicked${msg.reason ? `: ${msg.reason}` : ''}` })
+        if (msg.server_id && selectedServerId === msg.server_id) {
+          wsClient.send({ type: 'get_server_members', server_id: msg.server_id })
+        }
+      }
+
+      if (msg.type === 'server_audit_log') {
+        setServerAuditLog(prev => ({ ...prev, [msg.server_id]: msg.entries ?? [] }))
       }
       
       if (msg.type === 'mention_notification') {
@@ -2287,6 +2312,19 @@ export function ChatPage() {
       server_id: selectedServerId,
       username,
     })
+  }
+
+  // Kick management
+  const kickMember = (targetUsername: string, reason: string = '') => {
+    if (!selectedServerId) return
+    wsClient.send({
+      type: 'kick_member',
+      server_id: selectedServerId,
+      username: targetUsername,
+      reason: reason.trim() || undefined,
+    })
+    setKickTargetUsername(null)
+    setKickReason('')
   }
 
   // Mention handling functions
@@ -5921,6 +5959,34 @@ export function ChatPage() {
                 >
                   Automations
                 </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setServerSettingsTab('members')
+                    if (selectedServerId) wsClient.send({ type: 'get_server_members', server_id: selectedServerId })
+                  }}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'members'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Members
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setServerSettingsTab('audit')
+                    if (selectedServerId) wsClient.send({ type: 'get_server_audit_log', server_id: selectedServerId })
+                  }}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'audit'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Audit Log
+                </button>
               </div>
 
               <div className="p-6 overflow-y-auto flex-1 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
@@ -7161,6 +7227,168 @@ export function ChatPage() {
                   <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                     <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">🔗 Webhooks</h3>
                     <WebhookPanel serverId={selectedServerId || undefined} />
+                  </section>
+                    </>
+                  )}
+
+                  {/* Members Tab */}
+                  {serverSettingsTab === 'members' && (
+                    <>
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">👥 Server Members</h3>
+                    <div className="space-y-2 max-h-[50vh] overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                      {(serverMembers[selectedServerId ?? ''] ?? []).length === 0 && (
+                        <p className="text-sm text-slate-500 text-center py-4">No members found</p>
+                      )}
+                      {(serverMembers[selectedServerId ?? ''] ?? []).map((member) => {
+                        const isOwner = member.username === selectedServerObj?.owner
+                        const isSelf = member.username === getStoredAuth()?.username
+                        return (
+                          <div key={member.username} className="flex items-center justify-between rounded-xl border border-white/5 bg-slate-950/30 px-4 py-3 hover:bg-slate-950/50 transition">
+                            <div className="flex items-center gap-3">
+                              <AvatarWithStatus
+                                avatar={member.avatar}
+                                avatar_type={member.avatar_type}
+                                avatar_data={member.avatar_data}
+                                size="sm"
+                              />
+                              <div>
+                                <span className="text-sm font-medium text-slate-100">{member.username}</span>
+                                {isOwner && <span className="ml-2 text-xs text-amber-400 font-semibold">Owner</span>}
+                                {member.status_message && (
+                                  <p className="text-xs text-slate-500 truncate max-w-[200px]">{member.status_message}</p>
+                                )}
+                              </div>
+                            </div>
+                            {!isOwner && !isSelf && (
+                              <div className="flex items-center gap-2">
+                                {kickTargetUsername === member.username ? (
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="text"
+                                      value={kickReason}
+                                      onChange={(e) => setKickReason(e.target.value)}
+                                      placeholder="Reason (optional)"
+                                      className="w-36 rounded-lg border border-white/10 bg-slate-900 px-2 py-1 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-orange-500/40"
+                                      onKeyDown={(e) => { if (e.key === 'Enter') kickMember(member.username, kickReason) }}
+                                      autoFocus
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => kickMember(member.username, kickReason)}
+                                      className="rounded-lg bg-orange-500 px-2 py-1 text-xs font-semibold text-white hover:bg-orange-400"
+                                    >
+                                      Confirm
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => { setKickTargetUsername(null); setKickReason('') }}
+                                      className="rounded-lg bg-slate-700 px-2 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-600"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => setKickTargetUsername(member.username)}
+                                      title="Kick member"
+                                      className="rounded-lg border border-orange-500/30 px-3 py-1 text-xs font-semibold text-orange-400 hover:bg-orange-500/10 transition"
+                                    >
+                                      Kick
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setBanUsername(member.username)
+                                        setBanReason('')
+                                        setServerSettingsTab('overview')
+                                        setIsViewingBans(true)
+                                      }}
+                                      title="Ban member"
+                                      className="rounded-lg border border-red-500/30 px-3 py-1 text-xs font-semibold text-red-400 hover:bg-red-500/10 transition"
+                                    >
+                                      Ban
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </section>
+                    </>
+                  )}
+
+                  {/* Audit Log Tab */}
+                  {serverSettingsTab === 'audit' && (
+                    <>
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <div className="flex items-center justify-between mb-4 border-b border-sky-500/30 pb-2">
+                      <h3 className="text-base font-semibold text-white">📋 Audit Log</h3>
+                      <button
+                        type="button"
+                        onClick={() => { if (selectedServerId) wsClient.send({ type: 'get_server_audit_log', server_id: selectedServerId }) }}
+                        className="rounded-lg border border-white/10 px-3 py-1 text-xs font-semibold text-slate-300 hover:bg-white/5 transition"
+                      >
+                        Refresh
+                      </button>
+                    </div>
+                    <div className="space-y-2 max-h-[55vh] overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                      {(serverAuditLog[selectedServerId ?? ''] ?? []).length === 0 && (
+                        <p className="text-sm text-slate-500 text-center py-8">No audit log entries yet</p>
+                      )}
+                      {(serverAuditLog[selectedServerId ?? ''] ?? []).map((entry) => {
+                        const actionMeta: Record<string, { label: string; color: string; icon: string }> = {
+                          member_join: { label: 'Member Joined', color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20', icon: '→' },
+                          member_kick: { label: 'Member Kicked', color: 'text-orange-400 bg-orange-500/10 border-orange-500/20', icon: '⚡' },
+                          member_ban: { label: 'Member Banned', color: 'text-red-400 bg-red-500/10 border-red-500/20', icon: '🚫' },
+                          member_unban: { label: 'Member Unbanned', color: 'text-green-400 bg-green-500/10 border-green-500/20', icon: '✓' },
+                          role_assign: { label: 'Role Assigned', color: 'text-purple-400 bg-purple-500/10 border-purple-500/20', icon: '+' },
+                          role_remove: { label: 'Role Removed', color: 'text-purple-400 bg-purple-500/10 border-purple-500/20', icon: '−' },
+                          server_rename: { label: 'Server Renamed', color: 'text-sky-400 bg-sky-500/10 border-sky-500/20', icon: '✏' },
+                        }
+                        const meta = actionMeta[entry.action] ?? { label: entry.action, color: 'text-slate-400 bg-slate-500/10 border-slate-500/20', icon: '•' }
+                        const ts = entry.created_at ? new Date(entry.created_at) : null
+                        const relative = ts ? (() => {
+                          const diff = Date.now() - ts.getTime()
+                          if (diff < 60_000) return 'just now'
+                          if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
+                          if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
+                          return `${Math.floor(diff / 86_400_000)}d ago`
+                        })() : ''
+
+                        let detail = ''
+                        const d = entry.detail ?? {}
+                        if (entry.action === 'server_rename') detail = `"${d.old_name}" → "${d.new_name}"`
+                        else if (entry.action === 'role_assign') detail = d.role_name ? `Role: ${d.role_name}` : ''
+                        else if (entry.action === 'role_remove') detail = d.role_id ? `Role ID: ${d.role_id}` : ''
+                        else if (d.reason) detail = `Reason: ${d.reason}`
+                        else if (d.invite_code) detail = `Invite: ${d.invite_code}`
+
+                        return (
+                          <div key={entry.id} className="flex items-start gap-3 rounded-xl border border-white/5 bg-slate-950/30 px-4 py-3">
+                            <span className={`mt-0.5 inline-flex h-7 w-7 items-center justify-center rounded-lg border text-xs font-bold ${meta.color}`}>
+                              {meta.icon}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className={`inline-block rounded-md border px-2 py-0.5 text-xs font-semibold ${meta.color}`}>{meta.label}</span>
+                                {entry.actor && <span className="text-xs text-slate-300">by <span className="font-medium text-white">{entry.actor}</span></span>}
+                                {entry.target && entry.target !== entry.actor && (
+                                  <span className="text-xs text-slate-400">on <span className="font-medium text-slate-200">{entry.target}</span></span>
+                                )}
+                              </div>
+                              {detail && <p className="text-xs text-slate-500 mt-1 truncate">{detail}</p>}
+                            </div>
+                            <span className="shrink-0 text-xs text-slate-600" title={ts?.toLocaleString() ?? ''}>{relative}</span>
+                          </div>
+                        )
+                      })}
+                    </div>
                   </section>
                     </>
                   )}
