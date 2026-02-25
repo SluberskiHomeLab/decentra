@@ -944,6 +944,11 @@ async def handler(websocket):
             else:
                 break
             
+            # Respond to keepalive pings during auth phase
+            if auth_data.get('type') == 'ping':
+                await websocket.send_str(json.dumps({'type': 'pong'}))
+                continue
+            
             # Handle signup
             if auth_data.get('type') == 'signup':
                 username = auth_data.get('username', '').strip()
@@ -1639,6 +1644,12 @@ async def handler(websocket):
                 try:
                     data = json.loads(msg.data)
                     msg_type = data.get('type')
+                    
+                    # Respond to client-level keepalive pings immediately
+                    if msg_type == 'ping':
+                        await websocket.send_str(json.dumps({'type': 'pong'}))
+                        continue
+                    
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] Received message type: {msg_type}", flush=True)
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Full data: {data}", flush=True)
                     
@@ -6833,7 +6844,7 @@ async def handler(websocket):
 
 async def websocket_handler(request):
     """Handle WebSocket upgrade requests."""
-    ws = web.WebSocketResponse()
+    ws = web.WebSocketResponse(heartbeat=30.0)
     await ws.prepare(request)
     
     # Use the existing handler logic

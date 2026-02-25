@@ -60,16 +60,33 @@ export class WsClient {
   private handlers = new Set<MessageHandler>()
   private closeHandlers = new Set<CloseHandler>()
   private errorHandlers = new Set<ErrorHandler>()
+  private pingInterval: ReturnType<typeof setInterval> | null = null
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private reconnectDelay = 1000
+  private maxReconnectDelay = 30000
+  private lastUrl: string = defaultWsUrl()
+  private intentionallyClosed = false
 
   connect(url: string = defaultWsUrl()): WebSocket {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return this.ws
     }
 
+    this.lastUrl = url
+    this.intentionallyClosed = false
+    this.clearTimers()
+
     this.ws = new WebSocket(url)
+    this.ws.onopen = () => {
+      this.reconnectDelay = 1000
+      this.startPing()
+    }
     this.ws.onmessage = (event) => {
       try {
-        const data = JSON.parse(String(event.data)) as WsMessage
+        const raw = String(event.data)
+        // Ignore server pong frames
+        if (raw === 'pong') return
+        const data = JSON.parse(raw) as WsMessage
         for (const handler of this.handlers) handler(data)
       } catch {
         // ignore malformed messages
@@ -79,10 +96,48 @@ export class WsClient {
       for (const handler of this.errorHandlers) handler(ev)
     }
     this.ws.onclose = (ev) => {
+      this.stopPing()
       for (const handler of this.closeHandlers) handler(ev)
+      this.scheduleReconnect()
     }
 
     return this.ws
+  }
+
+  private startPing() {
+    this.stopPing()
+    // Send a lightweight ping every 25 s to keep the connection alive
+    // through nginx and any other proxies.
+    this.pingInterval = setInterval(() => {
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({ type: 'ping' }))
+      }
+    }, 25_000)
+  }
+
+  private stopPing() {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval)
+      this.pingInterval = null
+    }
+  }
+
+  private clearTimers() {
+    this.stopPing()
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+  }
+
+  private scheduleReconnect() {
+    if (this.intentionallyClosed) return
+    this.reconnectTimer = setTimeout(() => {
+      this.ws = null          // allow connect() to create a new socket
+      this.connect(this.lastUrl)
+    }, this.reconnectDelay)
+    // Exponential back-off capped at maxReconnectDelay
+    this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay)
   }
 
   onMessage(handler: MessageHandler): () => void {
@@ -295,6 +350,8 @@ export class WsClient {
   }
 
   close() {
+    this.intentionallyClosed = true
+    this.clearTimers()
     this.ws?.close()
     this.ws = null
   }
