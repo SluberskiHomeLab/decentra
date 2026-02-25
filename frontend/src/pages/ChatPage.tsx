@@ -260,6 +260,15 @@ export function ChatPage() {
   const [welcomeMessage, setWelcomeMessage] = useState('Welcome {user} to the server!')
   const [welcomeChannel, setWelcomeChannel] = useState('')
 
+  // Server automation state (auto-role & rules screening)
+  const [autoRoleId, setAutoRoleId] = useState<string | null>(null)
+  const [rulesEnabled, setRulesEnabled] = useState(false)
+  const [rulesText, setRulesText] = useState('')
+  const [automationRoles, setAutomationRoles] = useState<{ role_id: string; name: string; color: string }[]>([])
+  const [rulesModalServerId, setRulesModalServerId] = useState<string | null>(null)
+  const [rulesModalText, setRulesModalText] = useState('')
+  const [rulesModalServerName, setRulesModalServerName] = useState('')
+
   const pushToast = useToastStore((s) => s.push)
 
   const selectedKey = contextKey(selectedContext)
@@ -800,14 +809,22 @@ export function ChatPage() {
         setShowServerInviteModal(false)
         setIsJoiningServer(false)
         
-        // Navigate to the newly joined server
-        const firstChannel = msg.server.channels?.[0]
-        if (firstChannel) {
-          selectContext({
-            kind: 'server',
-            serverId: msg.server.id,
-            channelId: firstChannel.id,
-          })
+        // Check if the server has rules the user must accept first
+        const joinedServer = msg.server as any
+        if (joinedServer.rules_pending && joinedServer.rules_text) {
+          setRulesModalServerId(joinedServer.id)
+          setRulesModalText(joinedServer.rules_text)
+          setRulesModalServerName(joinedServer.name)
+        } else {
+          // Navigate to the newly joined server only if no rules gate
+          const firstChannel = msg.server.channels?.[0]
+          if (firstChannel) {
+            selectContext({
+              kind: 'server',
+              serverId: msg.server.id,
+              channelId: firstChannel.id,
+            })
+          }
         }
       }
 
@@ -1050,6 +1067,31 @@ export function ChatPage() {
       
       if (msg.type === 'welcome_message_updated') {
         pushToast({ kind: 'success', message: 'Welcome message updated' })
+      }
+
+      // Server automation settings response
+      if (msg.type === 'server_automation_settings') {
+        setAutoRoleId(msg.auto_role_id || null)
+        setRulesEnabled(msg.rules_enabled || false)
+        setRulesText(msg.rules_text || '')
+        setAutomationRoles(msg.roles || [])
+      }
+      
+      if (msg.type === 'server_automation_settings_updated') {
+        pushToast({ kind: 'success', message: 'Automation settings updated' })
+      }
+
+      // Rules accepted — clear the rules_pending flag on the server
+      if (msg.type === 'rules_accepted') {
+        const prev = useAppStore.getState().init
+        if (prev) {
+          const servers = (prev.servers ?? []).map((s) =>
+            s.id === msg.server_id ? { ...s, rules_pending: false, rules_text: undefined } : s
+          )
+          setInit({ ...prev, servers })
+        }
+        setRulesModalServerId(null)
+        pushToast({ kind: 'success', message: 'Welcome! You now have full access to the server.' })
       }
       
       // Invite code messages
@@ -2984,6 +3026,13 @@ export function ChatPage() {
                   key={server.id}
                   type="button"
                   onClick={() => {
+                    // If the user hasn't accepted rules yet, show the rules modal instead
+                    if (server.rules_pending) {
+                      setRulesModalServerId(server.id)
+                      setRulesModalText(server.rules_text || '')
+                      setRulesModalServerName(server.name)
+                      return
+                    }
                     if (selectedServerId === server.id) {
                       setSelectedServerId(null)
                       selectContext({ kind: 'global' })
@@ -3000,9 +3049,10 @@ export function ChatPage() {
                     }
                   }}
                   className={`relative flex h-12 w-12 items-center justify-center rounded-2xl text-xl transition overflow-hidden ${
+                    server.rules_pending ? 'bg-amber-500/20 ring-2 ring-amber-500/40' :
                     selectedServerId === server.id ? 'bg-sky-500 text-white' : 'bg-bg-tertiary text-text-secondary hover:bg-bg-tertiary/60 hover:rounded-xl'
                   }`}
-                  title={server.name}
+                  title={server.rules_pending ? `${server.name} — Rules pending` : server.name}
                 >
                   {server.icon_type === 'image' && server.icon_data ? (
                     <img src={server.icon_data} alt={server.name} className="h-full w-full object-cover" />
@@ -5950,7 +6000,13 @@ export function ChatPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setServerSettingsTab('automations')}
+                  onClick={() => {
+                    setServerSettingsTab('automations')
+                    // Load automation settings when opening the tab
+                    if (selectedServerId) {
+                      wsClient.getServerAutomationSettings({ type: 'get_server_automation_settings', server_id: selectedServerId })
+                    }
+                  }}
                   className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
                     serverSettingsTab === 'automations'
                       ? 'border-sky-500 text-sky-400'
@@ -7223,6 +7279,117 @@ export function ChatPage() {
                     </div>
                   </section>
 
+                  {/* Auto-Role on Join Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">🎭 Auto-Role on Join</h3>
+                    <div className="space-y-3">
+                      <p className="text-xs text-slate-400">
+                        Automatically assign a role to every new member when they join the server.
+                      </p>
+                      <select
+                        value={autoRoleId || ''}
+                        onChange={(e) => setAutoRoleId(e.target.value || null)}
+                        className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      >
+                        <option value="">None (no auto-role)</option>
+                        {automationRoles.map((role) => (
+                          <option key={role.role_id} value={role.role_id}>
+                            {role.name}
+                          </option>
+                        ))}
+                      </select>
+                      {autoRoleId && automationRoles.find(r => r.role_id === autoRoleId) && (
+                        <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2">
+                          <div
+                            className="h-3 w-3 rounded-full"
+                            style={{ backgroundColor: automationRoles.find(r => r.role_id === autoRoleId)?.color || '#3B82F6' }}
+                          />
+                          <span className="text-sm text-slate-200">
+                            New members will receive: <strong>{automationRoles.find(r => r.role_id === autoRoleId)?.name}</strong>
+                          </span>
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            wsClient.updateServerAutomationSettings({
+                              type: 'update_server_automation_settings',
+                              server_id: selectedServerId,
+                              auto_role_id: autoRoleId,
+                              rules_enabled: rulesEnabled,
+                              rules_text: rulesText
+                            })
+                          }
+                        }}
+                        className="w-full rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                      >
+                        Save Auto-Role Setting
+                      </button>
+                    </div>
+                  </section>
+
+                  {/* Rules Screening Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">📜 Rules Screening</h3>
+                    <div className="space-y-3">
+                      <p className="text-xs text-slate-400">
+                        Require new members to accept your server rules before they can access channels or send messages.
+                      </p>
+                      <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={rulesEnabled}
+                          onChange={(e) => setRulesEnabled(e.target.checked)}
+                          className="rounded border-white/10 text-sky-500 focus:ring-sky-500/40"
+                        />
+                        Enable rules screening for new members
+                      </label>
+                      {rulesEnabled && (
+                        <div className="space-y-3">
+                          <textarea
+                            value={rulesText}
+                            onChange={(e) => setRulesText(e.target.value)}
+                            placeholder="Enter your server rules...&#10;&#10;1. Be respectful to all members&#10;2. No spam or self-promotion&#10;3. Use appropriate channels&#10;..."
+                            rows={8}
+                            className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40 resize-none"
+                          />
+                          <div className="text-xs text-slate-500">
+                            New members will see these rules in a modal and must click &quot;I have read and agree to the rules&quot; before they can interact with the server.
+                          </div>
+                          {rulesText.trim() && (
+                            <details className="rounded-lg border border-white/10 bg-slate-950/40">
+                              <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-slate-400 hover:text-slate-200">
+                                Preview rules modal
+                              </summary>
+                              <div className="border-t border-white/10 px-4 py-3 text-sm text-slate-200 whitespace-pre-wrap leading-relaxed">
+                                {rulesText}
+                              </div>
+                            </details>
+                          )}
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            wsClient.updateServerAutomationSettings({
+                              type: 'update_server_automation_settings',
+                              server_id: selectedServerId,
+                              auto_role_id: autoRoleId,
+                              rules_enabled: rulesEnabled,
+                              rules_text: rulesText
+                            })
+                          }
+                        }}
+                        disabled={rulesEnabled && !rulesText.trim()}
+                        className="w-full rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                      >
+                        Save Rules Settings
+                      </button>
+                    </div>
+                  </section>
+
                   {/* Webhooks Section */}
                   <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
                     <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">🔗 Webhooks</h3>
@@ -7606,6 +7773,54 @@ export function ChatPage() {
                   disabled={isJoiningServer}
                 >
                   {isJoiningServer ? 'Joining...' : 'Join Server'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Server Rules Acceptance Modal */}
+        {rulesModalServerId && (
+          <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 p-4">
+            <div className="relative w-full max-w-lg rounded-2xl bg-slate-900 border border-white/10 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              {/* Header */}
+              <div className="flex items-center gap-3 border-b border-white/10 px-6 py-4">
+                <span className="text-2xl">📜</span>
+                <div>
+                  <h2 className="text-lg font-bold text-white">Server Rules</h2>
+                  <p className="text-sm text-slate-400">{rulesModalServerName}</p>
+                </div>
+              </div>
+
+              {/* Rules content */}
+              <div className="px-6 py-4 max-h-[60vh] overflow-y-auto">
+                <p className="text-sm text-slate-300 mb-4">
+                  Please read and accept the server rules before you can access channels and send messages.
+                </p>
+                <div className="rounded-xl border border-white/10 bg-slate-950/50 p-4 text-sm text-slate-200 whitespace-pre-wrap leading-relaxed">
+                  {rulesModalText}
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex gap-3 border-t border-white/10 px-6 py-4">
+                <button
+                  type="button"
+                  onClick={() => setRulesModalServerId(null)}
+                  className="flex-1 rounded-lg bg-slate-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-600"
+                >
+                  Later
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (rulesModalServerId) {
+                      wsClient.acceptServerRules({ type: 'accept_server_rules', server_id: rulesModalServerId })
+                    }
+                  }}
+                  className="flex-1 rounded-lg bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                >
+                  I have read and agree to the rules
                 </button>
               </div>
             </div>

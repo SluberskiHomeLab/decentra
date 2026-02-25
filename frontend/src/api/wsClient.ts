@@ -42,6 +42,9 @@ import type {
   WsOutboundPinMessage,
   WsOutboundUnpinMessage,
   WsOutboundGetPinnedMessages,
+  WsOutboundAcceptServerRules,
+  WsOutboundGetServerAutomation,
+  WsOutboundUpdateServerAutomation,
 } from '../types/protocol'
 
 type MessageHandler = (msg: WsMessage) => void
@@ -346,6 +349,19 @@ export class WsClient {
   }
 
   getPinnedMessages(payload: WsOutboundGetPinnedMessages) {
+    this.send(payload)
+  }
+
+  // ── Server automation ─────────────────────────────────────
+  acceptServerRules(payload: WsOutboundAcceptServerRules) {
+    this.send(payload)
+  }
+
+  getServerAutomationSettings(payload: WsOutboundGetServerAutomation) {
+    this.send(payload)
+  }
+
+  updateServerAutomationSettings(payload: WsOutboundUpdateServerAutomation) {
     this.send(payload)
   }
 

@@ -1342,6 +1342,48 @@ class Database:
                         END $$;
                     ''')
 
+                    # Add server automation columns to server_settings (migration)
+                    # auto_role_id: role to auto-assign on join
+                    # rules_enabled: whether rules screening is active
+                    # rules_text: the server rules content
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'server_settings' AND column_name = 'auto_role_id'
+                            ) THEN
+                                ALTER TABLE server_settings ADD COLUMN auto_role_id VARCHAR(255) DEFAULT NULL;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'server_settings' AND column_name = 'rules_enabled'
+                            ) THEN
+                                ALTER TABLE server_settings ADD COLUMN rules_enabled BOOLEAN DEFAULT FALSE;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'server_settings' AND column_name = 'rules_text'
+                            ) THEN
+                                ALTER TABLE server_settings ADD COLUMN rules_text TEXT DEFAULT '';
+                            END IF;
+                        END $$;
+                    ''')
+
+                    # Add rules_accepted to server_members (migration)
+                    # Default TRUE so existing members aren't retroactively gated
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'server_members' AND column_name = 'rules_accepted'
+                            ) THEN
+                                ALTER TABLE server_members ADD COLUMN rules_accepted BOOLEAN DEFAULT TRUE;
+                            END IF;
+                        END $$;
+                    ''')
+
                     conn.commit()
 
                 # If we get here, connection was successful
@@ -3073,6 +3115,56 @@ class Database:
                 ON CONFLICT (server_id) 
                 DO UPDATE SET purge_schedule = EXCLUDED.purge_schedule, updated_at = CURRENT_TIMESTAMP
             ''', (server_id, purge_schedule))
+    
+    def update_server_automation_settings(self, server_id: str, auto_role_id: str | None, rules_enabled: bool, rules_text: str):
+        """Update server automation settings (auto-role, rules screening)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO server_settings (server_id, auto_role_id, rules_enabled, rules_text, updated_at)
+                VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (server_id) 
+                DO UPDATE SET auto_role_id = EXCLUDED.auto_role_id,
+                              rules_enabled = EXCLUDED.rules_enabled,
+                              rules_text = EXCLUDED.rules_text,
+                              updated_at = CURRENT_TIMESTAMP
+            ''', (server_id, auto_role_id, rules_enabled, rules_text))
+
+    def accept_server_rules(self, server_id: str, username: str) -> bool:
+        """Mark a member as having accepted the server rules."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE server_members SET rules_accepted = TRUE
+                    WHERE server_id = %s AND username = %s
+                ''', (server_id, username))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error accepting server rules: {e}")
+            return False
+
+    def has_accepted_rules(self, server_id: str, username: str) -> bool:
+        """Check if a member has accepted the server rules."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT rules_accepted FROM server_members
+                WHERE server_id = %s AND username = %s
+            ''', (server_id, username))
+            row = cursor.fetchone()
+            if row:
+                return row['rules_accepted'] if row['rules_accepted'] is not None else True
+            return True
+
+    def set_member_rules_accepted(self, server_id: str, username: str, accepted: bool):
+        """Set rules_accepted flag for a member."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE server_members SET rules_accepted = %s
+                WHERE server_id = %s AND username = %s
+            ''', (accepted, server_id, username))
     
     def get_channel_exemptions(self, server_id: str) -> List[str]:
         """Get list of exempted channel IDs for a server."""

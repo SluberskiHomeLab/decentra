@@ -613,6 +613,12 @@ def build_user_servers_data(username):
                             'can_edit_messages': member.get('can_edit_messages', False),
                             'can_delete_messages': member.get('can_delete_messages', False)
                         }
+                        # Check rules_pending status
+                        if not member.get('rules_accepted', True):
+                            server_settings = db.get_server_settings(server_id)
+                            if server_settings and server_settings.get('rules_enabled'):
+                                server_info['rules_pending'] = True
+                                server_info['rules_text'] = server_settings.get('rules_text', '')
                         break
             user_servers.append(server_info)
     
@@ -3621,9 +3627,41 @@ async def handler(websocket):
                                     if current_uses >= max_uses:
                                         db.deactivate_invite_code(invite_code)
                                 
+                                # ── Server automation: auto-role & rules gate ──
+                                server_settings = db.get_server_settings(server_id)
+                                rules_pending = False
+                                
+                                # Auto-role assignment
+                                if server_settings and server_settings.get('auto_role_id'):
+                                    auto_role_id = server_settings['auto_role_id']
+                                    auto_role = db.get_role(auto_role_id)
+                                    if auto_role and auto_role.get('server_id') == server_id:
+                                        db.assign_role(server_id, username, auto_role_id)
+                                        # Notify joining user about their new role
+                                        await websocket.send_str(json.dumps({
+                                            'type': 'role_assigned',
+                                            'server_id': server_id,
+                                            'role': auto_role
+                                        }))
+                                        # Broadcast to other members
+                                        await broadcast_to_server(server_id, json.dumps({
+                                            'type': 'member_role_updated',
+                                            'server_id': server_id,
+                                            'username': username,
+                                            'role_id': auto_role_id,
+                                            'action': 'added'
+                                        }), exclude=websocket)
+                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Auto-assigned role {auto_role.get('name')} to {username} in server {server_id}")
+                                
+                                # Rules screening gate
+                                if server_settings and server_settings.get('rules_enabled') and server_settings.get('rules_text', '').strip():
+                                    db.set_member_rules_accepted(server_id, username, False)
+                                    rules_pending = True
+                                
                                 # Get channels for response
                                 channels = db.get_server_channels(server_id)
-                                await websocket.send_str(json.dumps({
+                                categories = db.get_server_categories(server_id)
+                                server_joined_payload = {
                                     'type': 'server_joined',
                                     'server': {
                                         'id': server_id,
@@ -3633,11 +3671,21 @@ async def handler(websocket):
                                         'icon_type': server.get('icon_type', 'emoji'),
                                         'icon_data': server.get('icon_data'),
                                         'channels': [
-                                            {'id': ch['channel_id'], 'name': ch['name'], 'type': ch.get('type', 'text')}
+                                            {'id': ch['channel_id'], 'name': ch['name'], 'type': ch.get('type', 'text'),
+                                             'category_id': ch.get('category_id'), 'position': ch.get('position', 0)}
                                             for ch in channels
+                                        ],
+                                        'categories': [
+                                            {'id': cat['category_id'], 'name': cat['name'], 'position': cat.get('position', 0)}
+                                            for cat in categories
                                         ]
                                     }
-                                }))
+                                }
+                                if rules_pending:
+                                    server_joined_payload['server']['rules_pending'] = True
+                                    server_joined_payload['server']['rules_text'] = server_settings.get('rules_text', '')
+                                
+                                await websocket.send_str(json.dumps(server_joined_payload))
                                 
                                 # Notify other server members
                                 await broadcast_to_server(server_id, json.dumps({
@@ -6354,6 +6402,91 @@ async def handler(websocket):
                                     'message': 'Only the server owner can update purge settings'
                                 }))
                     
+                    elif data.get('type') == 'get_server_automation_settings':
+                        server_id = data.get('server_id', '')
+                        if server_id:
+                            server = db.get_server(server_id)
+                            if server and has_permission(server_id, username, 'manage_server'):
+                                settings = db.get_server_settings(server_id)
+                                roles = db.get_server_roles(server_id)
+                                await websocket.send_str(json.dumps({
+                                    'type': 'server_automation_settings',
+                                    'server_id': server_id,
+                                    'auto_role_id': settings.get('auto_role_id') if settings else None,
+                                    'rules_enabled': settings.get('rules_enabled', False) if settings else False,
+                                    'rules_text': settings.get('rules_text', '') if settings else '',
+                                    'roles': [{'role_id': r['role_id'], 'name': r['name'], 'color': r['color']} for r in roles]
+                                }))
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Permission denied'
+                                }))
+
+                    elif data.get('type') == 'update_server_automation_settings':
+                        server_id = data.get('server_id', '')
+                        auto_role_id = data.get('auto_role_id') or None
+                        rules_enabled = bool(data.get('rules_enabled', False))
+                        rules_text = str(data.get('rules_text', '')).strip()
+                        
+                        if server_id:
+                            server = db.get_server(server_id)
+                            if server and has_permission(server_id, username, 'manage_server'):
+                                # Validate auto_role_id if provided
+                                if auto_role_id:
+                                    role = db.get_role(auto_role_id)
+                                    if not role or role.get('server_id') != server_id:
+                                        await websocket.send_str(json.dumps({
+                                            'type': 'error',
+                                            'message': 'Invalid role selected'
+                                        }))
+                                        continue
+                                
+                                db.update_server_automation_settings(server_id, auto_role_id, rules_enabled, rules_text)
+                                await websocket.send_str(json.dumps({
+                                    'type': 'server_automation_settings_updated',
+                                    'server_id': server_id,
+                                    'auto_role_id': auto_role_id,
+                                    'rules_enabled': rules_enabled,
+                                    'rules_text': rules_text
+                                }))
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} updated automation settings for server {server_id}")
+                                
+                                db.add_audit_log_entry(server_id, 'automation_settings_update', actor=username,
+                                                       detail={'auto_role_id': auto_role_id, 'rules_enabled': rules_enabled})
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Only users with manage_server permission can update automation settings'
+                                }))
+
+                    elif data.get('type') == 'accept_server_rules':
+                        server_id = data.get('server_id', '')
+                        if server_id and db.is_server_member(server_id, username):
+                            success = db.accept_server_rules(server_id, username)
+                            if success:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'rules_accepted',
+                                    'server_id': server_id
+                                }))
+                                # Broadcast member_joined now that they've fully joined
+                                await broadcast_to_server(server_id, json.dumps({
+                                    'type': 'member_rules_accepted',
+                                    'server_id': server_id,
+                                    'username': username
+                                }), exclude=websocket)
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} accepted rules for server {server_id}")
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Failed to accept server rules'
+                                }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'You are not a member of this server'
+                            }))
+
                     elif data.get('type') == 'start_voice_call':
                         if not check_feature_access('voice_chat'):
                             await websocket.send_str(json.dumps({

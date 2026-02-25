@@ -145,6 +145,8 @@ export type Server = {
   unread_count?: number
   has_mention?: boolean
   channel_unreads?: Record<string, UnreadChannelInfo>
+  rules_pending?: boolean
+  rules_text?: string
 }
 
 export type Dm = {
@@ -283,7 +285,7 @@ export type WsServerCreated = {
 
 export type WsServerJoined = {
   type: 'server_joined'
-  server: Pick<Server, 'id' | 'name' | 'owner' | 'channels' | 'icon' | 'icon_type' | 'icon_data'>
+  server: Pick<Server, 'id' | 'name' | 'owner' | 'channels' | 'icon' | 'icon_type' | 'icon_data' | 'categories' | 'rules_pending' | 'rules_text'>
 }
 
 export type WsInviteCode = {
@@ -756,7 +758,31 @@ export type WsMessage =
   | WsMessagePinned
   | WsMessageUnpinned
   | WsPinnedMessages
+  | WsRulesAccepted
   | { type: string; [k: string]: any }
+
+export type WsRulesAccepted = {
+  type: 'rules_accepted'
+  server_id: string
+}
+
+export type WsOutboundAcceptServerRules = {
+  type: 'accept_server_rules'
+  server_id: string
+}
+
+export type WsOutboundGetServerAutomation = {
+  type: 'get_server_automation_settings'
+  server_id: string
+}
+
+export type WsOutboundUpdateServerAutomation = {
+  type: 'update_server_automation_settings'
+  server_id: string
+  auto_role_id: string | null
+  rules_enabled: boolean
+  rules_text: string
+}
 
 export type WsOutboundLogin = {
   type: 'login'
