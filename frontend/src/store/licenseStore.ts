@@ -28,6 +28,7 @@ const DEFAULT_FEATURES: LicenseFeatures = {
   custom_emojis: true,
   audit_logs: true,
   sso: false,
+  scim: false,
 }
 
 const DEFAULT_LIMITS: LicenseLimits = {

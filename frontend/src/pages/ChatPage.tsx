@@ -11,6 +11,7 @@ import type { Attachment, AuditLogEntry, Reaction, Server, ServerMember, Thread,
 import { LicensePanel } from '../components/admin/LicensePanel'
 import { WebhookPanel } from '../components/admin/WebhookPanel'
 import { UsersPanel } from '../components/admin/UsersPanel'
+import { SsoPanel } from '../components/admin/SSOPanel'
 import { useLicenseStore } from '../store/licenseStore'
 import { useSettingsStore, type Keybinds } from '../store/settingsStore'
 import { notificationManager } from '../utils/notifications'
@@ -4633,6 +4634,17 @@ export function ChatPage() {
                       >
                         Users
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('sso')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'sso'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Sign-in Options
+                      </button>
                     </div>
 
                     <div className="overflow-y-auto flex-1 p-6 space-y-4">
@@ -5137,6 +5149,11 @@ export function ChatPage() {
                       <UsersPanel />
                     </section>
                       </>
+                    )}
+
+                    {/* SSO / Sign-in Options Tab */}
+                    {adminSettingsTab === 'sso' && (
+                      <SsoPanel />
                     )}
                     </div>
                   </div>

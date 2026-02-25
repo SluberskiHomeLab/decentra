@@ -39,6 +39,7 @@ DEFAULT_FEATURES: Dict[str, bool] = {
     "custom_emojis": True,
     "audit_logs": True,
     "sso": False,
+    "scim": False,
     "soundboard": True,
 }
 

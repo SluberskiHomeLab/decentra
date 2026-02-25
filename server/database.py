@@ -1384,6 +1384,144 @@ class Database:
                         END $$;
                     ''')
 
+                    # ── SSO / SCIM columns on admin_settings (migration) ──
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_enabled'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_enabled BOOLEAN DEFAULT FALSE;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_provider'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_provider VARCHAR(20) DEFAULT NULL;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_oidc_issuer_url'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_oidc_issuer_url TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_oidc_client_id'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_oidc_client_id TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_oidc_client_secret'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_oidc_client_secret TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_oidc_preset'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_oidc_preset VARCHAR(20) DEFAULT 'custom';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_saml_entity_id'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_saml_entity_id TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_saml_sso_url'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_saml_sso_url TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_saml_certificate'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_saml_certificate TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_ldap_server_url'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_ldap_server_url TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_ldap_bind_dn'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_ldap_bind_dn TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_ldap_bind_password'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_ldap_bind_password TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_ldap_user_search_base'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_ldap_user_search_base TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_ldap_user_filter'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_ldap_user_filter TEXT DEFAULT '(uid={username})';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'scim_enabled'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN scim_enabled BOOLEAN DEFAULT FALSE;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'scim_bearer_token'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN scim_bearer_token TEXT DEFAULT '';
+                            END IF;
+                        END $$;
+                    ''')
+
+                    # ── SSO identities table ──
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS sso_identities (
+                            id SERIAL PRIMARY KEY,
+                            username VARCHAR(255) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+                            provider VARCHAR(20) NOT NULL,
+                            external_id TEXT NOT NULL,
+                            email TEXT,
+                            display_name TEXT,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE(provider, external_id)
+                        )
+                    ''')
+
+                    # ── SCIM tokens table ──
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS scim_tokens (
+                            id SERIAL PRIMARY KEY,
+                            token_hash VARCHAR(255) NOT NULL,
+                            description TEXT DEFAULT '',
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            last_used_at TIMESTAMP
+                        )
+                    ''')
+
+                    # ── Make password_hash nullable for SSO-only users ──
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+                        EXCEPTION WHEN others THEN
+                            NULL;
+                        END $$;
+                    ''')
+
                     conn.commit()
 
                 # If we get here, connection was successful
@@ -1992,7 +2130,7 @@ class Database:
     
     # Admin settings operations
     def get_admin_settings(self) -> Dict:
-        """Get admin settings from database with decrypted SMTP password."""
+        """Get admin settings from database with decrypted sensitive fields."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM admin_settings WHERE id = 1')
@@ -2004,21 +2142,22 @@ class Database:
                 settings.pop('created_at', None)
                 settings.pop('updated_at', None)
                 
-                # Decrypt SMTP password if present
-                if settings.get('smtp_password'):
-                    try:
-                        encryption_manager = get_encryption_manager()
-                        settings['smtp_password'] = encryption_manager.decrypt(settings['smtp_password'])
-                    except RuntimeError as e:
-                        print(f"Error decrypting SMTP password: {e}")
-                        # Return empty password if decryption fails with key mismatch
-                        settings['smtp_password'] = ''
+                # Decrypt sensitive fields if present
+                encrypted_fields = ['smtp_password', 'sso_oidc_client_secret', 'sso_ldap_bind_password', 'scim_bearer_token']
+                for field in encrypted_fields:
+                    if settings.get(field):
+                        try:
+                            encryption_manager = get_encryption_manager()
+                            settings[field] = encryption_manager.decrypt(settings[field])
+                        except RuntimeError as e:
+                            print(f"Error decrypting {field}: {e}")
+                            settings[field] = ''
                 
                 return settings
             return {}
     
     def update_admin_settings(self, settings: Dict) -> bool:
-        """Update admin settings in database with encrypted SMTP password."""
+        """Update admin settings in database with encrypted sensitive fields."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -2026,16 +2165,16 @@ class Database:
                 # Build dynamic UPDATE query from settings dict
                 set_clauses = []
                 values = []
+                encrypted_fields = ['smtp_password', 'sso_oidc_client_secret', 'sso_ldap_bind_password', 'scim_bearer_token']
                 for key, value in settings.items():
                     if key not in ['id', 'created_at', 'updated_at']:
-                        # Encrypt SMTP password before storing
-                        if key == 'smtp_password' and value:
+                        # Encrypt sensitive fields before storing
+                        if key in encrypted_fields and value:
                             try:
                                 encryption_manager = get_encryption_manager()
                                 value = encryption_manager.encrypt(value)
                             except RuntimeError as e:
-                                print(f"Error encrypting SMTP password: {e}")
-                                # Return False to indicate save failure
+                                print(f"Error encrypting {key}: {e}")
                                 return False
                         
                         set_clauses.append(f"{key} = %s")
@@ -4593,3 +4732,110 @@ class Database:
                     pass
                 messages.append(msg)
             return messages
+
+    # ── SSO Identity operations ───────────────────────────────────────────────
+
+    def get_sso_identity(self, provider: str, external_id: str) -> Optional[Dict]:
+        """Look up an SSO identity by provider and external ID."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM sso_identities WHERE provider = %s AND external_id = %s',
+                (provider, external_id)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_user_sso_identities(self, username: str) -> List[Dict]:
+        """Get all SSO identities linked to a user."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM sso_identities WHERE username = %s ORDER BY created_at',
+                (username,)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def create_sso_identity(self, username: str, provider: str, external_id: str,
+                            email: str = None, display_name: str = None) -> bool:
+        """Link an SSO identity to a user."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO sso_identities (username, provider, external_id, email, display_name)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (provider, external_id) DO UPDATE
+                    SET email = EXCLUDED.email, display_name = EXCLUDED.display_name
+                ''', (username, provider, external_id, email, display_name))
+                return True
+        except Exception as e:
+            print(f"Error creating SSO identity: {e}")
+            return False
+
+    def delete_sso_identity(self, username: str, provider: str) -> bool:
+        """Unlink an SSO identity from a user."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'DELETE FROM sso_identities WHERE username = %s AND provider = %s',
+                    (username, provider)
+                )
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error deleting SSO identity: {e}")
+            return False
+
+    # ── SCIM Token operations ─────────────────────────────────────────────────
+
+    def create_scim_token(self, token_hash: str, description: str = '') -> Optional[int]:
+        """Store a hashed SCIM bearer token. Returns the token ID."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO scim_tokens (token_hash, description)
+                    VALUES (%s, %s)
+                    RETURNING id
+                ''', (token_hash, description))
+                row = cursor.fetchone()
+                return row['id'] if row else None
+        except Exception as e:
+            print(f"Error creating SCIM token: {e}")
+            return None
+
+    def verify_scim_token(self, token_hash: str) -> bool:
+        """Verify a SCIM bearer token and update last_used_at."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT id FROM scim_tokens WHERE token_hash = %s',
+                (token_hash,)
+            )
+            row = cursor.fetchone()
+            if row:
+                cursor.execute(
+                    'UPDATE scim_tokens SET last_used_at = CURRENT_TIMESTAMP WHERE id = %s',
+                    (row['id'],)
+                )
+                return True
+            return False
+
+    def get_scim_tokens(self) -> List[Dict]:
+        """List all SCIM tokens (without the hash)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT id, description, created_at, last_used_at FROM scim_tokens ORDER BY created_at DESC')
+            return [dict(row) for row in cursor.fetchall()]
+
+    def delete_scim_token(self, token_id: int) -> bool:
+        """Revoke a SCIM token by ID."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM scim_tokens WHERE id = %s', (token_id,))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error deleting SCIM token: {e}")
+            return False

@@ -5,18 +5,23 @@ Provides HTTP REST API for future desktop application integration
 """
 
 import json
+import os
 import uuid
 import base64
 import re
 import secrets
+import hashlib
 from aiohttp import web
 import bcrypt
-from license_validator import check_limit
+from license_validator import check_limit, check_feature_access
+from sso_utils import OIDCProvider, SAMLProvider, LDAPSync, SCIMHandler, _hash_token
 
 # Database instance will be set by setup_api_routes
 db = None
 # JWT verification function will be set by setup_api_routes
 verify_jwt_token = None
+# JWT generation function will be set by setup_api_routes
+generate_jwt_token_func = None
 # WebSocket broadcast function will be set by setup_api_routes
 broadcast_to_server_func = None
 # send_to_user function will be set by setup_api_routes
@@ -1850,11 +1855,343 @@ async def api_execute_instance_webhook(request):
         }, status=500)
 
 
-def setup_api_routes(app, database, jwt_verify_func, broadcast_func, send_user_func, create_dm_func, avatar_func):
+# ╔═════════════════════════════════════════════════════════════════════════╗
+# ║  SSO Endpoints                                                        ║
+# ╚═════════════════════════════════════════════════════════════════════════╝
+
+async def api_sso_config(request):
+    """GET /api/auth/sso/config — public, returns whether SSO is enabled and which provider."""
+    settings = db.get_admin_settings()
+    return web.json_response({
+        'sso_enabled': settings.get('sso_enabled', False),
+        'sso_provider': settings.get('sso_provider', None),
+    })
+
+
+async def api_sso_initiate(request):
+    """GET /api/auth/sso/initiate — start the SSO flow, returns redirect URL."""
+    if not check_feature_access("sso"):
+        return web.json_response({'error': 'SSO requires a paid license tier'}, status=403)
+
+    settings = db.get_admin_settings()
+    if not settings.get('sso_enabled'):
+        return web.json_response({'error': 'SSO is not enabled'}, status=400)
+
+    provider = settings.get('sso_provider', '')
+    base_url = os.environ.get('DECENTRA_BASE_URL', request.url.origin().__str__())
+    callback_url = f"{base_url}/auth/sso/callback"
+
+    # Generate a state token for CSRF protection
+    state = secrets.token_urlsafe(32)
+
+    if provider in ('oidc', 'auth0'):
+        oidc = OIDCProvider(settings)
+        try:
+            auth_url = await oidc.get_authorization_url(callback_url, state)
+            return web.json_response({'redirect_url': auth_url, 'state': state})
+        except Exception as e:
+            return web.json_response({'error': f'OIDC initiation failed: {e}'}, status=500)
+
+    elif provider == 'saml':
+        saml = SAMLProvider(settings)
+        try:
+            auth_url = saml.get_auth_url(callback_url, state)
+            return web.json_response({'redirect_url': auth_url, 'state': state})
+        except Exception as e:
+            return web.json_response({'error': f'SAML initiation failed: {e}'}, status=500)
+
+    elif provider == 'ldap':
+        return web.json_response({'error': 'LDAP uses directory sync, not browser-based login'}, status=400)
+
+    return web.json_response({'error': f'Unknown SSO provider: {provider}'}, status=400)
+
+
+async def api_sso_callback(request):
+    """POST /api/auth/sso/callback — exchange auth code/assertion for a JWT."""
+    if not check_feature_access("sso"):
+        return web.json_response({'error': 'SSO requires a paid license tier'}, status=403)
+
+    settings = db.get_admin_settings()
+    if not settings.get('sso_enabled'):
+        return web.json_response({'error': 'SSO is not enabled'}, status=400)
+
+    provider = settings.get('sso_provider', '')
+    body = await request.json()
+    base_url = os.environ.get('DECENTRA_BASE_URL', request.url.origin().__str__())
+    callback_url = f"{base_url}/auth/sso/callback"
+
+    user_info = None
+
+    if provider in ('oidc', 'auth0'):
+        code = body.get('code', '')
+        if not code:
+            return web.json_response({'error': 'Missing authorization code'}, status=400)
+        oidc = OIDCProvider(settings)
+        try:
+            user_info = await oidc.exchange_code(code, callback_url)
+        except Exception as e:
+            return web.json_response({'error': f'OIDC callback failed: {e}'}, status=500)
+
+    elif provider == 'saml':
+        saml_response = body.get('SAMLResponse', '')
+        if not saml_response:
+            return web.json_response({'error': 'Missing SAML response'}, status=400)
+        saml = SAMLProvider(settings)
+        try:
+            user_info = saml.parse_response(saml_response)
+        except Exception as e:
+            return web.json_response({'error': f'SAML callback failed: {e}'}, status=500)
+
+    if not user_info or not user_info.get('sub'):
+        return web.json_response({'error': 'Could not extract user identity from SSO response'}, status=400)
+
+    external_id = user_info['sub']
+    email = user_info.get('email', '')
+    display_name = user_info.get('name', '')
+
+    # Look up existing SSO identity
+    identity = db.get_sso_identity(provider, external_id)
+
+    if identity:
+        # Existing linked user — issue JWT
+        username = identity['username']
+    else:
+        # Auto-provision: create new user or link by email
+        from sso_utils import _sanitize_username
+        username = _sanitize_username(display_name or email)
+
+        # Check if a user with this email already exists
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT username FROM users WHERE email = %s', (email,))
+            existing = cursor.fetchone()
+
+        if existing:
+            username = existing['username']
+        else:
+            # Create new SSO-only user (NULL password_hash)
+            from datetime import datetime, timezone as tz
+            try:
+                with db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    # Ensure unique username
+                    base_uname = username
+                    suffix = 0
+                    while True:
+                        cursor.execute('SELECT 1 FROM users WHERE username = %s', (username,))
+                        if not cursor.fetchone():
+                            break
+                        suffix += 1
+                        username = f"{base_uname}_{suffix}"
+
+                    cursor.execute('''
+                        INSERT INTO users (username, password_hash, created_at, email, email_verified, bio, status_message)
+                        VALUES (%s, NULL, %s, %s, %s, %s, '')
+                    ''', (username, datetime.now(tz.utc), email,
+                          user_info.get('email_verified', False),
+                          display_name))
+            except Exception as e:
+                return web.json_response({'error': f'Failed to create user: {e}'}, status=500)
+
+        # Link SSO identity
+        db.create_sso_identity(username, provider, external_id, email, display_name)
+
+    # Generate JWT
+    if generate_jwt_token_func:
+        token = generate_jwt_token_func(username)
+    else:
+        return web.json_response({'error': 'JWT generation not available'}, status=500)
+
+    return web.json_response({
+        'token': token,
+        'username': username,
+        'sso_provider': provider,
+    })
+
+
+async def api_sso_test(request):
+    """POST /api/auth/sso/test — test SSO provider connection (admin only)."""
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+
+    token = auth_header[7:]
+    username = verify_jwt_token(token)
+    if not username:
+        return web.json_response({'error': 'Invalid token'}, status=401)
+
+    first_user = db.get_first_user()
+    if username != first_user:
+        return web.json_response({'error': 'Admin only'}, status=403)
+
+    settings = db.get_admin_settings()
+    provider = settings.get('sso_provider', '')
+
+    if provider in ('oidc', 'auth0'):
+        oidc = OIDCProvider(settings)
+        try:
+            disc = await oidc._fetch_discovery()
+            return web.json_response({
+                'success': True,
+                'message': f'OIDC discovery successful — found {len(disc)} configuration keys',
+                'issuer': disc.get('issuer', ''),
+            })
+        except Exception as e:
+            return web.json_response({'success': False, 'message': str(e)})
+
+    elif provider == 'saml':
+        # SAML test: just verify that the required fields are present
+        if settings.get('sso_saml_entity_id') and settings.get('sso_saml_sso_url'):
+            return web.json_response({
+                'success': True,
+                'message': 'SAML configuration looks valid',
+            })
+        return web.json_response({'success': False, 'message': 'Missing SAML entity ID or SSO URL'})
+
+    elif provider == 'ldap':
+        ldap_sync = LDAPSync(settings)
+        success, message = ldap_sync.test_connection()
+        return web.json_response({'success': success, 'message': message})
+
+    return web.json_response({'success': False, 'message': f'Unknown provider: {provider}'})
+
+
+# ╔═════════════════════════════════════════════════════════════════════════╗
+# ║  SCIM 2.0 Endpoints                                                   ║
+# ╚═════════════════════════════════════════════════════════════════════════╝
+
+async def _verify_scim_token(request) -> bool:
+    """Verify the SCIM bearer token from the Authorization header."""
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return False
+    raw_token = auth_header[7:]
+    token_hash = _hash_token(raw_token)
+    return db.verify_scim_token(token_hash)
+
+
+async def api_scim_service_provider_config(request):
+    """GET /scim/v2/ServiceProviderConfig"""
+    base_url = os.environ.get('DECENTRA_BASE_URL', request.url.origin().__str__())
+    return web.json_response(SCIMHandler.service_provider_config(base_url))
+
+
+async def api_scim_schemas(request):
+    """GET /scim/v2/Schemas"""
+    return web.json_response(SCIMHandler.schemas())
+
+
+async def api_scim_resource_types(request):
+    """GET /scim/v2/ResourceTypes"""
+    base_url = os.environ.get('DECENTRA_BASE_URL', request.url.origin().__str__())
+    return web.json_response(SCIMHandler.resource_types(base_url))
+
+
+async def api_scim_users(request):
+    """GET/POST /scim/v2/Users"""
+    if not check_feature_access("scim"):
+        return web.json_response({'error': 'SCIM requires a paid license tier'}, status=403)
+    if not await _verify_scim_token(request):
+        return web.json_response({'error': 'Invalid SCIM token'}, status=401)
+
+    base_url = os.environ.get('DECENTRA_BASE_URL', request.url.origin().__str__())
+
+    if request.method == 'GET':
+        filter_str = request.query.get('filter', '')
+        start = int(request.query.get('startIndex', '1'))
+        count = int(request.query.get('count', '100'))
+        result = SCIMHandler.list_users(db, base_url, filter_str, start, count)
+        return web.json_response(result)
+    elif request.method == 'POST':
+        body = await request.json()
+        result, status = SCIMHandler.create_user(db, body, base_url)
+        return web.json_response(result, status=status)
+
+
+async def api_scim_user(request):
+    """GET/PUT/PATCH/DELETE /scim/v2/Users/{id}"""
+    if not check_feature_access("scim"):
+        return web.json_response({'error': 'SCIM requires a paid license tier'}, status=403)
+    if not await _verify_scim_token(request):
+        return web.json_response({'error': 'Invalid SCIM token'}, status=401)
+
+    user_id = request.match_info['id']
+    base_url = os.environ.get('DECENTRA_BASE_URL', request.url.origin().__str__())
+
+    if request.method == 'GET':
+        result = SCIMHandler.get_user(db, user_id, base_url)
+        if not result:
+            return web.json_response({'error': 'User not found'}, status=404)
+        return web.json_response(result)
+    elif request.method == 'PUT':
+        body = await request.json()
+        result, status = SCIMHandler.update_user(db, user_id, body, base_url)
+        return web.json_response(result, status=status)
+    elif request.method == 'PATCH':
+        body = await request.json()
+        result, status = SCIMHandler.patch_user(db, user_id, body, base_url)
+        return web.json_response(result, status=status)
+    elif request.method == 'DELETE':
+        result, status = SCIMHandler.delete_user(db, user_id)
+        if status == 204:
+            return web.Response(status=204)
+        return web.json_response(result, status=status)
+
+
+async def api_scim_groups(request):
+    """GET/POST /scim/v2/Groups"""
+    if not check_feature_access("scim"):
+        return web.json_response({'error': 'SCIM requires a paid license tier'}, status=403)
+    if not await _verify_scim_token(request):
+        return web.json_response({'error': 'Invalid SCIM token'}, status=401)
+
+    base_url = os.environ.get('DECENTRA_BASE_URL', request.url.origin().__str__())
+
+    if request.method == 'GET':
+        result = SCIMHandler.list_groups(db, base_url)
+        return web.json_response(result)
+    elif request.method == 'POST':
+        body = await request.json()
+        result, status = SCIMHandler.create_group(db, body, base_url)
+        return web.json_response(result, status=status)
+
+
+async def api_scim_group(request):
+    """GET/PUT/PATCH/DELETE /scim/v2/Groups/{id}"""
+    if not check_feature_access("scim"):
+        return web.json_response({'error': 'SCIM requires a paid license tier'}, status=403)
+    if not await _verify_scim_token(request):
+        return web.json_response({'error': 'Invalid SCIM token'}, status=401)
+
+    group_id = request.match_info['id']
+    base_url = os.environ.get('DECENTRA_BASE_URL', request.url.origin().__str__())
+
+    if request.method == 'GET':
+        result = SCIMHandler.get_group(db, group_id, base_url)
+        if not result:
+            return web.json_response({'error': 'Group not found'}, status=404)
+        return web.json_response(result)
+    elif request.method == 'PUT':
+        body = await request.json()
+        result, status = SCIMHandler.update_group(db, group_id, body, base_url)
+        return web.json_response(result, status=status)
+    elif request.method == 'PATCH':
+        body = await request.json()
+        result, status = SCIMHandler.patch_group(db, group_id, body, base_url)
+        return web.json_response(result, status=status)
+    elif request.method == 'DELETE':
+        result, status = SCIMHandler.delete_group(db, group_id)
+        if status == 204:
+            return web.Response(status=204)
+        return web.json_response(result, status=status)
+
+
+def setup_api_routes(app, database, jwt_verify_func, broadcast_func, send_user_func, create_dm_func, avatar_func, jwt_generate_func=None):
     """Setup REST API routes on the aiohttp application."""
-    global db, verify_jwt_token, broadcast_to_server_func, send_to_user_func, get_or_create_dm_func, get_avatar_data_func
+    global db, verify_jwt_token, broadcast_to_server_func, send_to_user_func, get_or_create_dm_func, get_avatar_data_func, generate_jwt_token_func
     db = database
     verify_jwt_token = jwt_verify_func
+    generate_jwt_token_func = jwt_generate_func
     broadcast_to_server_func = broadcast_func
     send_to_user_func = send_user_func
     get_or_create_dm_func = create_dm_func
@@ -1885,3 +2222,16 @@ def setup_api_routes(app, database, jwt_verify_func, broadcast_func, send_user_f
     app.router.add_post('/api/instance-webhooks', api_create_instance_webhook)
     app.router.add_delete('/api/instance-webhooks/{webhook_id}', api_delete_instance_webhook)
     app.router.add_post('/api/instance-webhooks/{webhook_id}/{token}', api_execute_instance_webhook)
+    # SSO routes
+    app.router.add_get('/api/auth/sso/config', api_sso_config)
+    app.router.add_get('/api/auth/sso/initiate', api_sso_initiate)
+    app.router.add_post('/api/auth/sso/callback', api_sso_callback)
+    app.router.add_post('/api/auth/sso/test', api_sso_test)
+    # SCIM 2.0 routes
+    app.router.add_get('/scim/v2/ServiceProviderConfig', api_scim_service_provider_config)
+    app.router.add_get('/scim/v2/Schemas', api_scim_schemas)
+    app.router.add_get('/scim/v2/ResourceTypes', api_scim_resource_types)
+    app.router.add_route('*', '/scim/v2/Users', api_scim_users)
+    app.router.add_route('*', '/scim/v2/Users/{id}', api_scim_user)
+    app.router.add_route('*', '/scim/v2/Groups', api_scim_groups)
+    app.router.add_route('*', '/scim/v2/Groups/{id}', api_scim_group)

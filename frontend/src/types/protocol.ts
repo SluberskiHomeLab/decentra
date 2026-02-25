@@ -1150,6 +1150,7 @@ export interface LicenseFeatures {
   custom_emojis: boolean
   audit_logs: boolean
   sso: boolean
+  scim: boolean
 }
 
 export interface LicenseLimits {

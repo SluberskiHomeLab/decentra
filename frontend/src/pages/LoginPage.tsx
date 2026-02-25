@@ -22,6 +22,8 @@ export function LoginPage() {
   const [showForgotPassword, setShowForgotPassword] = useState(false)
   const [resetUsername, setResetUsername] = useState('')
   const [resetSuccess, setResetSuccess] = useState(false)
+  const [ssoEnabled, setSsoEnabled] = useState(false)
+  const [ssoLoading, setSsoLoading] = useState(false)
 
   // If already authenticated, redirect to chat
   useEffect(() => {
@@ -31,6 +33,16 @@ export function LoginPage() {
       navigate(redirectPath)
     }
   }, [authToken, navigate, searchParams])
+
+  // Check if SSO is enabled
+  useEffect(() => {
+    fetch('/api/auth/sso/config')
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.sso_enabled) setSsoEnabled(true)
+      })
+      .catch(() => { /* SSO not available */ })
+  }, [])
 
   useEffect(() => {
     const unsubscribe = wsClient.onMessage((msg: WsMessage) => {
@@ -198,6 +210,47 @@ export function LoginPage() {
                 {isSubmitting ? 'Signing in…' : needs2fa ? 'Verify 2FA' : 'Sign In'}
               </button>
             </form>
+
+            {ssoEnabled && (
+              <div className="mt-3">
+                <div className="relative my-3">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-border-primary" />
+                  </div>
+                  <div className="relative flex justify-center text-xs">
+                    <span className="bg-bg-secondary/40 px-2 text-text-muted">or</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={ssoLoading}
+                  onClick={async () => {
+                    setSsoLoading(true)
+                    try {
+                      const serverInvite = searchParams.get('server_invite')
+                      if (serverInvite) sessionStorage.setItem('sso_pending_invite', serverInvite)
+                      const resp = await fetch('/api/auth/sso/initiate')
+                      const data = await resp.json()
+                      if (data.redirect_url) {
+                        window.location.href = data.redirect_url
+                      } else {
+                        setLastAuthError(data.error || 'SSO initiation failed')
+                        setSsoLoading(false)
+                      }
+                    } catch (e) {
+                      setLastAuthError('Failed to start SSO sign-in')
+                      setSsoLoading(false)
+                    }
+                  }}
+                  className="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-border-primary bg-bg-primary/40 px-4 py-2.5 text-sm font-semibold text-text-primary shadow hover:bg-bg-tertiary disabled:opacity-60"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                  </svg>
+                  {ssoLoading ? 'Redirecting…' : 'Sign in with SSO'}
+                </button>
+              </div>
+            )}
 
             <div className="mt-4 flex flex-wrap gap-3 text-sm">
               <Link className="text-accent-primary hover:text-accent-hover" to="/signup">

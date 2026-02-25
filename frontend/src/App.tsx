@@ -7,6 +7,7 @@ import { ProtectedRoute } from './components/ProtectedRoute'
 import { LoginPage } from './pages/LoginPage'
 import { SignUpPage } from './pages/SignUpPage'
 import { ResetPasswordPage } from './pages/ResetPasswordPage'
+import { SSOCallbackPage } from './pages/SSOCallbackPage'
 import { ChatPage } from './pages/ChatPage'
 import './App.css'
 
@@ -29,6 +30,7 @@ function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignUpPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
+        <Route path="/auth/sso/callback" element={<SSOCallbackPage />} />
         <Route
           path="/chat"
           element={

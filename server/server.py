@@ -3221,7 +3221,7 @@ async def handler(websocket):
                         # Check if user is admin
                         first_user = db.get_first_user()
                         if username != first_user:
-                            # Non-admin users get filtered settings (no sensitive data like SMTP credentials)
+                            # Non-admin users get filtered settings (no sensitive data like SMTP/SSO credentials)
                             filtered_settings = {
                                 'allow_file_attachments': settings.get('allow_file_attachments', True),
                                 'max_attachment_size_mb': settings.get('max_attachment_size_mb', 10),
@@ -3229,17 +3229,24 @@ async def handler(websocket):
                                 'announcement_enabled': settings.get('announcement_enabled', False),
                                 'announcement_message': settings.get('announcement_message', ''),
                                 'announcement_duration_minutes': settings.get('announcement_duration_minutes', 60),
-                                'announcement_set_at': settings.get('announcement_set_at')
+                                'announcement_set_at': settings.get('announcement_set_at'),
+                                'sso_enabled': settings.get('sso_enabled', False),
+                                'sso_provider': settings.get('sso_provider', None),
                             }
                             await websocket.send_str(json.dumps({
                                 'type': 'admin_settings',
                                 'settings': filtered_settings
                             }))
                         else:
-                            # Admin users get all settings
+                            # Admin users get all settings (mask SSO secrets with asterisks for display)
+                            admin_settings = dict(settings)
+                            # Mask sensitive SSO fields so they aren't leaked to the browser
+                            for secret_key in ['sso_oidc_client_secret', 'sso_ldap_bind_password', 'scim_bearer_token']:
+                                if admin_settings.get(secret_key):
+                                    admin_settings[secret_key] = '••••••••'
                             await websocket.send_str(json.dumps({
                                 'type': 'admin_settings',
-                                'settings': settings
+                                'settings': admin_settings
                             }))
                     
                     elif data.get('type') == 'save_admin_settings':
@@ -3252,6 +3259,27 @@ async def handler(websocket):
                             }))
                         else:
                             settings = data.get('settings', {})
+                            
+                            # SSO / SCIM license gate
+                            from license_validator import check_feature_access as _check_feat
+                            sso_fields = {'sso_enabled', 'sso_provider', 'sso_oidc_issuer_url',
+                                          'sso_oidc_client_id', 'sso_oidc_client_secret', 'sso_oidc_preset',
+                                          'sso_saml_entity_id', 'sso_saml_sso_url', 'sso_saml_certificate',
+                                          'sso_ldap_server_url', 'sso_ldap_bind_dn', 'sso_ldap_bind_password',
+                                          'sso_ldap_user_search_base', 'sso_ldap_user_filter',
+                                          'scim_enabled', 'scim_bearer_token'}
+                            has_sso_fields = bool(sso_fields & set(settings.keys()))
+                            if has_sso_fields and not _check_feat('sso'):
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'SSO/SCIM configuration requires a paid license tier.'
+                                }))
+                                continue
+                            
+                            # Don't overwrite secrets with the masked placeholder
+                            for secret_key in ['sso_oidc_client_secret', 'sso_ldap_bind_password', 'scim_bearer_token']:
+                                if settings.get(secret_key) == '••••••••':
+                                    settings.pop(secret_key)
                             
                             # Server-side validation for announcement settings
                             if settings.get('announcement_enabled'):
@@ -7357,7 +7385,7 @@ async def main():
 
     app.router.add_get('/api/voice/ice-servers', ice_servers_handler)
     # ─────────────────────────────────────────────────────────────────────────
-    setup_api_routes(app, db, verify_jwt_token, broadcast_to_server, send_to_user, get_or_create_dm, get_avatar_data)
+    setup_api_routes(app, db, verify_jwt_token, broadcast_to_server, send_to_user, get_or_create_dm, get_avatar_data, jwt_generate_func=generate_jwt_token)
     
     # Run the server with SSL
     runner = web.AppRunner(app)
