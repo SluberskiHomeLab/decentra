@@ -15,6 +15,7 @@ from aiohttp import web
 import bcrypt
 from license_validator import check_limit, check_feature_access
 from sso_utils import OIDCProvider, SAMLProvider, LDAPSync, SCIMHandler, _hash_token
+from search_parser import parse_search_query, has_filters
 
 # Database instance will be set by setup_api_routes
 db = None
@@ -357,10 +358,10 @@ async def api_search_messages(request):
                 'error': 'Invalid or expired token'
             }, status=401)
         
-        query = request.query.get('query', '').strip()
+        raw_query = request.query.get('query', '').strip()
         limit = int(request.query.get('limit', 50))
         
-        if not query:
+        if not raw_query:
             return web.json_response({
                 'success': True,
                 'results': []
@@ -369,19 +370,53 @@ async def api_search_messages(request):
         # Limit to max 100 results
         limit = min(limit, 100)
         
+        # Parse rich filter syntax (from:, in:, has:, before:, after:, etc.)
+        parsed = parse_search_query(raw_query)
+        free_text = parsed.get('text', '')
+        filters = parsed if has_filters(parsed) else None
+        
+        # If there's no free text and no filters, return empty
+        if not free_text and not filters:
+            return web.json_response({
+                'success': True,
+                'results': []
+            })
+        
         # Use the authenticated username from the token
         # The database function enforces access control for DMs and servers
-        results = db.search_messages(username, query, limit)
+        results = db.search_messages(username, free_text, limit, filters=filters)
         
         return web.json_response({
             'success': True,
-            'results': results
+            'results': results,
+            'filters_applied': filters is not None
         })
     except Exception as e:
         return web.json_response({
             'success': False,
             'error': str(e)
         }, status=500)
+
+
+async def api_search_filters(request):
+    """
+    GET /api/search-filters
+    Returns the list of supported search filter operators and their usage.
+    No auth required — this is purely informational.
+    """
+    return web.json_response({
+        'success': True,
+        'filters': [
+            {'key': 'from',    'description': 'Messages from a user',           'example': 'from:alice'},
+            {'key': 'mentions','description': 'Messages mentioning a user',     'example': 'mentions:bob'},
+            {'key': 'in',      'description': 'Messages in a channel or DMs',   'example': 'in:general  or  in:dm'},
+            {'key': 'has',     'description': 'Messages with specific content', 'example': 'has:file  has:link  has:image  has:video'},
+            {'key': 'before',  'description': 'Messages before a date',         'example': 'before:2025-06-01  or  before:7d'},
+            {'key': 'after',   'description': 'Messages after a date',          'example': 'after:2025-01-01  or  after:30d'},
+            {'key': 'during',  'description': 'Messages on a specific date',    'example': 'during:2025-03-15  or  during:today'},
+            {'key': 'is',      'description': 'Message flags',                  'example': 'is:pinned'},
+        ]
+    })
 
 
 async def api_upload_attachment(request):
@@ -2201,6 +2236,7 @@ def setup_api_routes(app, database, jwt_verify_func, broadcast_func, send_user_f
     app.router.add_get('/api/servers', api_servers)
     app.router.add_get('/api/messages', api_messages)
     app.router.add_get('/api/search-messages', api_search_messages)
+    app.router.add_get('/api/search-filters', api_search_filters)
     app.router.add_get('/api/friends', api_friends)
     app.router.add_get('/api/dms', api_dms)
     app.router.add_post('/api/upload-attachment', api_upload_attachment)

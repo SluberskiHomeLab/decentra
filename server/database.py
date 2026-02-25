@@ -3001,78 +3001,203 @@ class Database:
                 messages.append(msg)
             return messages
     
-    def search_messages(self, username: str, query: str, limit: int = 50) -> List[Dict]:
-        """Search messages for a user. Searches across all DMs and server messages they have access to."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Get all DMs the user is part of
+    def _resolve_channel_filter(self, username: str, channel_names: List[str]) -> tuple:
+        """Resolve channel name filters into (dm_ids, server_channel_ids) the user can access.
+
+        Special values:
+          'dm' / 'dms' → only DM contexts
+          A server name  → all channels in that server
+          A channel name → matching channels across the user's servers
+        Returns (dm_ids, server_channel_ids) to use as the access scope.
+        """
+        dm_ids: List[str] = []
+        server_channel_ids: List[str] = []
+
+        include_dms = False
+        target_server_names: List[str] = []
+        target_channel_names: List[str] = []
+
+        for name in channel_names:
+            low = name.lower()
+            if low in ('dm', 'dms'):
+                include_dms = True
+            else:
+                target_server_names.append(low)
+                target_channel_names.append(low)
+
+        if include_dms:
             user_dms = self.get_user_dms(username)
             dm_ids = [dm['dm_id'] for dm in user_dms]
-            
-            # Get all servers the user is a member of
-            server_ids = self.get_user_servers(username)
-            server_channel_ids = []
+
+        server_ids = self.get_user_servers(username)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
             for server_id in server_ids:
+                # Check if server name matches
+                cursor.execute('SELECT name FROM servers WHERE server_id = %s', (server_id,))
+                row = cursor.fetchone()
+                server_name = (row['name'] if row else '').lower()
+                server_matched = server_name in target_server_names
+
                 channels = self.get_server_channels(server_id)
-                for channel in channels:
-                    server_channel_ids.append(f"{server_id}/{channel['channel_id']}")
-            
-            # Build query to search messages
-            # We'll fetch all messages from contexts the user has access to, then filter by content after decryption
-            dm_conditions = ' OR '.join(['(m.context_type = %s AND m.context_id = %s)'] * len(dm_ids))
-            server_conditions = ' OR '.join(['(m.context_type = %s AND m.context_id = %s)'] * len(server_channel_ids))
-            
-            conditions = []
-            params = []
-            
+                for ch in channels:
+                    ch_name = ch.get('name', '').lower()
+                    if server_matched or ch_name in target_channel_names:
+                        server_channel_ids.append(f"{server_id}/{ch['channel_id']}")
+
+        return dm_ids, server_channel_ids
+
+    def search_messages(self, username: str, query: str, limit: int = 50,
+                        filters: 'Dict | None' = None) -> List[Dict]:
+        """Search messages for a user. Searches across all DMs and server messages they have access to.
+
+        When *filters* is provided (from search_parser.parse_search_query) the method
+        pushes as many predicates as possible into the SQL query so fewer rows need
+        decryption.  *query* is still used as the free-text portion.
+        """
+        import re as _re  # local import for URL detection in has:link
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # --- Determine accessible contexts (possibly narrowed by 'in:' filter) ---
+            if filters and filters.get('in'):
+                dm_ids, server_channel_ids = self._resolve_channel_filter(username, filters['in'])
+            else:
+                # Default: all contexts the user can access
+                user_dms = self.get_user_dms(username)
+                dm_ids = [dm['dm_id'] for dm in user_dms]
+
+                server_ids = self.get_user_servers(username)
+                server_channel_ids = []
+                for server_id in server_ids:
+                    channels = self.get_server_channels(server_id)
+                    for channel in channels:
+                        server_channel_ids.append(f"{server_id}/{channel['channel_id']}")
+
+            # --- Build context access clause ---
+            ctx_parts = []
+            params: list = []
+
             if dm_ids:
-                conditions.append(f'({dm_conditions})')
+                placeholders = ' OR '.join(['(m.context_type = %s AND m.context_id = %s)'] * len(dm_ids))
+                ctx_parts.append(f'({placeholders})')
                 for dm_id in dm_ids:
                     params.extend(['dm', dm_id])
-            
+
             if server_channel_ids:
-                conditions.append(f'({server_conditions})')
-                for context_id in server_channel_ids:
-                    params.extend(['server', context_id])
-            
-            if not conditions:
+                placeholders = ' OR '.join(['(m.context_type = %s AND m.context_id = %s)'] * len(server_channel_ids))
+                ctx_parts.append(f'({placeholders})')
+                for cid in server_channel_ids:
+                    params.extend(['server', cid])
+
+            if not ctx_parts:
                 return []
-            
-            where_clause = ' OR '.join(conditions)
-            
+
+            where_parts = [f'({" OR ".join(ctx_parts)})', 'm.deleted = FALSE']
+
+            # --- Apply DB-level filters ---
+            if filters:
+                # from: (OR across usernames)
+                if filters.get('from'):
+                    from_ph = ' OR '.join(['m.username = %s'] * len(filters['from']))
+                    where_parts.append(f'({from_ph})')
+                    params.extend(filters['from'])
+
+                # mentions:
+                if filters.get('mentions'):
+                    mention_ph = ' OR '.join(
+                        ['EXISTS (SELECT 1 FROM message_mentions mm WHERE mm.message_id = m.id AND mm.mentioned_username = %s)']
+                        * len(filters['mentions'])
+                    )
+                    where_parts.append(f'({mention_ph})')
+                    params.extend(filters['mentions'])
+
+                # has: (attachment / image / video / audio — DB-level; link checked post-decrypt)
+                has_flags = filters.get('has', [])
+                for h in has_flags:
+                    if h in ('file', 'attachment'):
+                        where_parts.append(
+                            'EXISTS (SELECT 1 FROM message_attachments ma WHERE ma.message_id = m.id)')
+                    elif h == 'image':
+                        where_parts.append(
+                            "EXISTS (SELECT 1 FROM message_attachments ma WHERE ma.message_id = m.id AND ma.content_type LIKE 'image/%')")
+                    elif h == 'video':
+                        where_parts.append(
+                            "EXISTS (SELECT 1 FROM message_attachments ma WHERE ma.message_id = m.id AND ma.content_type LIKE 'video/%')")
+                    elif h == 'audio':
+                        where_parts.append(
+                            "EXISTS (SELECT 1 FROM message_attachments ma WHERE ma.message_id = m.id AND ma.content_type LIKE 'audio/%')")
+                    # 'link' and 'embed' handled post-decryption
+
+                # before:
+                if filters.get('before'):
+                    where_parts.append('m.timestamp < %s')
+                    params.append(filters['before'] + ' 23:59:59')
+
+                # after:
+                if filters.get('after'):
+                    where_parts.append('m.timestamp > %s')
+                    params.append(filters['after'] + ' 00:00:00')
+
+                # during: (specific date)
+                if filters.get('during'):
+                    where_parts.append('m.timestamp >= %s AND m.timestamp < %s::date + INTERVAL \'1 day\'')
+                    params.extend([filters['during'], filters['during']])
+
+                # is:pinned
+                if 'pinned' in filters.get('is', []):
+                    where_parts.append('m.pinned = TRUE')
+
+            where_clause = ' AND '.join(where_parts)
+
+            # Decide fetch multiplier: if we have only DB-level filters and no free text,
+            # we can trust the DB result count; otherwise over-fetch for post-decrypt filtering.
+            needs_content_filter = bool(query.strip()) or 'link' in (filters or {}).get('has', []) or 'embed' in (filters or {}).get('has', [])
+            fetch_limit = limit * 10 if needs_content_filter else limit
+
             cursor.execute(f'''
-                SELECT m.id, m.username, m.content, 
+                SELECT m.id, m.username, m.content,
                        m.timestamp::text as timestamp,
                        m.context_type, m.context_id,
                        m.edited_at::text as edited_at,
-                       m.deleted,
+                       m.deleted, m.pinned,
                        u.avatar, u.avatar_type, u.avatar_data
                 FROM messages m
                 LEFT JOIN users u ON m.username = u.username
-                WHERE ({where_clause}) AND m.deleted = FALSE
+                WHERE {where_clause}
                 ORDER BY m.timestamp DESC
                 LIMIT %s
-            ''', tuple(params) + (limit * 10,))  # Fetch more to filter by content
-            
-            # Decrypt and filter messages by query
+            ''', tuple(params) + (fetch_limit,))
+
+            # --- Post-decryption filtering ---
+            _url_re = _re.compile(r'https?://\S+')
+            query_lower = query.strip().lower() if query else ''
+            check_link = 'link' in (filters or {}).get('has', [])
+            check_embed = 'embed' in (filters or {}).get('has', [])
+
             messages = []
-            query_lower = query.lower()
             for row in cursor.fetchall():
                 msg = dict(row)
                 try:
                     decrypted_content = self.encryption_manager.decrypt(msg['content'])
                     msg['content'] = decrypted_content
-                    
-                    # Check if query matches in content or username
-                    if query_lower in decrypted_content.lower() or query_lower in msg['username'].lower():
-                        messages.append(msg)
-                        if len(messages) >= limit:
-                            break
+
+                    # has:link / has:embed → require URL in content
+                    if (check_link or check_embed) and not _url_re.search(decrypted_content):
+                        continue
+
+                    # Free-text substring match (content or username)
+                    if query_lower:
+                        if query_lower not in decrypted_content.lower() and query_lower not in msg['username'].lower():
+                            continue
+
+                    messages.append(msg)
+                    if len(messages) >= limit:
+                        break
                 except Exception:
-                    # Skip messages that can't be decrypted
                     continue
-            
+
             return messages
     
     def edit_message(self, message_id: int, new_content: str) -> bool:

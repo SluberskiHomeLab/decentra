@@ -3428,6 +3428,9 @@ export function ChatPage() {
                   <SearchBar 
                     currentUsername={init?.username ?? null} 
                     onResultClick={handleSearchResultClick}
+                    servers={init?.servers}
+                    dms={init?.dms}
+                    friends={init?.friends}
                   />
                 </div>
               </div>
