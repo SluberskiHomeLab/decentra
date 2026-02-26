@@ -365,6 +365,11 @@ export class WsClient {
     this.send(payload)
   }
 
+  // ── Slash commands ─────────────────────────────────────────
+  sendSlashCommand(payload: import('../types/protocol').WsOutboundSlashCommand) {
+    this.send(payload)
+  }
+
   close() {
     this.intentionallyClosed = true
     this.clearTimers()

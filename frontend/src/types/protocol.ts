@@ -253,6 +253,7 @@ export type WsChatMessage = {
     content: string
     deleted: boolean
   }
+  is_bot?: boolean
 } & Avatar
 
 export type WsHistory = {
@@ -399,6 +400,7 @@ export type WsDmStarted = {
 export type ServerMember = {
   username: string
   is_owner: boolean
+  is_bot?: boolean
   permissions?: ServerPermissions
 } & Avatar & Profile
 
@@ -1241,4 +1243,96 @@ export type WsInboundUserPreferencesUpdated = {
   type: 'user_preferences_updated'
   theme_mode: 'dark' | 'light' | 'high_contrast'
   keybinds: Record<string, string>
+}
+
+// ── Bot System Types ──────────────────────────────────────
+
+export type BotScope =
+  | 'READ_MESSAGES' | 'SEND_MESSAGES' | 'MANAGE_MESSAGES'
+  | 'READ_MEMBERS' | 'MANAGE_MEMBERS' | 'MANAGE_CHANNELS'
+  | 'MANAGE_ROLES' | 'ADD_REACTIONS' | 'MANAGE_THREADS'
+  | 'USE_SLASH_COMMANDS' | 'SEND_DMS' | 'MANAGE_SERVER'
+  | 'READ_VOICE_STATE' | 'ADMINISTRATOR'
+
+export type BotIntent =
+  | 'GUILD_MESSAGES' | 'GUILD_MEMBERS' | 'GUILD_REACTIONS'
+  | 'GUILD_CHANNELS' | 'GUILD_ROLES' | 'GUILD_VOICE_STATE'
+  | 'GUILD_THREADS' | 'GUILD_POLLS' | 'DIRECT_MESSAGES'
+  | 'SLASH_COMMANDS'
+
+export type Bot = {
+  bot_id: string
+  name: string
+  username: string
+  description?: string
+  avatar?: string
+  avatar_type?: string
+  avatar_data?: string | null
+  scopes: BotScope[]
+  intents: BotIntent[]
+  rate_limit_messages?: number
+  rate_limit_api?: number
+  is_active: boolean
+  created_at?: string
+  owner?: string
+  server_count?: number
+  servers?: { server_id: string; name: string }[]
+  commands?: SlashCommand[]
+  token?: string  // Only returned on creation
+}
+
+export type SlashCommandParameter = {
+  name: string
+  description: string
+  type: 'string' | 'integer' | 'boolean' | 'choice'
+  required: boolean
+  choices?: { name: string; value: string }[]
+}
+
+export type SlashCommand = {
+  command_id: string
+  bot_id: string
+  bot_name?: string
+  bot_avatar?: string
+  bot_username?: string
+  name: string
+  description: string
+  parameters: SlashCommandParameter[]
+  server_id?: string | null
+  enabled: boolean
+}
+
+// ── Bot WS Messages ────────────────────────────────────────
+
+export type WsBotJoinedServer = {
+  type: 'bot_joined_server'
+  server_id: string
+  bot: {
+    bot_id: string
+    name: string
+    username: string
+    avatar: string
+    is_bot: true
+  }
+}
+
+export type WsBotLeftServer = {
+  type: 'bot_left_server'
+  server_id: string
+  bot_username: string
+}
+
+export type WsSlashCommandAck = {
+  type: 'slash_command_ack'
+  command: string
+  channel_id: string
+  server_id: string
+}
+
+export type WsOutboundSlashCommand = {
+  type: 'slash_command'
+  command: string
+  args: Record<string, string | number | boolean>
+  server_id: string
+  channel_id: string
 }

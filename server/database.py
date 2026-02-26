@@ -1522,6 +1522,122 @@ class Database:
                         END $$;
                     ''')
 
+                    # ── Add is_bot column to users table (migration) ──
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'users' AND column_name = 'is_bot'
+                            ) THEN
+                                ALTER TABLE users ADD COLUMN is_bot BOOLEAN DEFAULT FALSE;
+                            END IF;
+                        END $$;
+                    ''')
+
+                    # ── Bots table ──
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS bots (
+                            bot_id VARCHAR(255) PRIMARY KEY,
+                            name VARCHAR(255) NOT NULL,
+                            username VARCHAR(255) UNIQUE NOT NULL,
+                            token_hash VARCHAR(255) NOT NULL,
+                            avatar VARCHAR(255) DEFAULT '🤖',
+                            avatar_type VARCHAR(10) DEFAULT 'emoji',
+                            avatar_data TEXT,
+                            description TEXT DEFAULT '',
+                            owner VARCHAR(255) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+                            scopes JSONB DEFAULT '[]'::jsonb,
+                            intents JSONB DEFAULT '[]'::jsonb,
+                            rate_limit_messages INTEGER DEFAULT 30,
+                            rate_limit_api INTEGER DEFAULT 120,
+                            is_active BOOLEAN DEFAULT TRUE,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    ''')
+
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_bots_owner ON bots(owner)
+                    ''')
+
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_bots_username ON bots(username)
+                    ''')
+
+                    # ── Bot server memberships table ──
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS bot_server_memberships (
+                            bot_id VARCHAR(255) NOT NULL REFERENCES bots(bot_id) ON DELETE CASCADE,
+                            server_id VARCHAR(255) NOT NULL REFERENCES servers(server_id) ON DELETE CASCADE,
+                            added_by VARCHAR(255) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+                            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            scopes_override JSONB DEFAULT NULL,
+                            is_active BOOLEAN DEFAULT TRUE,
+                            PRIMARY KEY (bot_id, server_id)
+                        )
+                    ''')
+
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_bot_memberships_server ON bot_server_memberships(server_id)
+                    ''')
+
+                    # ── Bot slash commands table ──
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS bot_slash_commands (
+                            command_id VARCHAR(255) PRIMARY KEY,
+                            bot_id VARCHAR(255) NOT NULL REFERENCES bots(bot_id) ON DELETE CASCADE,
+                            name VARCHAR(100) NOT NULL,
+                            description VARCHAR(255) DEFAULT '',
+                            parameters JSONB DEFAULT '[]'::jsonb,
+                            server_id VARCHAR(255) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            enabled BOOLEAN DEFAULT TRUE,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE (bot_id, name, server_id)
+                        )
+                    ''')
+
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_slash_commands_bot ON bot_slash_commands(bot_id)
+                    ''')
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_slash_commands_server ON bot_slash_commands(server_id)
+                    ''')
+
+                    # ── Bot audit log table ──
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS bot_audit_log (
+                            id SERIAL PRIMARY KEY,
+                            bot_id VARCHAR(255) NOT NULL REFERENCES bots(bot_id) ON DELETE CASCADE,
+                            action VARCHAR(50) NOT NULL,
+                            server_id VARCHAR(255),
+                            detail JSONB DEFAULT '{}'::jsonb,
+                            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    ''')
+
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_bot_audit_log_bot ON bot_audit_log(bot_id)
+                    ''')
+
+                    # ── Add bot rate limit defaults to admin_settings (migration) ──
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'bot_default_rate_limit_messages'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN bot_default_rate_limit_messages INTEGER DEFAULT 30;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'bot_default_rate_limit_api'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN bot_default_rate_limit_api INTEGER DEFAULT 120;
+                            END IF;
+                        END $$;
+                    ''')
+
                     conn.commit()
 
                 # If we get here, connection was successful
@@ -4628,6 +4744,363 @@ class Database:
         except Exception as e:
             print(f"Error deleting instance webhook: {e}")
             return False
+    
+    # ── Bot operations ────────────────────────────────────────────────────────
+
+    def ensure_bot_system_user(self, username: str, avatar: str = '🤖', avatar_type: str = 'emoji') -> None:
+        """Ensure a bot user exists in the users table."""
+        bot_user = self.get_user(username)
+        if not bot_user:
+            import bcrypt
+            password_hash = bcrypt.hashpw(secrets.token_hex(32).encode(), bcrypt.gensalt()).decode()
+            self.create_user(username, password_hash, email=f'{username}@bot.system', email_verified=True)
+            self.update_user_avatar(username, avatar, avatar_type, None)
+            # Mark as bot
+            try:
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('UPDATE users SET is_bot = TRUE WHERE username = %s', (username,))
+            except Exception as e:
+                print(f"Error marking user as bot: {e}")
+
+    def create_bot(self, bot_id: str, name: str, username: str, token_hash: str, owner: str,
+                   description: str = '', avatar: str = '🤖', scopes: list = None,
+                   intents: list = None, rate_limit_messages: int = 30,
+                   rate_limit_api: int = 120) -> bool:
+        """Create a new bot."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO bots (bot_id, name, username, token_hash, avatar, description, owner,
+                                      scopes, intents, rate_limit_messages, rate_limit_api, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (bot_id, name, username, token_hash, avatar, description, owner,
+                      json.dumps(scopes or []), json.dumps(intents or []),
+                      rate_limit_messages, rate_limit_api, datetime.now()))
+                return True
+        except Exception as e:
+            print(f"Error creating bot: {e}")
+            return False
+
+    def get_bot(self, bot_id: str) -> Optional[Dict]:
+        """Get bot by ID."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM bots WHERE bot_id = %s', (bot_id,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            print(f"Error getting bot: {e}")
+            return None
+
+    def get_bot_by_username(self, username: str) -> Optional[Dict]:
+        """Get bot by username."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM bots WHERE username = %s', (username,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            print(f"Error getting bot by username: {e}")
+            return None
+
+    def get_bot_by_token_hash(self, token_hash: str) -> Optional[Dict]:
+        """Get bot by token hash."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM bots WHERE token_hash = %s', (token_hash,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            print(f"Error getting bot by token hash: {e}")
+            return None
+
+    def get_all_bots(self) -> List[Dict]:
+        """Get all bots."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM bots ORDER BY created_at DESC')
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting all bots: {e}")
+            return []
+
+    def update_bot(self, bot_id: str, **kwargs) -> bool:
+        """Update bot properties. Accepted kwargs: name, description, avatar, avatar_type,
+        avatar_data, scopes, intents, rate_limit_messages, rate_limit_api, is_active."""
+        try:
+            updates = []
+            params = []
+            json_fields = {'scopes', 'intents'}
+            allowed = {'name', 'description', 'avatar', 'avatar_type', 'avatar_data',
+                        'scopes', 'intents', 'rate_limit_messages', 'rate_limit_api', 'is_active'}
+            for key, val in kwargs.items():
+                if key in allowed and val is not None:
+                    updates.append(f"{key} = %s")
+                    params.append(json.dumps(val) if key in json_fields else val)
+            if not updates:
+                return True
+            params.append(bot_id)
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(f'UPDATE bots SET {", ".join(updates)} WHERE bot_id = %s', params)
+                return True
+        except Exception as e:
+            print(f"Error updating bot: {e}")
+            return False
+
+    def delete_bot(self, bot_id: str) -> bool:
+        """Delete a bot and all memberships/commands (cascade)."""
+        try:
+            bot = self.get_bot(bot_id)
+            if bot:
+                # Remove the bot user from users table too
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('DELETE FROM bots WHERE bot_id = %s', (bot_id,))
+                    # Also remove from server_members and users
+                    cursor.execute('DELETE FROM server_members WHERE username = %s', (bot['username'],))
+                    cursor.execute('DELETE FROM users WHERE username = %s AND is_bot = TRUE', (bot['username'],))
+                return True
+            return False
+        except Exception as e:
+            print(f"Error deleting bot: {e}")
+            return False
+
+    def regenerate_bot_token(self, bot_id: str, new_token_hash: str) -> bool:
+        """Regenerate a bot's token."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('UPDATE bots SET token_hash = %s WHERE bot_id = %s', (new_token_hash, bot_id))
+                return True
+        except Exception as e:
+            print(f"Error regenerating bot token: {e}")
+            return False
+
+    # Bot server membership operations
+
+    def add_bot_to_server(self, bot_id: str, server_id: str, added_by: str, scopes_override: list = None) -> bool:
+        """Add a bot to a server."""
+        try:
+            bot = self.get_bot(bot_id)
+            if not bot:
+                return False
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO bot_server_memberships (bot_id, server_id, added_by, scopes_override)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (bot_id, server_id) DO UPDATE SET is_active = TRUE, scopes_override = EXCLUDED.scopes_override
+                ''', (bot_id, server_id, added_by, json.dumps(scopes_override) if scopes_override else None))
+                # Also add bot user to server_members so it appears in member lists
+                cursor.execute('''
+                    INSERT INTO server_members (server_id, username)
+                    VALUES (%s, %s)
+                    ON CONFLICT (server_id, username) DO NOTHING
+                ''', (server_id, bot['username']))
+            return True
+        except Exception as e:
+            print(f"Error adding bot to server: {e}")
+            return False
+
+    def remove_bot_from_server(self, bot_id: str, server_id: str) -> bool:
+        """Remove a bot from a server."""
+        try:
+            bot = self.get_bot(bot_id)
+            if not bot:
+                return False
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM bot_server_memberships WHERE bot_id = %s AND server_id = %s', (bot_id, server_id))
+                cursor.execute('DELETE FROM server_members WHERE server_id = %s AND username = %s', (server_id, bot['username']))
+            return True
+        except Exception as e:
+            print(f"Error removing bot from server: {e}")
+            return False
+
+    def get_server_bots(self, server_id: str) -> List[Dict]:
+        """Get all bots in a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT b.*, bsm.added_by, bsm.added_at, bsm.scopes_override, bsm.is_active as membership_active
+                    FROM bots b
+                    JOIN bot_server_memberships bsm ON b.bot_id = bsm.bot_id
+                    WHERE bsm.server_id = %s AND bsm.is_active = TRUE AND b.is_active = TRUE
+                    ORDER BY bsm.added_at DESC
+                ''', (server_id,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting server bots: {e}")
+            return []
+
+    def get_bot_servers(self, bot_id: str) -> List[Dict]:
+        """Get all servers a bot is in."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT s.server_id, s.name, s.icon, s.icon_type, bsm.added_by, bsm.added_at
+                    FROM servers s
+                    JOIN bot_server_memberships bsm ON s.server_id = bsm.server_id
+                    WHERE bsm.bot_id = %s AND bsm.is_active = TRUE
+                    ORDER BY bsm.added_at DESC
+                ''', (bot_id,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting bot servers: {e}")
+            return []
+
+    def get_bot_server_membership(self, bot_id: str, server_id: str) -> Optional[Dict]:
+        """Get a specific bot-server membership."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT * FROM bot_server_memberships
+                    WHERE bot_id = %s AND server_id = %s
+                ''', (bot_id, server_id))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            print(f"Error getting bot server membership: {e}")
+            return None
+
+    # Bot slash command operations
+
+    def register_slash_command(self, command_id: str, bot_id: str, name: str,
+                               description: str = '', parameters: list = None,
+                               server_id: str = None) -> bool:
+        """Register a slash command for a bot."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO bot_slash_commands (command_id, bot_id, name, description, parameters, server_id)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (bot_id, name, server_id) DO UPDATE SET
+                        description = EXCLUDED.description,
+                        parameters = EXCLUDED.parameters,
+                        command_id = EXCLUDED.command_id
+                ''', (command_id, bot_id, name, description, json.dumps(parameters or []), server_id))
+                return True
+        except Exception as e:
+            print(f"Error registering slash command: {e}")
+            return False
+
+    def get_bot_slash_commands(self, bot_id: str) -> List[Dict]:
+        """Get all slash commands for a bot."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM bot_slash_commands WHERE bot_id = %s ORDER BY name', (bot_id,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting bot slash commands: {e}")
+            return []
+
+    def get_server_slash_commands(self, server_id: str) -> List[Dict]:
+        """Get all slash commands available in a server (global + server-specific)."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT sc.*, b.name as bot_name, b.avatar as bot_avatar, b.username as bot_username
+                    FROM bot_slash_commands sc
+                    JOIN bots b ON sc.bot_id = b.bot_id
+                    JOIN bot_server_memberships bsm ON sc.bot_id = bsm.bot_id AND bsm.server_id = %s
+                    WHERE sc.enabled = TRUE AND b.is_active = TRUE AND bsm.is_active = TRUE
+                    AND (sc.server_id IS NULL OR sc.server_id = %s)
+                    ORDER BY sc.name
+                ''', (server_id, server_id))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting server slash commands: {e}")
+            return []
+
+    def update_slash_command(self, command_id: str, **kwargs) -> bool:
+        """Update a slash command."""
+        try:
+            updates = []
+            params = []
+            allowed = {'name', 'description', 'parameters', 'enabled'}
+            for key, val in kwargs.items():
+                if key in allowed and val is not None:
+                    updates.append(f"{key} = %s")
+                    params.append(json.dumps(val) if key == 'parameters' else val)
+            if not updates:
+                return True
+            params.append(command_id)
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(f'UPDATE bot_slash_commands SET {", ".join(updates)} WHERE command_id = %s', params)
+                return True
+        except Exception as e:
+            print(f"Error updating slash command: {e}")
+            return False
+
+    def delete_slash_command(self, command_id: str) -> bool:
+        """Delete a slash command."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM bot_slash_commands WHERE command_id = %s', (command_id,))
+                return True
+        except Exception as e:
+            print(f"Error deleting slash command: {e}")
+            return False
+
+    def toggle_slash_command(self, command_id: str, enabled: bool) -> bool:
+        """Enable or disable a slash command."""
+        return self.update_slash_command(command_id, enabled=enabled)
+
+    def delete_bot_commands(self, bot_id: str) -> bool:
+        """Delete all commands for a bot."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM bot_slash_commands WHERE bot_id = %s', (bot_id,))
+                return True
+        except Exception as e:
+            print(f"Error deleting bot commands: {e}")
+            return False
+
+    # Bot audit log
+
+    def log_bot_action(self, bot_id: str, action: str, server_id: str = None, detail: dict = None) -> bool:
+        """Log a bot action."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO bot_audit_log (bot_id, action, server_id, detail)
+                    VALUES (%s, %s, %s, %s)
+                ''', (bot_id, action, server_id, json.dumps(detail or {})))
+                return True
+        except Exception as e:
+            print(f"Error logging bot action: {e}")
+            return False
+
+    def get_bot_audit_log(self, bot_id: str, limit: int = 50) -> List[Dict]:
+        """Get bot audit log entries."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT * FROM bot_audit_log WHERE bot_id = %s
+                    ORDER BY timestamp DESC LIMIT %s
+                ''', (bot_id, limit))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting bot audit log: {e}")
+            return []
     
     def save_license_key(self, license_key: str, tier: str, expires_at, customer_name: str, customer_email: str) -> bool:
         """Save license key information."""

@@ -12,6 +12,9 @@ import { LicensePanel } from '../components/admin/LicensePanel'
 import { WebhookPanel } from '../components/admin/WebhookPanel'
 import { UsersPanel } from '../components/admin/UsersPanel'
 import { SsoPanel } from '../components/admin/SSOPanel'
+import BotPanel from '../components/admin/BotPanel'
+import ServerBotPanel from '../components/server/ServerBotPanel'
+import SlashCommandPicker from '../components/chat/SlashCommandPicker'
 import { useLicenseStore } from '../store/licenseStore'
 import { useSettingsStore, type Keybinds } from '../store/settingsStore'
 import { notificationManager } from '../utils/notifications'
@@ -61,6 +64,8 @@ export function ChatPage() {
   const loadPreferences = useSettingsStore((s) => s.loadPreferences)
 
   const { draft, setDraft, replyingTo, setReplyingTo, editingMessageId, setEditingMessageId, editDraft, setEditDraft } = useMessageDraft()
+  const [showSlashPicker, setShowSlashPicker] = useState(false)
+  const [slashFilter, setSlashFilter] = useState('')
   const [serverName, setServerName] = useState('')
   const [channelName, setChannelName] = useState('')
   const [channelType, setChannelType] = useState<'text' | 'voice'>('text')
@@ -2384,6 +2389,14 @@ export function ChatPage() {
   const handleDraftChange = (newDraft: string) => {
     setDraft(newDraft)
 
+    // ── Slash command picker ──────────────────────────────────────────
+    if (newDraft.startsWith('/') && selectedContext.kind === 'server') {
+      setShowSlashPicker(true)
+      setSlashFilter(newDraft.slice(1))
+    } else {
+      setShowSlashPicker(false)
+    }
+
     // ── Typing indicator ──────────────────────────────────────────────
     if (wsClient.readyState === WebSocket.OPEN) {
       let context = 'global'
@@ -3726,6 +3739,7 @@ export function ChatPage() {
                             >
                               {m.username}
                             </div>
+                            {m.is_bot && <span className="rounded bg-indigo-500/30 px-1 py-0.5 text-[10px] font-bold text-indigo-300">BOT</span>}
                             <div className="text-xs text-text-muted">
                               {new Date(m.timestamp).toLocaleString()}
                               {m.edited_at && <span className="ml-1.5 text-text-muted">(edited)</span>}
@@ -4120,8 +4134,21 @@ export function ChatPage() {
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
-                className={`flex gap-3 rounded-2xl transition ${isDragging ? 'ring-2 ring-sky-500/40 bg-sky-500/10' : ''}`}
+                className={`flex gap-3 rounded-2xl transition relative ${isDragging ? 'ring-2 ring-sky-500/40 bg-sky-500/10' : ''}`}
               >
+                {/* Slash command picker */}
+                {selectedContext.kind === 'server' && selectedContext.serverId && (
+                  <SlashCommandPicker
+                    serverId={selectedContext.serverId}
+                    visible={showSlashPicker}
+                    filter={slashFilter}
+                    onSelect={(cmd) => {
+                      setDraft(`/${cmd.name} `)
+                      setShowSlashPicker(false)
+                    }}
+                    onClose={() => setShowSlashPicker(false)}
+                  />
+                )}
                 <input
                   value={draft}
                   onChange={(e) => handleDraftChange(e.target.value)}
@@ -4268,6 +4295,7 @@ export function ChatPage() {
                                   {member.username}
                                 </span>
                                 {member.is_owner && <span className="text-xs" title="Server Owner">👑</span>}
+                                {member.is_bot && <span className="rounded bg-indigo-500/30 px-1 py-0.5 text-[10px] font-bold text-indigo-300 ml-1">BOT</span>}
                               </div>
                               {member.status_message && (
                                 <div className="text-xs text-slate-400 truncate">{member.status_message}</div>
@@ -4647,6 +4675,17 @@ export function ChatPage() {
                         }`}
                       >
                         Sign-in Options
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('bots')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'bots'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Bots
                       </button>
                     </div>
 
@@ -5157,6 +5196,16 @@ export function ChatPage() {
                     {/* SSO / Sign-in Options Tab */}
                     {adminSettingsTab === 'sso' && (
                       <SsoPanel />
+                    )}
+
+                    {/* Bots Tab */}
+                    {adminSettingsTab === 'bots' && (
+                      <>
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">🤖 Bot Management</h3>
+                      <BotPanel />
+                    </section>
+                      </>
                     )}
                     </div>
                   </div>
@@ -6062,6 +6111,17 @@ export function ChatPage() {
                   }`}
                 >
                   Audit Log
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setServerSettingsTab('bots')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'bots'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Bots
                 </button>
               </div>
 
@@ -7576,6 +7636,16 @@ export function ChatPage() {
                         )
                       })}
                     </div>
+                  </section>
+                    </>
+                  )}
+
+                  {/* Bots Tab */}
+                  {serverSettingsTab === 'bots' && selectedServerId && (
+                    <>
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">🤖 Server Bots</h3>
+                    <ServerBotPanel serverId={selectedServerId} />
                   </section>
                     </>
                   )}

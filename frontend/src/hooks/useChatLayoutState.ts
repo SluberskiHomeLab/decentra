@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import type { Keybinds } from '../store/settingsStore'
 
-export type ServerSettingsTab = 'overview' | 'channels' | 'roles' | 'customization' | 'automations' | 'members' | 'audit'
-export type AdminSettingsTab = 'general' | 'email' | 'announcements' | 'license' | 'webhooks' | 'users' | 'sso'
+export type ServerSettingsTab = 'overview' | 'channels' | 'roles' | 'customization' | 'automations' | 'members' | 'audit' | 'bots'
+export type AdminSettingsTab = 'general' | 'email' | 'announcements' | 'license' | 'webhooks' | 'users' | 'sso' | 'bots'
 export type AccountSettingsTab = 'profile' | 'security' | 'notifications' | 'keybinds'
 
 export function useChatLayoutState() {

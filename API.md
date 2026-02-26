@@ -237,10 +237,48 @@ if (userData.success) {
 }
 ```
 
+## Bot API
+
+Bots authenticate using `Authorization: Bot <token>` header. See [docs/BOTS.md](docs/BOTS.md) for full details.
+
+### Admin Bot Management (requires Bearer token from admin user)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/api/bots` | Create a new bot |
+| GET | `/api/bots` | List all bots |
+| GET | `/api/bots/:bot_id` | Get bot details |
+| PUT | `/api/bots/:bot_id` | Update bot |
+| DELETE | `/api/bots/:bot_id` | Delete bot |
+| POST | `/api/bots/:bot_id/regenerate-token` | Regenerate bot token |
+| POST | `/api/bots/:bot_id/servers/:server_id` | Add bot to server |
+| DELETE | `/api/bots/:bot_id/servers/:server_id` | Remove bot from server |
+| GET | `/api/servers/:server_id/bots` | List bots in a server |
+| GET | `/api/servers/:server_id/commands` | List commands in a server |
+| PUT | `/api/servers/:server_id/commands/:cmd_id` | Toggle command enabled/disabled |
+
+### Bot Action Endpoints (requires Bot token)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/api/bot/messages` | Send a message |
+| PUT | `/api/bot/messages/:id` | Edit a message |
+| DELETE | `/api/bot/messages/:id` | Delete a message |
+| GET | `/api/bot/servers` | List bot's servers |
+| GET | `/api/bot/servers/:id/channels` | List server channels |
+| GET | `/api/bot/servers/:id/members` | List server members |
+| GET | `/api/bot/servers/:id/channels/:cid/messages` | Get channel messages |
+| POST | `/api/bot/commands` | Register slash commands |
+| GET | `/api/bot/commands` | List bot's commands |
+| POST | `/api/bot/messages/:id/reactions` | Add reaction |
+| GET | `/api/bot/audit-log` | View bot audit log |
+
 ## Notes
 
-- The REST API provides read-only access to data
+- The REST API provides read-only access to data (except bot endpoints)
 - For sending messages and real-time features, use the WebSocket API
 - The API uses JSON for all request and response bodies
 - Currently, the API does not require session tokens - authentication is done per request
 - For desktop applications, consider caching authentication results and user data locally
+- Bot development documentation: [docs/BOTS.md](docs/BOTS.md)
+- Bot SDK and examples: [decentra-botdev/](decentra-botdev/)

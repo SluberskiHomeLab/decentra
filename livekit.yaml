@@ -17,9 +17,8 @@ rtc:
   # UDP port range for media; narrow range avoids large Docker port-mapping overhead
   port_range_start: 50000
   port_range_end: 50200
-  # Prevent LiveKit from establishing direct P2P between participants.
-  # All media MUST go through the SFU for E2EE key distribution to work correctly.
-  allow_peer_to_peer: false
+  # All media goes through the SFU (default behavior).
+  # P2P is not enabled — required for E2EE key distribution to work correctly.
 
 # TURN relay is handled by a dedicated Coturn instance (see docker-compose.yml).
 # LiveKit's built-in TURN is disabled to avoid port conflicts with Coturn.

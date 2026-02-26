@@ -30,6 +30,8 @@ from api import setup_api_routes
 from email_utils import EmailSender
 from ssl_utils import generate_self_signed_cert, create_ssl_context
 from license_validator import license_validator, check_feature_access, check_limit, enforce_limit, DEFAULT_FEATURES, DEFAULT_LIMITS
+from bot_scopes import has_scope, has_intent, get_effective_scopes, EVENT_INTENT_MAP, \
+    SCOPE_SEND_MESSAGES, SCOPE_READ_MESSAGES, SCOPE_MANAGE_MESSAGES, SCOPE_ADMINISTRATOR
 
 # Configure logging
 logging.basicConfig(
@@ -138,6 +140,12 @@ soundboard_cooldowns = {}
 
 # Typing indicators: {context_key: {username: asyncio.TimerHandle}}
 typing_states: dict = {}
+
+# Bot system: connected bot WebSocket clients
+# {websocket: {bot_id, username, scopes, intents, servers}}
+bot_clients = {}
+# Bot rate limiting: {bot_id: {channel_id: [timestamps], 'api': [timestamps]}}
+bot_rate_limits = {}
 
 # Helper counters for IDs (load from database on startup)
 server_counter = 0
@@ -446,6 +454,11 @@ def create_message_object(username, msg_content, context, context_id, user_profi
     # Add reactions and mentions for new messages
     msg_obj['reactions'] = []
     msg_obj['mentions'] = []
+    
+    # Add is_bot flag if the sender is a bot
+    user_record = db.get_user(username)
+    if user_record and user_record.get('is_bot'):
+        msg_obj['is_bot'] = True
     
     return msg_obj
 
@@ -844,6 +857,75 @@ async def send_to_user(username, message):
             break
 
 
+def check_bot_rate_limit(bot_id: str, limit_type: str, limit: int, window: int = 10, channel_id: str = None) -> tuple:
+    """Check and enforce bot rate limiting.
+    
+    Args:
+        bot_id: The bot's ID
+        limit_type: 'messages' or 'api'
+        limit: Maximum number of actions per window
+        window: Time window in seconds (default 10 for messages, 60 for api)
+        channel_id: Optional channel ID for per-channel message limits
+    
+    Returns:
+        (allowed: bool, retry_after: float)
+    """
+    import time as _time
+    now = _time.time()
+    
+    if bot_id not in bot_rate_limits:
+        bot_rate_limits[bot_id] = {}
+    
+    key = channel_id or limit_type
+    if key not in bot_rate_limits[bot_id]:
+        bot_rate_limits[bot_id][key] = []
+    
+    # Remove timestamps outside the window
+    bot_rate_limits[bot_id][key] = [t for t in bot_rate_limits[bot_id][key] if now - t < window]
+    
+    if len(bot_rate_limits[bot_id][key]) >= limit:
+        oldest = bot_rate_limits[bot_id][key][0]
+        retry_after = window - (now - oldest)
+        return False, retry_after
+    
+    bot_rate_limits[bot_id][key].append(now)
+    return True, 0
+
+
+async def deliver_bot_event(event_name: str, data: dict, server_id: str = None, channel_id: str = None):
+    """Deliver an event to all bot WebSocket clients that are subscribed to the intent.
+    
+    Args:
+        event_name: The event name (e.g., 'message_create')
+        data: The event payload
+        server_id: The server this event belongs to (for filtering)
+        channel_id: Optional channel ID
+    """
+    if not bot_clients:
+        return
+    
+    event_msg = json.dumps({
+        'type': 'bot_event',
+        'event': event_name,
+        'data': data,
+        'server_id': server_id,
+        'channel_id': channel_id
+    })
+    
+    tasks = []
+    for ws, bot_info in bot_clients.items():
+        # Check if bot is subscribed to this event's intent
+        if not has_intent(bot_info.get('intents', []), event_name):
+            continue
+        # Check if bot is in this server
+        if server_id and server_id not in bot_info.get('servers', []):
+            continue
+        tasks.append(ws.send_str(event_msg))
+    
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def broadcast_to_dm_participants(username, dm_id, message):
     """Broadcast a message to both participants in a DM conversation.
     
@@ -934,6 +1016,8 @@ async def handler(websocket):
     """Handle client connections."""
     username = None
     authenticated = False
+    is_bot_connection = False
+    bot_info = None
     
     try:
         # Register client
@@ -953,6 +1037,70 @@ async def handler(websocket):
             # Respond to keepalive pings during auth phase
             if auth_data.get('type') == 'ping':
                 await websocket.send_str(json.dumps({'type': 'pong'}))
+                continue
+            
+            # Handle bot authentication
+            if auth_data.get('type') == 'bot_auth':
+                bot_token = auth_data.get('token', '')
+                if not bot_token:
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'Bot token is required'
+                    }))
+                    continue
+                
+                # Hash the token and look up the bot
+                import hashlib
+                token_hash = hashlib.sha256(bot_token.encode()).hexdigest()
+                bot = db.get_bot_by_token_hash(token_hash)
+                
+                if not bot:
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'Invalid bot token'
+                    }))
+                    continue
+                
+                if not bot.get('is_active', True):
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'Bot is deactivated'
+                    }))
+                    continue
+                
+                # Get bot's servers
+                bot_servers = db.get_bot_servers(bot['bot_id'])
+                server_ids = [s['server_id'] for s in bot_servers]
+                
+                # Register bot connection
+                username = bot['username']
+                is_bot_connection = True
+                bot_info = {
+                    'bot_id': bot['bot_id'],
+                    'username': bot['username'],
+                    'scopes': bot.get('scopes', []),
+                    'intents': bot.get('intents', []),
+                    'servers': server_ids,
+                    'rate_limit_messages': bot.get('rate_limit_messages', 30),
+                    'rate_limit_api': bot.get('rate_limit_api', 120)
+                }
+                bot_clients[websocket] = bot_info
+                clients[websocket] = username
+                authenticated = True
+                
+                # Send bot auth success
+                await websocket.send_str(json.dumps({
+                    'type': 'bot_auth_success',
+                    'bot_id': bot['bot_id'],
+                    'name': bot['name'],
+                    'username': bot['username'],
+                    'servers': [{'server_id': s['server_id'], 'name': s['name']} for s in bot_servers],
+                    'scopes': bot.get('scopes', []),
+                    'intents': bot.get('intents', [])
+                }))
+                
+                db.log_bot_action(bot['bot_id'], 'connected', detail={'servers': server_ids})
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Bot '{bot['name']}' ({bot['username']}) connected")
                 continue
             
             # Handle signup
@@ -1662,6 +1810,73 @@ async def handler(websocket):
                     if msg_type == 'request_password_reset':
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: MATCHED request_password_reset at top of handler!")
                     
+                    # ── Slash command handling ──────────────────────────────
+                    if msg_type == 'slash_command':
+                        command_name = data.get('command', '').strip().lower()
+                        command_args = data.get('args', {})
+                        cmd_server_id = data.get('server_id', '')
+                        cmd_channel_id = data.get('channel_id', '')
+                        
+                        if not command_name or not cmd_server_id or not cmd_channel_id:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid slash command'
+                            }))
+                            continue
+                        
+                        # Find matching slash command
+                        server_commands = db.get_server_slash_commands(cmd_server_id)
+                        matched_cmd = None
+                        for cmd in server_commands:
+                            if cmd['name'] == command_name:
+                                matched_cmd = cmd
+                                break
+                        
+                        if not matched_cmd:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': f'Unknown command: /{command_name}'
+                            }))
+                            continue
+                        
+                        # Send ack to the invoking user
+                        await websocket.send_str(json.dumps({
+                            'type': 'slash_command_ack',
+                            'command': command_name,
+                            'channel_id': cmd_channel_id,
+                            'server_id': cmd_server_id
+                        }))
+                        
+                        # Deliver event to the owning bot
+                        event_data = {
+                            'command': command_name,
+                            'command_id': matched_cmd['command_id'],
+                            'args': command_args,
+                            'user': username,
+                            'server_id': cmd_server_id,
+                            'channel_id': cmd_channel_id
+                        }
+                        
+                        # Send to the specific bot that owns this command
+                        target_bot_id = matched_cmd['bot_id']
+                        for ws, bi in bot_clients.items():
+                            if bi.get('bot_id') == target_bot_id and has_intent(bi.get('intents', []), 'slash_command'):
+                                await ws.send_str(json.dumps({
+                                    'type': 'bot_event',
+                                    'event': 'slash_command',
+                                    'data': event_data,
+                                    'server_id': cmd_server_id,
+                                    'channel_id': cmd_channel_id
+                                }))
+                                break
+                        
+                        db.log_bot_action(target_bot_id, 'slash_command_received',
+                                          server_id=cmd_server_id,
+                                          detail={'command': command_name, 'user': username})
+                        
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Slash command /{command_name} invoked by {username} in {cmd_server_id}/{cmd_channel_id}")
+                        continue
+                    
                     if msg_type == 'message':
                         msg_content = data.get('content', '')
                         context = data.get('context', 'global')  # 'global', 'server', or 'dm'
@@ -1801,6 +2016,10 @@ async def handler(websocket):
                                         
                                         # Broadcast to server members (filtered by view_channel if overrides set)
                                         await broadcast_to_server(server_id, json.dumps(msg_obj), channel_id=channel_id)
+                                        
+                                        # Deliver bot event for message_create
+                                        await deliver_bot_event('message_create', msg_obj, server_id=server_id, channel_id=channel_id)
+                                        
                                         print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} sent message in {server_id}/{channel_id}")
                         
                         elif context == 'dm' and context_id:
@@ -6945,6 +7164,12 @@ async def handler(websocket):
         # Unregister client
         if websocket in clients:
             del clients[websocket]
+        
+        # Clean up bot client tracking
+        if websocket in bot_clients:
+            bot_info_cleanup = bot_clients[websocket]
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Bot '{bot_info_cleanup.get('username', '?')}' disconnected")
+            del bot_clients[websocket]
         
         if username and authenticated:
             # Clean up voice state

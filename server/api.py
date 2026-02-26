@@ -2221,6 +2221,888 @@ async def api_scim_group(request):
         return web.json_response(result, status=status)
 
 
+# ── Bot System API Endpoints ────────────────────────────────────────────────
+
+def verify_bot_token_from_request(request):
+    """Verify a bot token from an Authorization: Bot <token> header.
+    Returns (bot_dict, scopes) or (None, None)."""
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bot '):
+        return None, None
+    token = auth_header[4:]
+    import hashlib
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    bot = db.get_bot_by_token_hash(token_hash)
+    if not bot or not bot.get('is_active', True):
+        return None, None
+    return bot, bot.get('scopes', [])
+
+
+async def api_create_bot(request):
+    """POST /api/bots — Create a new bot (admin only)."""
+    try:
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({'error': 'Authentication required'}, status=401)
+        token = auth_header[7:]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({'error': 'Invalid token'}, status=401)
+        
+        # Admin check
+        first_user = db.get_first_user()
+        if username != first_user:
+            return web.json_response({'error': 'Admin access required'}, status=403)
+        
+        data = await request.json()
+        bot_name = data.get('name', '').strip()
+        bot_username = data.get('username', '').strip()
+        description = data.get('description', '').strip()
+        avatar = data.get('avatar', '🤖')
+        scopes = data.get('scopes', [])
+        intents = data.get('intents', [])
+        rate_limit_messages = data.get('rate_limit_messages', 30)
+        rate_limit_api = data.get('rate_limit_api', 120)
+        
+        if not bot_name or not bot_username:
+            return web.json_response({'error': 'Bot name and username are required'}, status=400)
+        
+        # Validate username doesn't exist
+        if db.get_user(bot_username):
+            return web.json_response({'error': 'Username already taken'}, status=400)
+        
+        # Generate bot ID and token
+        bot_id = str(uuid.uuid4())
+        raw_token = secrets.token_urlsafe(48)
+        import hashlib
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        
+        # Create bot user in users table
+        db.ensure_bot_system_user(bot_username, avatar)
+        
+        # Create bot record
+        success = db.create_bot(
+            bot_id=bot_id,
+            name=bot_name,
+            username=bot_username,
+            token_hash=token_hash,
+            owner=username,
+            description=description,
+            avatar=avatar,
+            scopes=scopes,
+            intents=intents,
+            rate_limit_messages=rate_limit_messages,
+            rate_limit_api=rate_limit_api
+        )
+        
+        if success:
+            db.log_bot_action(bot_id, 'created', detail={'name': bot_name, 'owner': username})
+            return web.json_response({
+                'success': True,
+                'bot': {
+                    'bot_id': bot_id,
+                    'name': bot_name,
+                    'username': bot_username,
+                    'description': description,
+                    'avatar': avatar,
+                    'scopes': scopes,
+                    'intents': intents,
+                    'rate_limit_messages': rate_limit_messages,
+                    'rate_limit_api': rate_limit_api,
+                    'is_active': True,
+                    'token': raw_token  # Only returned once!
+                }
+            })
+        return web.json_response({'error': 'Failed to create bot'}, status=500)
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_get_bots(request):
+    """GET /api/bots — List all bots (admin only, or with Bot token returns own info)."""
+    try:
+        auth_header = request.headers.get('Authorization', '')
+        
+        # Check for Bot token first
+        if auth_header.startswith('Bot '):
+            bot, scopes = verify_bot_token_from_request(request)
+            if not bot:
+                return web.json_response({'error': 'Invalid bot token'}, status=401)
+            servers = db.get_bot_servers(bot['bot_id'])
+            return web.json_response({
+                'bots': [{
+                    'bot_id': bot['bot_id'],
+                    'name': bot['name'],
+                    'username': bot['username'],
+                    'description': bot.get('description', ''),
+                    'avatar': bot.get('avatar', '🤖'),
+                    'scopes': bot.get('scopes', []),
+                    'intents': bot.get('intents', []),
+                    'is_active': bot.get('is_active', True),
+                    'servers': [{'server_id': s['server_id'], 'name': s['name']} for s in servers]
+                }]
+            })
+        
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({'error': 'Authentication required'}, status=401)
+        token = auth_header[7:]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({'error': 'Invalid token'}, status=401)
+        
+        first_user = db.get_first_user()
+        if username != first_user:
+            return web.json_response({'error': 'Admin access required'}, status=403)
+        
+        bots = db.get_all_bots()
+        bot_list = []
+        for b in bots:
+            servers = db.get_bot_servers(b['bot_id'])
+            bot_list.append({
+                'bot_id': b['bot_id'],
+                'name': b['name'],
+                'username': b['username'],
+                'description': b.get('description', ''),
+                'avatar': b.get('avatar', '🤖'),
+                'scopes': b.get('scopes', []),
+                'intents': b.get('intents', []),
+                'rate_limit_messages': b.get('rate_limit_messages', 30),
+                'rate_limit_api': b.get('rate_limit_api', 120),
+                'is_active': b.get('is_active', True),
+                'created_at': b['created_at'].isoformat() if b.get('created_at') else None,
+                'owner': b.get('owner'),
+                'server_count': len(servers)
+            })
+        
+        return web.json_response({'bots': bot_list})
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_get_bot(request):
+    """GET /api/bots/{bot_id} — Get bot details."""
+    try:
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({'error': 'Authentication required'}, status=401)
+        token = auth_header[7:]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({'error': 'Invalid token'}, status=401)
+        
+        bot_id = request.match_info['bot_id']
+        bot = db.get_bot(bot_id)
+        if not bot:
+            return web.json_response({'error': 'Bot not found'}, status=404)
+        
+        servers = db.get_bot_servers(bot_id)
+        commands = db.get_bot_slash_commands(bot_id)
+        
+        return web.json_response({
+            'bot': {
+                'bot_id': bot['bot_id'],
+                'name': bot['name'],
+                'username': bot['username'],
+                'description': bot.get('description', ''),
+                'avatar': bot.get('avatar', '🤖'),
+                'scopes': bot.get('scopes', []),
+                'intents': bot.get('intents', []),
+                'rate_limit_messages': bot.get('rate_limit_messages', 30),
+                'rate_limit_api': bot.get('rate_limit_api', 120),
+                'is_active': bot.get('is_active', True),
+                'created_at': bot['created_at'].isoformat() if bot.get('created_at') else None,
+                'owner': bot.get('owner'),
+                'servers': [{'server_id': s['server_id'], 'name': s['name']} for s in servers],
+                'commands': [{
+                    'command_id': c['command_id'],
+                    'name': c['name'],
+                    'description': c.get('description', ''),
+                    'parameters': c.get('parameters', []),
+                    'enabled': c.get('enabled', True)
+                } for c in commands]
+            }
+        })
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_update_bot(request):
+    """PUT /api/bots/{bot_id} — Update bot details (admin only)."""
+    try:
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({'error': 'Authentication required'}, status=401)
+        token = auth_header[7:]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({'error': 'Invalid token'}, status=401)
+        
+        first_user = db.get_first_user()
+        if username != first_user:
+            return web.json_response({'error': 'Admin access required'}, status=403)
+        
+        bot_id = request.match_info['bot_id']
+        bot = db.get_bot(bot_id)
+        if not bot:
+            return web.json_response({'error': 'Bot not found'}, status=404)
+        
+        data = await request.json()
+        update_fields = {}
+        for field in ['name', 'description', 'avatar', 'scopes', 'intents',
+                       'rate_limit_messages', 'rate_limit_api', 'is_active']:
+            if field in data:
+                update_fields[field] = data[field]
+        
+        success = db.update_bot(bot_id, **update_fields)
+        if success:
+            return web.json_response({'success': True, 'message': 'Bot updated'})
+        return web.json_response({'error': 'Failed to update bot'}, status=500)
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_delete_bot(request):
+    """DELETE /api/bots/{bot_id} — Delete a bot (admin only)."""
+    try:
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({'error': 'Authentication required'}, status=401)
+        token = auth_header[7:]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({'error': 'Invalid token'}, status=401)
+        
+        first_user = db.get_first_user()
+        if username != first_user:
+            return web.json_response({'error': 'Admin access required'}, status=403)
+        
+        bot_id = request.match_info['bot_id']
+        success = db.delete_bot(bot_id)
+        if success:
+            return web.json_response({'success': True, 'message': 'Bot deleted'})
+        return web.json_response({'error': 'Bot not found'}, status=404)
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_regenerate_bot_token(request):
+    """POST /api/bots/{bot_id}/regenerate-token — Regenerate bot token (admin only)."""
+    try:
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({'error': 'Authentication required'}, status=401)
+        token = auth_header[7:]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({'error': 'Invalid token'}, status=401)
+        
+        first_user = db.get_first_user()
+        if username != first_user:
+            return web.json_response({'error': 'Admin access required'}, status=403)
+        
+        bot_id = request.match_info['bot_id']
+        bot = db.get_bot(bot_id)
+        if not bot:
+            return web.json_response({'error': 'Bot not found'}, status=404)
+        
+        raw_token = secrets.token_urlsafe(48)
+        import hashlib
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        success = db.regenerate_bot_token(bot_id, token_hash)
+        
+        if success:
+            db.log_bot_action(bot_id, 'token_regenerated', detail={'by': username})
+            return web.json_response({
+                'success': True,
+                'token': raw_token  # Only returned once!
+            })
+        return web.json_response({'error': 'Failed to regenerate token'}, status=500)
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_add_bot_to_server(request):
+    """POST /api/bots/{bot_id}/servers/{server_id} — Add bot to a server."""
+    try:
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({'error': 'Authentication required'}, status=401)
+        token = auth_header[7:]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({'error': 'Invalid token'}, status=401)
+        
+        bot_id = request.match_info['bot_id']
+        server_id = request.match_info['server_id']
+        
+        # Verify user is server owner or instance admin
+        server = db.get_server(server_id)
+        if not server:
+            return web.json_response({'error': 'Server not found'}, status=404)
+        
+        first_user = db.get_first_user()
+        if server['owner'] != username and username != first_user:
+            return web.json_response({'error': 'Only server owner or admin can add bots'}, status=403)
+        
+        bot = db.get_bot(bot_id)
+        if not bot:
+            return web.json_response({'error': 'Bot not found'}, status=404)
+        
+        data = {}
+        try:
+            data = await request.json()
+        except Exception:
+            pass
+        scopes_override = data.get('scopes_override')
+        
+        success = db.add_bot_to_server(bot_id, server_id, username, scopes_override)
+        if success:
+            db.log_bot_action(bot_id, 'added_to_server', server_id=server_id, detail={'by': username})
+            
+            # Broadcast bot joined event to server
+            await broadcast_to_server_func(server_id, json.dumps({
+                'type': 'bot_joined_server',
+                'server_id': server_id,
+                'bot': {
+                    'bot_id': bot['bot_id'],
+                    'name': bot['name'],
+                    'username': bot['username'],
+                    'avatar': bot.get('avatar', '🤖'),
+                    'is_bot': True
+                }
+            }))
+            
+            return web.json_response({'success': True, 'message': 'Bot added to server'})
+        return web.json_response({'error': 'Failed to add bot to server'}, status=500)
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_remove_bot_from_server(request):
+    """DELETE /api/bots/{bot_id}/servers/{server_id} — Remove bot from a server."""
+    try:
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({'error': 'Authentication required'}, status=401)
+        token = auth_header[7:]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({'error': 'Invalid token'}, status=401)
+        
+        bot_id = request.match_info['bot_id']
+        server_id = request.match_info['server_id']
+        
+        server = db.get_server(server_id)
+        if not server:
+            return web.json_response({'error': 'Server not found'}, status=404)
+        
+        first_user = db.get_first_user()
+        if server['owner'] != username and username != first_user:
+            return web.json_response({'error': 'Only server owner or admin can remove bots'}, status=403)
+        
+        bot = db.get_bot(bot_id)
+        if bot:
+            success = db.remove_bot_from_server(bot_id, server_id)
+            if success:
+                db.log_bot_action(bot_id, 'removed_from_server', server_id=server_id, detail={'by': username})
+                await broadcast_to_server_func(server_id, json.dumps({
+                    'type': 'bot_left_server',
+                    'server_id': server_id,
+                    'bot_username': bot['username']
+                }))
+                return web.json_response({'success': True, 'message': 'Bot removed from server'})
+        return web.json_response({'error': 'Failed to remove bot'}, status=500)
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_get_server_bots(request):
+    """GET /api/servers/{server_id}/bots — Get bots in a server."""
+    try:
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({'error': 'Authentication required'}, status=401)
+        token = auth_header[7:]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({'error': 'Invalid token'}, status=401)
+        
+        server_id = request.match_info['server_id']
+        bots = db.get_server_bots(server_id)
+        
+        return web.json_response({
+            'bots': [{
+                'bot_id': b['bot_id'],
+                'name': b['name'],
+                'username': b['username'],
+                'description': b.get('description', ''),
+                'avatar': b.get('avatar', '🤖'),
+                'is_active': b.get('is_active', True),
+                'added_by': b.get('added_by'),
+                'added_at': b['added_at'].isoformat() if b.get('added_at') else None,
+                'scopes_override': b.get('scopes_override')
+            } for b in bots]
+        })
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_get_server_commands(request):
+    """GET /api/servers/{server_id}/commands — Get slash commands for a server."""
+    try:
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({'error': 'Authentication required'}, status=401)
+        token = auth_header[7:]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({'error': 'Invalid token'}, status=401)
+        
+        server_id = request.match_info['server_id']
+        commands = db.get_server_slash_commands(server_id)
+        
+        return web.json_response({
+            'commands': [{
+                'command_id': c['command_id'],
+                'bot_id': c['bot_id'],
+                'bot_name': c.get('bot_name', ''),
+                'bot_avatar': c.get('bot_avatar', '🤖'),
+                'bot_username': c.get('bot_username', ''),
+                'name': c['name'],
+                'description': c.get('description', ''),
+                'parameters': c.get('parameters', []),
+                'enabled': c.get('enabled', True)
+            } for c in commands]
+        })
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_toggle_server_command(request):
+    """PUT /api/servers/{server_id}/commands/{command_id} — Toggle a command in a server."""
+    try:
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({'error': 'Authentication required'}, status=401)
+        token = auth_header[7:]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({'error': 'Invalid token'}, status=401)
+        
+        server_id = request.match_info['server_id']
+        command_id = request.match_info['command_id']
+        
+        server = db.get_server(server_id)
+        if not server:
+            return web.json_response({'error': 'Server not found'}, status=404)
+        
+        first_user = db.get_first_user()
+        if server['owner'] != username and username != first_user:
+            return web.json_response({'error': 'Only server owner or admin can manage commands'}, status=403)
+        
+        data = await request.json()
+        enabled = data.get('enabled', True)
+        
+        success = db.toggle_slash_command(command_id, enabled)
+        if success:
+            return web.json_response({'success': True})
+        return web.json_response({'error': 'Failed to toggle command'}, status=500)
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+# ── Bot Action Endpoints (used by bots with Bot token) ──────────────────────
+
+async def api_bot_send_message(request):
+    """POST /api/bot/messages — Send a message as a bot."""
+    try:
+        bot, scopes = verify_bot_token_from_request(request)
+        if not bot:
+            return web.json_response({'error': 'Invalid bot token'}, status=401)
+        
+        from bot_scopes import has_scope, SCOPE_SEND_MESSAGES
+        if not has_scope(scopes, SCOPE_SEND_MESSAGES):
+            return web.json_response({'error': 'Missing SEND_MESSAGES scope'}, status=403)
+        
+        data = await request.json()
+        server_id = data.get('server_id', '')
+        channel_id = data.get('channel_id', '')
+        content = data.get('content', '').strip()
+        reply_to = data.get('reply_to')
+        
+        if not server_id or not channel_id or not content:
+            return web.json_response({'error': 'server_id, channel_id, and content are required'}, status=400)
+        
+        # Verify bot is in the server
+        membership = db.get_bot_server_membership(bot['bot_id'], server_id)
+        if not membership:
+            return web.json_response({'error': 'Bot is not in this server'}, status=403)
+        
+        # Rate limit check
+        from server import check_bot_rate_limit
+        allowed, retry_after = check_bot_rate_limit(
+            bot['bot_id'], 'messages',
+            bot.get('rate_limit_messages', 30),
+            window=10, channel_id=channel_id
+        )
+        if not allowed:
+            return web.json_response({
+                'error': 'Rate limited',
+                'retry_after': round(retry_after, 2)
+            }, status=429, headers={'Retry-After': str(int(retry_after) + 1)})
+        
+        context_id = f"{server_id}/{channel_id}"
+        message_id = db.save_message(bot['username'], content, 'server', context_id, reply_to)
+        
+        from datetime import datetime, timezone
+        msg_obj = {
+            'type': 'message',
+            'username': bot['username'],
+            'content': content,
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'context': 'server',
+            'context_id': context_id,
+            'avatar': bot.get('avatar', '🤖'),
+            'avatar_type': bot.get('avatar_type', 'emoji'),
+            'avatar_data': bot.get('avatar_data'),
+            'user_status': 'online',
+            'id': message_id,
+            'attachments': [],
+            'reactions': [],
+            'mentions': [],
+            'is_bot': True
+        }
+        
+        if reply_to:
+            original_msg = db.get_message(reply_to)
+            if original_msg:
+                msg_obj['reply_data'] = {
+                    'id': original_msg['id'],
+                    'username': original_msg['username'],
+                    'content': original_msg['content'],
+                    'deleted': original_msg.get('deleted', False)
+                }
+        
+        await broadcast_to_server_func(server_id, json.dumps(msg_obj), channel_id=channel_id)
+        
+        db.log_bot_action(bot['bot_id'], 'message_sent', server_id=server_id,
+                          detail={'channel_id': channel_id, 'message_id': message_id})
+        
+        return web.json_response({
+            'success': True,
+            'message_id': message_id
+        })
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_bot_edit_message(request):
+    """PUT /api/bot/messages/{message_id} — Edit a bot's own message."""
+    try:
+        bot, scopes = verify_bot_token_from_request(request)
+        if not bot:
+            return web.json_response({'error': 'Invalid bot token'}, status=401)
+        
+        from bot_scopes import has_scope, SCOPE_SEND_MESSAGES
+        if not has_scope(scopes, SCOPE_SEND_MESSAGES):
+            return web.json_response({'error': 'Missing SEND_MESSAGES scope'}, status=403)
+        
+        message_id = int(request.match_info['message_id'])
+        data = await request.json()
+        new_content = data.get('content', '').strip()
+        
+        if not new_content:
+            return web.json_response({'error': 'Content is required'}, status=400)
+        
+        msg = db.get_message(message_id)
+        if not msg or msg['username'] != bot['username']:
+            return web.json_response({'error': 'Message not found or not owned by this bot'}, status=404)
+        
+        db.edit_message(message_id, new_content)
+        
+        # Broadcast edit
+        context_id = msg.get('context_id', '')
+        if '/' in context_id:
+            server_id = context_id.split('/')[0]
+            await broadcast_to_server_func(server_id, json.dumps({
+                'type': 'message_edited',
+                'id': message_id,
+                'content': new_content,
+                'context': msg.get('context_type', 'server'),
+                'context_id': context_id,
+                'edited_at': datetime.now(timezone.utc).isoformat()
+            }))
+        
+        return web.json_response({'success': True})
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_bot_delete_message(request):
+    """DELETE /api/bot/messages/{message_id} — Delete a message."""
+    try:
+        bot, scopes = verify_bot_token_from_request(request)
+        if not bot:
+            return web.json_response({'error': 'Invalid bot token'}, status=401)
+        
+        message_id = int(request.match_info['message_id'])
+        msg = db.get_message(message_id)
+        if not msg:
+            return web.json_response({'error': 'Message not found'}, status=404)
+        
+        # Bot can delete its own messages or others' if it has MANAGE_MESSAGES
+        from bot_scopes import has_scope, SCOPE_MANAGE_MESSAGES, SCOPE_SEND_MESSAGES
+        if msg['username'] != bot['username'] and not has_scope(scopes, SCOPE_MANAGE_MESSAGES):
+            return web.json_response({'error': 'Missing MANAGE_MESSAGES scope'}, status=403)
+        if msg['username'] == bot['username'] and not has_scope(scopes, SCOPE_SEND_MESSAGES):
+            return web.json_response({'error': 'Missing SEND_MESSAGES scope'}, status=403)
+        
+        db.delete_message(message_id)
+        
+        context_id = msg.get('context_id', '')
+        if '/' in context_id:
+            server_id = context_id.split('/')[0]
+            await broadcast_to_server_func(server_id, json.dumps({
+                'type': 'message_deleted',
+                'id': message_id,
+                'context': msg.get('context_type', 'server'),
+                'context_id': context_id
+            }))
+        
+        return web.json_response({'success': True})
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_bot_get_servers(request):
+    """GET /api/bot/servers — Get bot's servers."""
+    try:
+        bot, scopes = verify_bot_token_from_request(request)
+        if not bot:
+            return web.json_response({'error': 'Invalid bot token'}, status=401)
+        
+        servers = db.get_bot_servers(bot['bot_id'])
+        return web.json_response({
+            'servers': [{'server_id': s['server_id'], 'name': s['name']} for s in servers]
+        })
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_bot_get_channels(request):
+    """GET /api/bot/servers/{server_id}/channels — Get channels in a server."""
+    try:
+        bot, scopes = verify_bot_token_from_request(request)
+        if not bot:
+            return web.json_response({'error': 'Invalid bot token'}, status=401)
+        
+        server_id = request.match_info['server_id']
+        membership = db.get_bot_server_membership(bot['bot_id'], server_id)
+        if not membership:
+            return web.json_response({'error': 'Bot is not in this server'}, status=403)
+        
+        channels = db.get_server_channels(server_id)
+        return web.json_response({
+            'channels': [{'channel_id': c['channel_id'], 'name': c['name'],
+                          'type': c.get('type', 'text')} for c in channels]
+        })
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_bot_get_members(request):
+    """GET /api/bot/servers/{server_id}/members — Get members in a server."""
+    try:
+        bot, scopes = verify_bot_token_from_request(request)
+        if not bot:
+            return web.json_response({'error': 'Invalid bot token'}, status=401)
+        
+        from bot_scopes import has_scope, SCOPE_READ_MEMBERS
+        if not has_scope(scopes, SCOPE_READ_MEMBERS):
+            return web.json_response({'error': 'Missing READ_MEMBERS scope'}, status=403)
+        
+        server_id = request.match_info['server_id']
+        membership = db.get_bot_server_membership(bot['bot_id'], server_id)
+        if not membership:
+            return web.json_response({'error': 'Bot is not in this server'}, status=403)
+        
+        members = db.get_server_members(server_id)
+        return web.json_response({
+            'members': [{'username': m['username']} for m in members]
+        })
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_bot_get_messages(request):
+    """GET /api/bot/servers/{server_id}/messages — Get message history."""
+    try:
+        bot, scopes = verify_bot_token_from_request(request)
+        if not bot:
+            return web.json_response({'error': 'Invalid bot token'}, status=401)
+        
+        from bot_scopes import has_scope, SCOPE_READ_MESSAGES
+        if not has_scope(scopes, SCOPE_READ_MESSAGES):
+            return web.json_response({'error': 'Missing READ_MESSAGES scope'}, status=403)
+        
+        server_id = request.match_info['server_id']
+        channel_id = request.query.get('channel_id', '')
+        limit = min(int(request.query.get('limit', '50')), 100)
+        before = request.query.get('before')
+        
+        if not channel_id:
+            return web.json_response({'error': 'channel_id query parameter required'}, status=400)
+        
+        membership = db.get_bot_server_membership(bot['bot_id'], server_id)
+        if not membership:
+            return web.json_response({'error': 'Bot is not in this server'}, status=403)
+        
+        context_id = f"{server_id}/{channel_id}"
+        messages = db.get_messages(context_type='server', context_id=context_id, limit=limit, before_id=before)
+        
+        return web.json_response({'messages': messages})
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_bot_register_commands(request):
+    """POST /api/bot/commands — Register slash commands (bot token auth)."""
+    try:
+        bot, scopes = verify_bot_token_from_request(request)
+        if not bot:
+            return web.json_response({'error': 'Invalid bot token'}, status=401)
+        
+        from bot_scopes import has_scope, SCOPE_USE_SLASH_COMMANDS
+        if not has_scope(scopes, SCOPE_USE_SLASH_COMMANDS):
+            return web.json_response({'error': 'Missing USE_SLASH_COMMANDS scope'}, status=403)
+        
+        data = await request.json()
+        commands = data.get('commands', [])
+        
+        if not isinstance(commands, list):
+            return web.json_response({'error': 'commands must be a list'}, status=400)
+        
+        # Delete existing commands and re-register
+        db.delete_bot_commands(bot['bot_id'])
+        
+        registered = []
+        for cmd in commands:
+            name = cmd.get('name', '').strip().lower()
+            description = cmd.get('description', '').strip()
+            parameters = cmd.get('parameters', [])
+            server_id = cmd.get('server_id')  # None = global
+            
+            if not name:
+                continue
+            
+            command_id = str(uuid.uuid4())
+            db.register_slash_command(command_id, bot['bot_id'], name, description, parameters, server_id)
+            registered.append({'command_id': command_id, 'name': name})
+        
+        db.log_bot_action(bot['bot_id'], 'commands_registered',
+                          detail={'count': len(registered)})
+        
+        return web.json_response({
+            'success': True,
+            'registered': registered
+        })
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_bot_get_commands(request):
+    """GET /api/bot/commands — Get bot's registered commands."""
+    try:
+        bot, scopes = verify_bot_token_from_request(request)
+        if not bot:
+            return web.json_response({'error': 'Invalid bot token'}, status=401)
+        
+        commands = db.get_bot_slash_commands(bot['bot_id'])
+        return web.json_response({
+            'commands': [{
+                'command_id': c['command_id'],
+                'name': c['name'],
+                'description': c.get('description', ''),
+                'parameters': c.get('parameters', []),
+                'server_id': c.get('server_id'),
+                'enabled': c.get('enabled', True)
+            } for c in commands]
+        })
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_bot_add_reaction(request):
+    """POST /api/bot/reactions — Add a reaction to a message."""
+    try:
+        bot, scopes = verify_bot_token_from_request(request)
+        if not bot:
+            return web.json_response({'error': 'Invalid bot token'}, status=401)
+        
+        from bot_scopes import has_scope, SCOPE_ADD_REACTIONS
+        if not has_scope(scopes, SCOPE_ADD_REACTIONS):
+            return web.json_response({'error': 'Missing ADD_REACTIONS scope'}, status=403)
+        
+        data = await request.json()
+        message_id = data.get('message_id')
+        emoji = data.get('emoji', '')
+        
+        if not message_id or not emoji:
+            return web.json_response({'error': 'message_id and emoji are required'}, status=400)
+        
+        success = db.add_reaction(message_id, bot['username'], emoji)
+        if success:
+            msg = db.get_message(message_id)
+            if msg:
+                context_id = msg.get('context_id', '')
+                if '/' in context_id:
+                    server_id = context_id.split('/')[0]
+                    await broadcast_to_server_func(server_id, json.dumps({
+                        'type': 'reaction_added',
+                        'message_id': message_id,
+                        'username': bot['username'],
+                        'emoji': emoji,
+                        'context_id': context_id,
+                        'is_bot': True
+                    }))
+            return web.json_response({'success': True})
+        return web.json_response({'error': 'Failed to add reaction'}, status=500)
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_bot_audit_log(request):
+    """GET /api/bots/{bot_id}/audit-log — Get bot audit log (admin only)."""
+    try:
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return web.json_response({'error': 'Authentication required'}, status=401)
+        token = auth_header[7:]
+        username = verify_jwt_token(token)
+        if not username:
+            return web.json_response({'error': 'Invalid token'}, status=401)
+        
+        first_user = db.get_first_user()
+        if username != first_user:
+            return web.json_response({'error': 'Admin access required'}, status=403)
+        
+        bot_id = request.match_info['bot_id']
+        limit = min(int(request.query.get('limit', '50')), 200)
+        entries = db.get_bot_audit_log(bot_id, limit)
+        
+        return web.json_response({
+            'entries': [{
+                'id': e['id'],
+                'action': e['action'],
+                'server_id': e.get('server_id'),
+                'detail': e.get('detail', {}),
+                'timestamp': e['timestamp'].isoformat() if e.get('timestamp') else None
+            } for e in entries]
+        })
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
 def setup_api_routes(app, database, jwt_verify_func, broadcast_func, send_user_func, create_dm_func, avatar_func, jwt_generate_func=None):
     """Setup REST API routes on the aiohttp application."""
     global db, verify_jwt_token, broadcast_to_server_func, send_to_user_func, get_or_create_dm_func, get_avatar_data_func, generate_jwt_token_func
@@ -2271,3 +3153,28 @@ def setup_api_routes(app, database, jwt_verify_func, broadcast_func, send_user_f
     app.router.add_route('*', '/scim/v2/Users/{id}', api_scim_user)
     app.router.add_route('*', '/scim/v2/Groups', api_scim_groups)
     app.router.add_route('*', '/scim/v2/Groups/{id}', api_scim_group)
+    # Bot management routes (admin)
+    app.router.add_post('/api/bots', api_create_bot)
+    app.router.add_get('/api/bots', api_get_bots)
+    app.router.add_get('/api/bots/{bot_id}', api_get_bot)
+    app.router.add_put('/api/bots/{bot_id}', api_update_bot)
+    app.router.add_delete('/api/bots/{bot_id}', api_delete_bot)
+    app.router.add_post('/api/bots/{bot_id}/regenerate-token', api_regenerate_bot_token)
+    app.router.add_post('/api/bots/{bot_id}/servers/{server_id}', api_add_bot_to_server)
+    app.router.add_delete('/api/bots/{bot_id}/servers/{server_id}', api_remove_bot_from_server)
+    app.router.add_get('/api/bots/{bot_id}/audit-log', api_bot_audit_log)
+    # Server-level bot routes
+    app.router.add_get('/api/servers/{server_id}/bots', api_get_server_bots)
+    app.router.add_get('/api/servers/{server_id}/commands', api_get_server_commands)
+    app.router.add_put('/api/servers/{server_id}/commands/{command_id}', api_toggle_server_command)
+    # Bot action routes (bot token auth)
+    app.router.add_post('/api/bot/messages', api_bot_send_message)
+    app.router.add_put('/api/bot/messages/{message_id}', api_bot_edit_message)
+    app.router.add_delete('/api/bot/messages/{message_id}', api_bot_delete_message)
+    app.router.add_get('/api/bot/servers', api_bot_get_servers)
+    app.router.add_get('/api/bot/servers/{server_id}/channels', api_bot_get_channels)
+    app.router.add_get('/api/bot/servers/{server_id}/members', api_bot_get_members)
+    app.router.add_get('/api/bot/servers/{server_id}/messages', api_bot_get_messages)
+    app.router.add_post('/api/bot/commands', api_bot_register_commands)
+    app.router.add_get('/api/bot/commands', api_bot_get_commands)
+    app.router.add_post('/api/bot/reactions', api_bot_add_reaction)
