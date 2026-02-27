@@ -418,6 +418,32 @@ export function ChatPage() {
     }
   }, [])
 
+  // Fetch license info and admin settings whenever auth completes (init username is set).
+  // This handles the interactive-login race where auth_success is consumed by LoginPage
+  // before ChatPage has mounted and registered its own message handler.
+  const initUsername = init?.username
+  useEffect(() => {
+    if (!initUsername) return
+    try { wsClient.getLicenseInfo() } catch { /* ignore */ }
+    try { wsClient.send({ type: 'get_admin_settings' }) } catch { /* ignore */ }
+  }, [initUsername])
+
+  // Keep document.title and favicon in sync with admin branding settings.
+  useEffect(() => {
+    const name = adminSettings.server_name || 'Decentra'
+    document.title = name
+
+    // Update favicon
+    const logo = adminSettings.server_logo || ''
+    let link = document.querySelector<HTMLLinkElement>('link[rel~="icon"]')
+    if (!link) {
+      link = document.createElement('link')
+      link.rel = 'icon'
+      document.head.appendChild(link)
+    }
+    link.href = logo || '/favicon.ico'
+  }, [adminSettings.server_name, adminSettings.server_logo])
+
   // Connect and authenticate with stored token on mount
   useEffect(() => {
     if (!authToken) return
@@ -450,14 +476,16 @@ export function ChatPage() {
       setConnectionStatus('disconnected')
     }
 
+    // Register sendAuth as a persistent onOpen handler so it fires on every
+    // reconnect (scheduleReconnect creates a new WebSocket internally).
+    const unsubscribeOpen = wsClient.onOpen(sendAuth)
     ws.addEventListener('open', handleOpen)
-    ws.addEventListener('open', sendAuth)
     ws.addEventListener('close', handleClose)
     ws.addEventListener('error', handleError)
 
     return () => {
+      unsubscribeOpen()
       ws.removeEventListener('open', handleOpen)
-      ws.removeEventListener('open', sendAuth)
       ws.removeEventListener('close', handleClose)
       ws.removeEventListener('error', handleError)
     }
@@ -930,7 +958,13 @@ export function ChatPage() {
       }
 
       if (msg.type === 'admin_settings') {
-        setAdminSettings(msg.settings || {})
+        const s = msg.settings || {}
+        setAdminSettings({
+          ...s,
+          // Ensure announcement_duration_minutes is never null/undefined so the
+          // server-side validation (which requires a number) never fires spuriously.
+          announcement_duration_minutes: s.announcement_duration_minutes ?? 60,
+        })
       }
 
       if (msg.type === 'license_info') {
@@ -4749,8 +4783,8 @@ export function ChatPage() {
                         <label className="flex items-center gap-3">
                           <input
                             type="checkbox"
-                            checked={adminSettings.allow_new_registrations !== false}
-                            onChange={(e) => setAdminSettings({ ...adminSettings, allow_new_registrations: e.target.checked })}
+                            checked={adminSettings.allow_registration !== false}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, allow_registration: e.target.checked })}
                             className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
                           />
                           <div className="text-sm text-slate-200">Allow New Registrations</div>
@@ -4759,8 +4793,8 @@ export function ChatPage() {
                         <label className="flex items-center gap-3">
                           <input
                             type="checkbox"
-                            checked={adminSettings.require_invite_code === true}
-                            onChange={(e) => setAdminSettings({ ...adminSettings, require_invite_code: e.target.checked })}
+                            checked={adminSettings.require_invite === true}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, require_invite: e.target.checked })}
                             className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
                           />
                           <div className="text-sm text-slate-200">Require Invite Code for Registration</div>

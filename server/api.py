@@ -1589,8 +1589,8 @@ async def api_get_instance_webhooks(request):
             }, status=401)
         
         # Check if user is admin
-        user = db.get_user(username)
-        if not user or user.get('username') != 'admin':
+        first_user = db.get_first_user()
+        if username != first_user:
             return web.json_response({
                 'success': False,
                 'error': 'Admin access required'
@@ -1650,8 +1650,8 @@ async def api_create_instance_webhook(request):
             }, status=401)
         
         # Check if user is admin
-        user = db.get_user(username)
-        if not user or user.get('username') != 'admin':
+        first_user = db.get_first_user()
+        if username != first_user:
             return web.json_response({
                 'success': False,
                 'error': 'Admin access required'
@@ -1738,8 +1738,8 @@ async def api_delete_instance_webhook(request):
             }, status=401)
         
         # Check if user is admin
-        user = db.get_user(username)
-        if not user or user.get('username') != 'admin':
+        first_user = db.get_first_user()
+        if username != first_user:
             return web.json_response({
                 'success': False,
                 'error': 'Admin access required'
@@ -1763,6 +1763,25 @@ async def api_delete_instance_webhook(request):
             'success': False,
             'error': str(e)
         }, status=500)
+
+
+async def api_get_branding(request):
+    """
+    GET /api/branding
+    Public endpoint — returns server name and logo for the login screen.
+    No authentication required.
+    """
+    try:
+        settings = db.get_admin_settings()
+        return web.json_response({
+            'server_name': settings.get('server_name', 'Decentra'),
+            'server_logo': settings.get('server_logo', ''),
+        })
+    except Exception as e:
+        return web.json_response({
+            'server_name': 'Decentra',
+            'server_logo': '',
+        })
 
 
 async def api_execute_instance_webhook(request):
@@ -3140,6 +3159,8 @@ def setup_api_routes(app, database, jwt_verify_func, broadcast_func, send_user_f
     app.router.add_post('/api/instance-webhooks', api_create_instance_webhook)
     app.router.add_delete('/api/instance-webhooks/{webhook_id}', api_delete_instance_webhook)
     app.router.add_post('/api/instance-webhooks/{webhook_id}/{token}', api_execute_instance_webhook)
+    # Public branding endpoint (no auth required)
+    app.router.add_get('/api/branding', api_get_branding)
     # SSO routes
     app.router.add_get('/api/auth/sso/config', api_sso_config)
     app.router.add_get('/api/auth/sso/initiate', api_sso_initiate)

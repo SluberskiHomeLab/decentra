@@ -1635,6 +1635,12 @@ class Database:
                             ) THEN
                                 ALTER TABLE admin_settings ADD COLUMN bot_default_rate_limit_api INTEGER DEFAULT 120;
                             END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'server_logo'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN server_logo TEXT DEFAULT '';
+                            END IF;
                         END $$;
                     ''')
 

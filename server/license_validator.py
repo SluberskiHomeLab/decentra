@@ -59,6 +59,17 @@ DEFAULT_QUALITIES: Dict[str, str] = {
     "screensharing_quality": "720p",
 }
 
+# Features that are implicitly enabled for a given tier and above,
+# even when the license JWT doesn't explicitly list them.
+# Tiers are ordered from lowest to highest.
+_TIER_ORDER = ["community", "lite", "standard", "elite", "off_the_walls"]
+
+# Maps feature_name -> minimum tier required for it to be implicitly True
+_TIER_FEATURE_MINIMUMS: Dict[str, str] = {
+    "sso": "standard",
+    "scim": "standard",
+}
+
 # Path to the public key shipped with the server
 _PUBLIC_KEY_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "license_public_key.pem"
@@ -209,12 +220,33 @@ class LicenseValidator:
     # ----- accessors ------------------------------------------------------
 
     def get_feature_enabled(self, feature_name: str) -> bool:
-        """Return whether *feature_name* is enabled by the current license."""
+        """Return whether *feature_name* is enabled by the current license.
+
+        Falls back to a tier-based implicit grant when the feature is not
+        explicitly listed in the license JWT.  For example, SCIM is granted
+        to all Standard-and-above tiers even if the license was issued before
+        the SCIM feature flag was introduced.
+        """
         if self._license_data is None:
             return DEFAULT_FEATURES.get(feature_name, False)
-        return self._license_data.get("features", {}).get(
-            feature_name, DEFAULT_FEATURES.get(feature_name, False)
-        )
+
+        features = self._license_data.get("features", {})
+        if feature_name in features:
+            return bool(features[feature_name])
+
+        # Feature not explicitly set — check tier-based minimum
+        minimum_tier = _TIER_FEATURE_MINIMUMS.get(feature_name)
+        if minimum_tier is not None:
+            current_tier = self._license_data.get("tier", "community").lower()
+            try:
+                required_idx = _TIER_ORDER.index(minimum_tier)
+                current_idx = _TIER_ORDER.index(current_tier)
+                if current_idx >= required_idx:
+                    return True
+            except ValueError:
+                pass  # Unknown tier name — fall through to default
+
+        return DEFAULT_FEATURES.get(feature_name, False)
 
     def get_limit(self, limit_name: str, default: int = 0) -> int:
         """Return the numeric limit for *limit_name*."""

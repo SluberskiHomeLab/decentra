@@ -53,6 +53,8 @@ type CloseHandler = (ev: CloseEvent) => void
 
 type ErrorHandler = (ev: Event) => void
 
+type OpenHandler = () => void
+
 function defaultWsUrl(): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${protocol}//${window.location.host}/ws`
@@ -63,6 +65,7 @@ export class WsClient {
   private handlers = new Set<MessageHandler>()
   private closeHandlers = new Set<CloseHandler>()
   private errorHandlers = new Set<ErrorHandler>()
+  private openHandlers = new Set<OpenHandler>()
   private pingInterval: ReturnType<typeof setInterval> | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectDelay = 1000
@@ -83,6 +86,7 @@ export class WsClient {
     this.ws.onopen = () => {
       this.reconnectDelay = 1000
       this.startPing()
+      for (const handler of this.openHandlers) handler()
     }
     this.ws.onmessage = (event) => {
       try {
@@ -156,6 +160,11 @@ export class WsClient {
   onError(handler: ErrorHandler): () => void {
     this.errorHandlers.add(handler)
     return () => this.errorHandlers.delete(handler)
+  }
+
+  onOpen(handler: OpenHandler): () => void {
+    this.openHandlers.add(handler)
+    return () => this.openHandlers.delete(handler)
   }
 
   send(payload: object) {

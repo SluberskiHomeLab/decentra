@@ -3479,19 +3479,38 @@ async def handler(websocket):
                         else:
                             settings = data.get('settings', {})
                             
-                            # SSO / SCIM license gate
-                            from license_validator import check_feature_access as _check_feat
+                            # Fetch current settings once — used for diffing in the license gates
+                            from license_validator import check_feature_access as _check_feat, license_validator as _lv
+                            current_settings = db.get_admin_settings()
+                            
+                            # SSO / SCIM license gate — only fires when values actually change
                             sso_fields = {'sso_enabled', 'sso_provider', 'sso_oidc_issuer_url',
                                           'sso_oidc_client_id', 'sso_oidc_client_secret', 'sso_oidc_preset',
                                           'sso_saml_entity_id', 'sso_saml_sso_url', 'sso_saml_certificate',
                                           'sso_ldap_server_url', 'sso_ldap_bind_dn', 'sso_ldap_bind_password',
                                           'sso_ldap_user_search_base', 'sso_ldap_user_filter',
                                           'scim_enabled', 'scim_bearer_token'}
-                            has_sso_fields = bool(sso_fields & set(settings.keys()))
-                            if has_sso_fields and not _check_feat('sso'):
+                            has_sso_changes = any(
+                                settings.get(k) != current_settings.get(k)
+                                for k in sso_fields if k in settings
+                            )
+                            if has_sso_changes and not _check_feat('sso'):
                                 await websocket.send_str(json.dumps({
                                     'type': 'error',
                                     'message': 'SSO/SCIM configuration requires a paid license tier.'
+                                }))
+                                continue
+                            
+                            # Branding license gate — server name / logo require any paid tier
+                            branding_fields = {'server_name', 'server_logo'}
+                            has_branding_changes = any(
+                                settings.get(k) != current_settings.get(k)
+                                for k in branding_fields if k in settings
+                            )
+                            if has_branding_changes and _lv.get_tier() == 'community':
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Custom server branding requires a paid license.'
                                 }))
                                 continue
                             
@@ -3511,9 +3530,9 @@ async def handler(websocket):
                                     }))
                                     continue
                                 
-                                # Validate duration
-                                duration = settings.get('announcement_duration_minutes')
-                                if duration is None or not isinstance(duration, (int, float)):
+                                # Validate duration — default to 60 if missing or null
+                                duration = settings.get('announcement_duration_minutes') or 60
+                                if not isinstance(duration, (int, float)):
                                     await websocket.send_str(json.dumps({
                                         'type': 'error',
                                         'message': 'Invalid announcement duration value'
@@ -3532,8 +3551,7 @@ async def handler(websocket):
                             
                             # If announcement is enabled and message is set, update timestamp
                             if settings.get('announcement_enabled') and settings.get('announcement_message'):
-                                # Get current settings to check if announcement changed
-                                current_settings = db.get_admin_settings()
+                                # Use current_settings fetched above to check if announcement changed
                                 if (not current_settings.get('announcement_enabled') or 
                                     current_settings.get('announcement_message') != settings.get('announcement_message') or
                                     current_settings.get('announcement_duration_minutes') != settings.get('announcement_duration_minutes')):

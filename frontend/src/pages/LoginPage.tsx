@@ -24,6 +24,8 @@ export function LoginPage() {
   const [resetSuccess, setResetSuccess] = useState(false)
   const [ssoEnabled, setSsoEnabled] = useState(false)
   const [ssoLoading, setSsoLoading] = useState(false)
+  const [serverName, setServerName] = useState('Decentra')
+  const [serverLogo, setServerLogo] = useState('')
 
   // If already authenticated, redirect to chat
   useEffect(() => {
@@ -42,6 +44,20 @@ export function LoginPage() {
         if (data.sso_enabled) setSsoEnabled(true)
       })
       .catch(() => { /* SSO not available */ })
+  }, [])
+
+  // Fetch server branding (name + logo) for the login screen
+  useEffect(() => {
+    fetch('/api/branding')
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.server_name) {
+          setServerName(data.server_name)
+          document.title = data.server_name
+        }
+        if (data.server_logo) setServerLogo(data.server_logo)
+      })
+      .catch(() => { /* branding not available, use defaults */ })
   }, [])
 
   useEffect(() => {
@@ -163,7 +179,10 @@ export function LoginPage() {
       <div className="relative mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4 py-10">
         <div className="w-full max-w-md">
           <div className="mb-6">
-            <div className="text-xs font-medium text-sky-200/70">Decentra</div>
+            {serverLogo ? (
+              <img src={serverLogo} alt={serverName} className="mb-3 h-10 w-auto object-contain" />
+            ) : null}
+            <div className="text-xs font-medium text-sky-200/70">{serverName}</div>
             <h1 className="mt-2 text-3xl font-semibold tracking-tight text-text-primary">Sign in</h1>
             <p className="mt-2 text-sm text-text-secondary">Dashboard UI (React + Tailwind) – migration in progress.</p>
           </div>
