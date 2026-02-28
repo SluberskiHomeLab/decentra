@@ -7560,6 +7560,14 @@ async def main():
     
     print("Starting HTTPS server on https://0.0.0.0:8765")
     print("Starting WebSocket server on wss://0.0.0.0:8765")
+    # ── Voice configuration sanity checks ────────────────────────────────────
+    if not COTURN_SECRET:
+        print("[WARN] COTURN_SECRET is not set — voice relay (TURN) will be disabled. "
+              "Set COTURN_SECRET in your .env file.")
+    if 'localhost' in LIVEKIT_URL or '127.0.0.1' in LIVEKIT_URL:
+        print("[WARN] LIVEKIT_URL contains 'localhost' — browsers on other machines will "
+              "not be able to reach LiveKit. Set LIVEKIT_URL to your public hostname/IP "
+              "(e.g. wss://your-domain.com:7880) in production.")
     print("=" * 50)
     
     # Initialize database counters from existing data
@@ -7602,6 +7610,14 @@ async def main():
         # Format: username = "<expiry_timestamp>:<user_id>"
         # credential = Base64(HMAC-SHA1(static_secret, username))
         # Valid for 1 hour.  Coturn validates these using use-auth-secret mode.
+        # ── Early exit when TURN relay is not configured ──
+        if not COTURN_URL or not COTURN_SECRET:
+            return web.json_response(
+                {'error': 'TURN relay is not configured on this server — '
+                          'set COTURN_SECRET and COTURN_URL environment variables.'},
+                status=503,
+            )
+
         import hmac as _hmac
         ttl = 3600  # 1 hour
         expiry = int(time.time()) + ttl
@@ -7610,20 +7626,19 @@ async def main():
             _hmac.new(COTURN_SECRET.encode(), turn_username.encode(), hashlib.sha1).digest()
         ).decode()
 
-        ice: list[dict] = []
-        if COTURN_URL and COTURN_SECRET:
-            ice.append({
+        ice: list[dict] = [
+            {
                 'urls': COTURN_URL,
                 'username': turn_username,
                 'credential': turn_credential,
-            })
-            # Also offer TURN-over-TCP for restrictive networks
-            tcp_url = COTURN_URL.replace('turn:', 'turn:') + '?transport=tcp'
-            ice.append({
-                'urls': tcp_url,
+            },
+            {
+                # TURN-over-TCP — for networks that block UDP
+                'urls': COTURN_URL + '?transport=tcp',
                 'username': turn_username,
                 'credential': turn_credential,
-            })
+            },
+        ]
         return web.json_response({'ice_servers': ice})
 
     app.router.add_get('/api/voice/ice-servers', ice_servers_handler)

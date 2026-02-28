@@ -83,15 +83,16 @@ export class VoiceChat {
     const res = await fetch('/api/voice/ice-servers', {
       headers: { 'Authorization': `Bearer ${token}` },
     })
+    const data = await res.json().catch(() => ({}))
     if (!res.ok) {
-      throw new Error(`ICE server request failed (HTTP ${res.status})`)
+      const reason: string = (data as any).error ?? `HTTP ${res.status}`
+      throw new Error(`Voice relay unavailable: ${reason}`)
     }
-    const data = await res.json()
-    if (!Array.isArray(data.ice_servers) || data.ice_servers.length === 0) {
+    if (!Array.isArray((data as any).ice_servers) || (data as any).ice_servers.length === 0) {
       throw new Error('Server returned no TURN credentials — voice relay is not configured')
     }
     this.iceServers = {
-      iceServers: data.ice_servers,
+      iceServers: (data as any).ice_servers,
       iceTransportPolicy: 'relay' as RTCIceTransportPolicy,
       bundlePolicy: 'max-bundle' as RTCBundlePolicy,
     }

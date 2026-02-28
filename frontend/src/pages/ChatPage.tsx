@@ -503,7 +503,7 @@ export function ChatPage() {
   }, [searchParams, setSearchParams, connectionStatus, init])
 
   useEffect(() => {
-    const unsubscribe = wsClient.onMessage((msg: WsMessage) => {
+    const unsubscribe = wsClient.onMessage(async (msg: WsMessage) => {
       if (msg.type === 'auth_error') {
         const message = typeof msg.message === 'string' ? msg.message : 'Authentication failed'
         setLastAuthError(message)
@@ -1661,7 +1661,12 @@ export function ChatPage() {
 
           setVoiceChatSFU(sfu)
           // Connect to LiveKit (acquires mic, publishes, subscribes)
-          sfu.connect(livekitUrl, livekitToken, serverId, channelId, voiceChat?.getIsMuted?.() ?? false)
+          try {
+            await sfu.connect(livekitUrl, livekitToken, serverId, channelId, voiceChat?.getIsMuted?.() ?? false)
+          } catch (sfuErr) {
+            console.error('[SFU] Failed to connect to LiveKit:', sfuErr)
+            pushToast({ kind: 'error', message: 'Failed to connect to voice server' })
+          }
         } else if (voiceChat) {
           // ── P2P fallback — LiveKit not configured (or DM call) ──
           voiceChat.handleVoiceJoined(participants)

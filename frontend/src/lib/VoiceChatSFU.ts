@@ -254,6 +254,8 @@ export class VoiceChatSFU {
       this.currentVoiceServer = null
       this.currentVoiceChannel = null
       this.notifyStateChange()
+      // Re-throw so callers (ChatPage) can surface an error toast to the user.
+      throw err
     }
   }
 

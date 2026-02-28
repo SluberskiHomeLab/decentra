@@ -39,6 +39,11 @@ services:
   coturn:
     image: coturn/coturn:latest
     container_name: decentra-coturn
+    # Pass the HMAC secret via CLI so docker-compose expands it before container start.
+    # The coturn image does not have envsubst, so ${COTURN_SECRET} in the config file
+    # cannot be expanded inside the container.  The CLI arg takes precedence over the
+    # config-file placeholder and is the safe injection method.
+    command: -c /etc/coturn/turnserver.conf --static-auth-secret=${COTURN_SECRET:-changeme_dev_secret}
     volumes:
       - ./coturn/coturn.conf:/etc/coturn/turnserver.conf:ro
     ports:
@@ -47,7 +52,8 @@ services:
       - "5349:5349/tcp"    # TURN TLS
       - "49152-49200:49152-49200/udp"  # TURN relay port range
     environment:
-      - COTURN_SECRET=${COTURN_SECRET}
+      # CHANGE IN PRODUCTION: use a long random secret shared with the server container.
+      - COTURN_SECRET=${COTURN_SECRET:-changeme_dev_secret}
     networks:
       - decentra-network
     restart: unless-stopped
@@ -68,7 +74,8 @@ services:
       # In production set this to wss://your-domain.com:7880
       - LIVEKIT_URL=${LIVEKIT_URL:-ws://localhost:7880}
       # Coturn TURN relay — used for P2P DM calls and ICE relay
-      - COTURN_SECRET=${COTURN_SECRET}
+      # CHANGE IN PRODUCTION: must match the secret in the coturn service above.
+      - COTURN_SECRET=${COTURN_SECRET:-changeme_dev_secret}
       - COTURN_URL=${COTURN_URL:-turn:localhost:3478}
       - COTURN_REALM=${COTURN_REALM:-decentra.local}
     networks:
