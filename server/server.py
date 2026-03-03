@@ -7985,7 +7985,7 @@ async def main():
         expiry = int(time.time()) + ttl
         turn_username = f'{expiry}:{user_info["username"]}'
         turn_credential = base64.b64encode(
-            _hmac.new(COTURN_SECRET.encode(), turn_username.encode(), hashlib.sha1).digest()
+            _hmac.new(COTURN_SECRET.encode(), turn_username.encode(), hashlib.sha256).digest()
         ).decode()
 
         ice: list[dict] = [
