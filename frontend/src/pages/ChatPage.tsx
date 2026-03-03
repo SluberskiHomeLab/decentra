@@ -43,8 +43,8 @@ import { useInviteUsage } from '../hooks/useInviteUsage'
 function sanitizeLogoUrl(raw: string | undefined | null): string | null {
   if (!raw) return null
   const trimmed = raw.trim()
-  // Relative path
-  if (trimmed.startsWith('/')) return trimmed
+  // Relative path — exclude protocol-relative URLs like //evil.com
+  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) return trimmed
   // data:image/ URI (base64 uploads)
   if (/^data:image\//i.test(trimmed)) return trimmed
   // Absolute URL — only http/https
@@ -3661,7 +3661,7 @@ export function ChatPage() {
                   {connectionStatus}
                 </div>
                 <img
-                  src={adminSettings.server_logo || '/decentra-blurple.png'}
+                  src={sanitizeLogoUrl(adminSettings.server_logo) ?? '/decentra-blurple.png'}
                   alt="Server Logo"
                   className="h-12 w-12 object-contain"
                   onError={(e) => {
