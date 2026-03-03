@@ -91,9 +91,11 @@ export class WsClient {
     this.ws.onmessage = (event) => {
       try {
         const raw = String(event.data)
-        // Ignore server pong frames
+        // Ignore server pong frames sent as plain text
         if (raw === 'pong') return
         const data = JSON.parse(raw) as WsMessage
+        // Ignore server pong frames sent as JSON, e.g. {"type":"pong"}
+        if (data && typeof data === 'object' && (data as any).type === 'pong') return
         for (const handler of this.handlers) handler(data)
       } catch {
         // ignore malformed messages
