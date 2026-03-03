@@ -110,10 +110,8 @@ export function SignUpPage() {
         return
       }
 
-      const unsubVerifyOpen = wsClient.onOpen(() => {
-        sendVerify()
-        unsubVerifyOpen()
-      })
+      let unsubVerify: (() => void) | undefined
+      unsubVerify = wsClient.onOpen(() => { unsubVerify?.(); sendVerify() })
     } else {
       // Signup step
       if (!u || !password || !email) {
@@ -138,10 +136,8 @@ export function SignUpPage() {
         return
       }
 
-      const unsubSignupOpen = wsClient.onOpen(() => {
-        sendSignup()
-        unsubSignupOpen()
-      })
+      let unsubSignup: (() => void) | undefined
+      unsubSignup = wsClient.onOpen(() => { unsubSignup?.(); sendSignup() })
     }
   }
 
