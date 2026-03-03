@@ -267,11 +267,11 @@ Bots authenticate using `Authorization: Bot <token>` header. See [docs/BOTS.md](
 | GET | `/api/bot/servers` | List bot's servers |
 | GET | `/api/bot/servers/:id/channels` | List server channels |
 | GET | `/api/bot/servers/:id/members` | List server members |
-| GET | `/api/bot/servers/:id/channels/:cid/messages` | Get channel messages |
+| GET | `/api/bot/servers/:id/messages?channel_id=...` | Get channel messages |
 | POST | `/api/bot/commands` | Register slash commands |
 | GET | `/api/bot/commands` | List bot's commands |
-| POST | `/api/bot/messages/:id/reactions` | Add reaction |
-| GET | `/api/bot/audit-log` | View bot audit log |
+| POST | `/api/bot/reactions` | Add reaction |
+| GET | `/api/bots/:bot_id/audit-log` | View bot audit log (admin/Bearer) |
 
 ## Notes
 
