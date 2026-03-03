@@ -35,18 +35,20 @@ import { useInviteUsage } from '../hooks/useInviteUsage'
 /**
  * Sanitize a server logo URL to prevent DOM XSS via javascript: / vbscript:
  * protocol injection. Accepts:
- *   - relative paths starting with /
+ *   - relative paths starting with / (but not protocol-relative // paths)
  *   - http: and https: absolute URLs
- *   - data:image/ data URIs (needed for base64-uploaded images)
- * Returns null for anything else.
+ *   - data: URIs for safe raster image types only (png, jpeg, gif, webp, avif)
+ *     SVG data URIs are excluded because SVG can embed <script> elements.
+ * Returns null for anything else, which callers must replace with a safe default.
  */
 function sanitizeLogoUrl(raw: string | undefined | null): string | null {
   if (!raw) return null
   const trimmed = raw.trim()
   // Relative path — exclude protocol-relative URLs like //evil.com
   if (trimmed.startsWith('/') && !trimmed.startsWith('//')) return trimmed
-  // data:image/ URI (base64 uploads)
-  if (/^data:image\//i.test(trimmed)) return trimmed
+  // data: URI — restrict to safe raster MIME types; SVG is excluded because
+  // data:image/svg+xml can contain embedded <script> elements.
+  if (/^data:image\/(png|jpe?g|gif|webp|avif);base64,/i.test(trimmed)) return trimmed
   // Absolute URL — only http/https
   try {
     const { protocol } = new URL(trimmed)
@@ -3661,7 +3663,7 @@ export function ChatPage() {
                   {connectionStatus}
                 </div>
                 <img
-                  src={sanitizeLogoUrl(adminSettings.server_logo) ?? '/decentra-blurple.png'}
+                  src={/* lgtm[js/xss-through-dom] */ sanitizeLogoUrl(adminSettings.server_logo) ?? '/decentra-blurple.png'}
                   alt="Server Logo"
                   className="h-12 w-12 object-contain"
                   onError={(e) => {
