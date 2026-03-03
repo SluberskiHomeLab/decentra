@@ -105,16 +105,17 @@ Authorization: Bot your-bot-token
 | Intent | Events Received |
 |---|---|
 | `GUILD_MESSAGES` | `message_create`, `message_update`, `message_delete` |
-| `GUILD_MEMBERS` | `member_join`, `member_leave`, `member_ban`, `member_update` |
+| `GUILD_MEMBERS` | `member_join`, `member_leave`, `member_update`, `member_ban`* |
 | `GUILD_REACTIONS` | `reaction_add`, `reaction_remove` |
 | `GUILD_CHANNELS` | `channel_create`, `channel_update`, `channel_delete` |
 | `GUILD_ROLES` | `role_create`, `role_update`, `role_delete` |
-| `GUILD_VOICE_STATE` | `voice_state_update` |
-| `GUILD_THREADS` | `thread_create`, `thread_update`, `thread_delete` |
-| `GUILD_POLLS` | `poll_create`, `poll_vote`, `poll_end` |
+| `GUILD_VOICE_STATE` | `voice_state_update`* |
+| `GUILD_THREADS` | `thread_create`, `thread_delete`, `thread_update`* |
+| `GUILD_POLLS` | `poll_create`, `poll_vote`, `poll_end`* |
 | `DIRECT_MESSAGES` | `dm_message_create` |
-| `SLASH_COMMANDS` | `slash_command` |
+| `SLASH_COMMANDS` | `slash_command`* |
 
+*Events marked with `*` are planned but are not yet emitted by the server; avoid relying on them until they are documented as available.*
 ## WebSocket Protocol
 
 ### Event Format
