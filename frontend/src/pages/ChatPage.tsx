@@ -35,24 +35,38 @@ import { useInviteUsage } from '../hooks/useInviteUsage'
 /**
  * Sanitize a server logo URL to prevent DOM XSS via javascript: / vbscript:
  * protocol injection. Accepts:
- *   - relative paths starting with / (but not protocol-relative // paths)
- *   - http: and https: absolute URLs
+ *   - relative paths starting with / (but not protocol-relative // paths),
+ *     containing only safe URL path characters
+ *   - http: and https: absolute URLs — returns the parser-normalised href
+ *     (not the raw input) to break the taint chain
  *   - data: URIs for safe raster image types only (png, jpeg, gif, webp, avif)
- *     SVG data URIs are excluded because SVG can embed <script> elements.
+ *     with a strict base64 alphabet check; SVG excluded (can embed <script>)
  * Returns null for anything else, which callers must replace with a safe default.
  */
 function sanitizeLogoUrl(raw: string | undefined | null): string | null {
   if (!raw) return null
   const trimmed = raw.trim()
-  // Relative path — exclude protocol-relative URLs like //evil.com
-  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) return trimmed
-  // data: URI — restrict to safe raster MIME types; SVG is excluded because
-  // data:image/svg+xml can contain embedded <script> elements.
-  if (/^data:image\/(png|jpe?g|gif|webp|avif);base64,/i.test(trimmed)) return trimmed
-  // Absolute URL — only http/https
+  // Relative path — exclude protocol-relative URLs like //evil.com and
+  // restrict to safe URL path characters only (no <, >, ", etc.)
+  if (
+    trimmed.startsWith('/') &&
+    !trimmed.startsWith('//') &&
+    /^\/[a-zA-Z0-9\-._~/?#[\]@!$&'()*+,;=%]*$/.test(trimmed)
+  ) {
+    return trimmed
+  }
+  // data: URI — restrict to safe raster MIME types with strict base64 content;
+  // SVG is excluded because data:image/svg+xml can contain <script> elements.
+  if (/^data:image\/(png|jpe?g|gif|webp|avif);base64,[A-Za-z0-9+/]+=*$/i.test(trimmed)) {
+    return trimmed
+  }
+  // Absolute URL — only http/https. Return parser-normalised href rather than
+  // the raw tainted string so the return value is not derived from user input.
   try {
-    const { protocol } = new URL(trimmed)
-    if (protocol === 'http:' || protocol === 'https:') return trimmed
+    const parsed = new URL(trimmed)
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.href
+    }
   } catch {
     // not a valid URL
   }
