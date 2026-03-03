@@ -424,9 +424,34 @@ export class VoiceChat {
     this.directCallPeer = targetUsername
     this.shouldInitiateOffers = true
 
+    // Send 'start_voice_call' — matches the server-side handler (data.get('username'))
     this.ws.send({
-      type: 'start_direct_call',
-      target_username: targetUsername,
+      type: 'start_voice_call',
+      username: targetUsername,
+    })
+
+    this.notifyStateChange()
+    return true
+  }
+
+  /**
+   * Accept an incoming direct call from callerUsername.
+   * The caller already has shouldInitiateOffers=true so they will send the WebRTC offer;
+   * we just need to set up our local stream and send accept_voice_call to the server.
+   */
+  async acceptDirectCall(callerUsername: string): Promise<boolean> {
+    await this.fetchIceServers()
+    if (!await this.initLocalStream()) {
+      return false
+    }
+
+    this.inDirectCall = true
+    this.directCallPeer = callerUsername
+    this.shouldInitiateOffers = false // caller is the WebRTC offerer
+
+    this.ws.send({
+      type: 'accept_voice_call',
+      from: callerUsername,
     })
 
     this.notifyStateChange()

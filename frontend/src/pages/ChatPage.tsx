@@ -168,6 +168,8 @@ export function ChatPage() {
   const [isVideoEnabled, setIsVideoEnabled] = useState(false)
   const [isScreenSharing, setIsScreenSharing] = useState(false)
   const [isE2EEActive, setIsE2EEActive] = useState(false)
+  // Incoming direct-call state — set when the server sends 'incoming_voice_call'
+  const [incomingCall, setIncomingCall] = useState<{ from: string } | null>(null)
   
   // Mention autocomplete state
   const [showMentionAutocomplete, setShowMentionAutocomplete] = useState(false)
@@ -1714,6 +1716,27 @@ export function ChatPage() {
         voiceChat.handleVoiceJoined([msg.caller])
       }
 
+      // ── Direct call signalling ───────────────────────────────────
+      if (msg.type === 'incoming_voice_call') {
+        const caller = (msg as any).from as string
+        setIncomingCall({ from: caller })
+        notificationManager.showCallNotification(caller, 'voice')
+      }
+
+      if (msg.type === 'voice_call_accepted' && voiceChat) {
+        const callee = (msg as any).from as string
+        setIsInVoice(true)
+        pushToast({ kind: 'success', message: `${callee} accepted your call` })
+        // Caller already has shouldInitiateOffers=true; passing both participants
+        // triggers the WebRTC offer flow in handleVoiceJoined.
+        await voiceChat.handleVoiceJoined([init?.username ?? '', callee])
+      }
+
+      if (msg.type === 'voice_call_rejected') {
+        const callee = (msg as any).from as string
+        pushToast({ kind: 'error', message: `${callee} declined your call` })
+      }
+
       if (msg.type === 'user_joined_voice' && voiceChat) {
         if (!voiceChatSFU) voiceChat.handleUserJoinedVoice(msg.username)
       }
@@ -2748,10 +2771,48 @@ export function ChatPage() {
     }
   }
 
-  /* const startDirectCall = async (targetUsername: string) => {
-    if (!voiceChat) return
-    await voiceChat.startDirectCall(targetUsername)
-  } */
+  const startDirectCall = async (targetUsername: string) => {
+    if (!voiceChat) {
+      pushToast({ kind: 'error', message: 'Voice chat not initialized' })
+      return
+    }
+    try {
+      const success = await voiceChat.startDirectCall(targetUsername)
+      if (!success) {
+        pushToast({ kind: 'error', message: 'Failed to start call. Please check microphone permissions.' })
+      } else {
+        pushToast({ kind: 'success', message: `Calling ${targetUsername}…` })
+      }
+    } catch (error) {
+      console.error('Error starting direct call:', error)
+      pushToast({ kind: 'error', message: 'Failed to start call' })
+    }
+  }
+
+  const acceptCall = async () => {
+    if (!incomingCall || !voiceChat) return
+    const caller = incomingCall.from
+    setIncomingCall(null)
+    try {
+      const success = await voiceChat.acceptDirectCall(caller)
+      if (!success) {
+        pushToast({ kind: 'error', message: 'Failed to accept call. Please check microphone permissions.' })
+      } else {
+        setIsInVoice(true)
+        pushToast({ kind: 'success', message: `Connected to call with ${caller}` })
+      }
+    } catch (error) {
+      console.error('Error accepting call:', error)
+      pushToast({ kind: 'error', message: 'Failed to accept call' })
+    }
+  }
+
+  const rejectCall = () => {
+    if (!incomingCall) return
+    const caller = incomingCall.from
+    wsClient.send({ type: 'reject_voice_call', from: caller })
+    setIncomingCall(null)
+  }
 
   const leaveVoice = () => {
     if (voiceChatSFU) {
@@ -3518,6 +3579,27 @@ export function ChatPage() {
                       </button>
                     )}
                   </>
+                )}
+                {/* DM voice call button */}
+                {selectedContext.kind === 'dm' && !isInVoice && (
+                  <button
+                    type="button"
+                    onClick={() => startDirectCall(selectedContext.kind === 'dm' ? (selectedContext.username ?? '') : '')}
+                    className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-300 hover:bg-emerald-500/20 transition"
+                    title={`Call ${selectedTitle}`}
+                  >
+                    📞 Call
+                  </button>
+                )}
+                {selectedContext.kind === 'dm' && isInVoice && (
+                  <button
+                    type="button"
+                    onClick={leaveVoice}
+                    className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-300 hover:bg-rose-500/20 transition"
+                    title="End call"
+                  >
+                    📵 End Call
+                  </button>
                 )}
                 {selectedServerId && !isVoiceChannel && selectedContext.kind !== 'thread' && (
                   <button
@@ -7955,6 +8037,36 @@ export function ChatPage() {
             </div>
           </div>
         )}
+
+      {/* ── Incoming direct-call overlay ───────────────────────────────── */}
+      {incomingCall && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-6 rounded-2xl border border-white/10 bg-bg-secondary p-8 shadow-2xl w-80">
+            <div className="text-5xl animate-bounce">📞</div>
+            <div className="text-center">
+              <div className="text-lg font-semibold text-white">Incoming Call</div>
+              <div className="mt-1 text-text-muted">{incomingCall.from} is calling you</div>
+            </div>
+            <div className="flex w-full gap-3">
+              <button
+                type="button"
+                onClick={rejectCall}
+                className="flex-1 rounded-xl bg-rose-500/20 border border-rose-500/40 py-2.5 text-sm font-semibold text-rose-300 hover:bg-rose-500/30 transition"
+              >
+                📵 Decline
+              </button>
+              <button
+                type="button"
+                onClick={acceptCall}
+                className="flex-1 rounded-xl bg-emerald-500/20 border border-emerald-500/40 py-2.5 text-sm font-semibold text-emerald-300 hover:bg-emerald-500/30 transition"
+              >
+                📞 Accept
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       </div>
     </div>
   )
