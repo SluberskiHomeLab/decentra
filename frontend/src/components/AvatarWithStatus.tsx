@@ -34,8 +34,6 @@ export function AvatarWithStatus({
     offline: 'bg-gray-500',
   }
 
-  console.log('AvatarWithStatus render:', { user_status, showStatus, hasRing: showStatus && user_status })
-
   return (
     <div className="relative inline-block">
       <span className={`flex ${sizeClasses[size]} items-center justify-center overflow-hidden rounded-full bg-bg-tertiary`}>
