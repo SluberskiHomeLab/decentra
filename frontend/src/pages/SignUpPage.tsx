@@ -96,7 +96,7 @@ export function SignUpPage() {
         return
       }
 
-      const ws = wsClient.connect()
+      wsClient.connect()
       const sendVerify = () => {
         wsClient.verifyEmail({
           type: 'verify_email',
@@ -105,14 +105,15 @@ export function SignUpPage() {
         })
       }
 
-      if (ws.readyState === WebSocket.OPEN) {
+      if (wsClient.readyState === WebSocket.OPEN) {
         sendVerify()
         return
       }
 
-      ws.onopen = () => {
+      const unsubVerifyOpen = wsClient.onOpen(() => {
         sendVerify()
-      }
+        unsubVerifyOpen()
+      })
     } else {
       // Signup step
       if (!u || !password || !email) {
@@ -121,7 +122,7 @@ export function SignUpPage() {
         return
       }
 
-      const ws = wsClient.connect()
+      wsClient.connect()
       const sendSignup = () => {
         wsClient.signup({
           type: 'signup',
@@ -132,14 +133,15 @@ export function SignUpPage() {
         })
       }
 
-      if (ws.readyState === WebSocket.OPEN) {
+      if (wsClient.readyState === WebSocket.OPEN) {
         sendSignup()
         return
       }
 
-      ws.onopen = () => {
+      const unsubSignupOpen = wsClient.onOpen(() => {
         sendSignup()
-      }
+        unsubSignupOpen()
+      })
     }
   }
 

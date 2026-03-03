@@ -17,9 +17,8 @@ Unrecognised tokens remain in the free-text portion.
 """
 
 import re
-import shlex
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
+from typing import Dict, Optional, Any
 
 # Recognised filter keys and their allowed values (None = any value)
 KNOWN_FILTERS = {
