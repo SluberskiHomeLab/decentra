@@ -31,6 +31,32 @@ import { useChatLayoutState } from '../hooks/useChatLayoutState'
 import { useMessageDraft } from '../hooks/useMessageDraft'
 import { useFileUpload } from '../hooks/useFileUpload'
 import { useInviteUsage } from '../hooks/useInviteUsage'
+
+/**
+ * Sanitize a server logo URL to prevent DOM XSS via javascript: / vbscript:
+ * protocol injection. Accepts:
+ *   - relative paths starting with /
+ *   - http: and https: absolute URLs
+ *   - data:image/ data URIs (needed for base64-uploaded images)
+ * Returns null for anything else.
+ */
+function sanitizeLogoUrl(raw: string | undefined | null): string | null {
+  if (!raw) return null
+  const trimmed = raw.trim()
+  // Relative path
+  if (trimmed.startsWith('/')) return trimmed
+  // data:image/ URI (base64 uploads)
+  if (/^data:image\//i.test(trimmed)) return trimmed
+  // Absolute URL — only http/https
+  try {
+    const { protocol } = new URL(trimmed)
+    if (protocol === 'http:' || protocol === 'https:') return trimmed
+  } catch {
+    // not a valid URL
+  }
+  return null
+}
+
 export function ChatPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const connectionStatus = useAppStore((s) => s.connectionStatus)
@@ -435,15 +461,15 @@ export function ChatPage() {
     const name = adminSettings.server_name || 'Decentra'
     document.title = name
 
-    // Update favicon
-    const logo = adminSettings.server_logo || ''
+    // Update favicon — sanitize to block javascript:/vbscript: injection
+    const logo = sanitizeLogoUrl(adminSettings.server_logo)
     let link = document.querySelector<HTMLLinkElement>('link[rel~="icon"]')
     if (!link) {
       link = document.createElement('link')
       link.rel = 'icon'
       document.head.appendChild(link)
     }
-    link.href = logo || '/favicon.ico'
+    link.href = logo ?? '/favicon.ico'
   }, [adminSettings.server_name, adminSettings.server_logo])
 
   // Connect and authenticate with stored token on mount
@@ -4843,7 +4869,7 @@ export function ChatPage() {
                             <div className="mt-2">
                               <div className="text-xs text-slate-400 mb-1">Preview:</div>
                               <img
-                                src={adminSettings.server_logo}
+                                src={sanitizeLogoUrl(adminSettings.server_logo) ?? '/decentra-blurple.png'}
                                 alt="Logo preview"
                                 className="h-16 w-16 rounded-lg border border-white/10 bg-slate-950/30 object-contain p-2"
                                 onError={(e) => {
