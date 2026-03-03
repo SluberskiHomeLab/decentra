@@ -472,7 +472,18 @@ export function SearchBar({ currentUsername, onResultClick, servers, dms, friend
           </div>
           <div className="mt-2 text-xs text-text-muted text-center">
             💡 Try filter operators like{' '}
-            <code className="text-accent-primary cursor-pointer" onClick={() => setShowHelp(true)}>
+            <code
+              className="text-accent-primary cursor-pointer"
+              role="button"
+              tabIndex={0}
+              onClick={() => setShowHelp(true)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  setShowHelp(true)
+                }
+              }}
+            >
               from: in: has:
             </code>
           </div>
