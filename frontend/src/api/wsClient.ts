@@ -83,11 +83,12 @@ export class WsClient {
     this.clearTimers()
 
     this.ws = new WebSocket(url)
-    this.ws.onopen = () => {
+    const ws = this.ws
+    ws.addEventListener('open', () => {
       this.reconnectDelay = 1000
       this.startPing()
       for (const handler of this.openHandlers) handler()
-    }
+    })
     this.ws.onmessage = (event) => {
       try {
         const raw = String(event.data)
