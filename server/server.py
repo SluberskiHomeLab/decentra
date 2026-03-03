@@ -18,6 +18,8 @@ from aiohttp import web
 import os
 import base64
 import hashlib
+import hmac as _hmac_mod
+import time
 import jwt
 import pyotp
 import qrcode
@@ -28,6 +30,8 @@ from api import setup_api_routes
 from email_utils import EmailSender
 from ssl_utils import generate_self_signed_cert, create_ssl_context
 from license_validator import license_validator, check_feature_access, check_limit, enforce_limit, DEFAULT_FEATURES, DEFAULT_LIMITS
+from bot_scopes import has_scope, has_intent, get_effective_scopes, EVENT_INTENT_MAP, \
+    SCOPE_SEND_MESSAGES, SCOPE_READ_MESSAGES, SCOPE_MANAGE_MESSAGES, SCOPE_ADMINISTRATOR
 
 # Configure logging
 logging.basicConfig(
@@ -83,6 +87,22 @@ JWT_SECRET_KEY = _load_jwt_secret_key()
 JWT_ALGORITHM = 'HS256'
 JWT_EXPIRATION_HOURS = 24  # Token expires after 24 hours
 
+# ── LiveKit SFU Configuration ───────────────────────────────────────────────
+# These env vars must match the keys: block in livekit.yaml.
+# LIVEKIT_URL is the WebSocket URL that BROWSERS use to connect to LiveKit;
+# set to wss://your-domain.com:7880 in production.
+LIVEKIT_API_KEY    = os.environ.get('LIVEKIT_API_KEY', '')
+LIVEKIT_API_SECRET = os.environ.get('LIVEKIT_API_SECRET', '')
+LIVEKIT_URL        = os.environ.get('LIVEKIT_URL', 'ws://localhost:7880')
+# ── Coturn TURN Relay ───────────────────────────────────────────────────────
+# Self-hosted Coturn instance for ICE relay (both P2P DM calls and SFU fallback).
+# COTURN_SECRET must match the static-auth-secret in coturn/coturn.conf.
+# COTURN_URL is the TURN URI clients connect to (e.g., turn:your-domain.com:3478).
+COTURN_SECRET = os.environ.get('COTURN_SECRET', '')
+COTURN_URL    = os.environ.get('COTURN_URL', 'turn:localhost:3478')
+COTURN_REALM  = os.environ.get('COTURN_REALM', 'decentra.local')
+# ────────────────────────────────────────────────────────────────────────────
+
 # Store pending signups temporarily (in-memory)
 # Format: {username: {password_hash, email, invite_code, inviter_username}}
 # NOTE: This is an in-memory store and will be cleared on server restart.
@@ -121,6 +141,12 @@ soundboard_cooldowns = {}
 # Typing indicators: {context_key: {username: asyncio.TimerHandle}}
 typing_states: dict = {}
 
+# Bot system: connected bot WebSocket clients
+# {websocket: {bot_id, username, scopes, intents, servers}}
+bot_clients = {}
+# Bot rate limiting: {bot_id: {channel_id: [timestamps], 'api': [timestamps]}}
+bot_rate_limits = {}
+
 # Helper counters for IDs (load from database on startup)
 server_counter = 0
 channel_counter = 0
@@ -145,6 +171,13 @@ def serialize_role(role):
     # Map role_id to id for frontend compatibility
     if 'role_id' in serialized:
         serialized['id'] = serialized['role_id']
+    # Ensure hoist field is present
+    if 'hoist' not in serialized:
+        serialized['hoist'] = False
+    # Ensure permissions is always a dict
+    perms = serialized.get('permissions', {})
+    if isinstance(perms, list):
+        serialized['permissions'] = {k: True for k in perms}
     return serialized
 
 
@@ -239,6 +272,36 @@ def verify_jwt_token(token):
         return None  # Token has expired
     except jwt.InvalidTokenError:
         return None  # Invalid token
+
+
+def generate_livekit_token(room_name: str, participant_identity: str, participant_name: str = '') -> str | None:
+    """
+    Generate a signed LiveKit room-join JWT for a participant.
+
+    Returns None if LIVEKIT_API_KEY or LIVEKIT_API_SECRET are not configured,
+    which means the server is running without the SFU — callers fall back to
+    the existing P2P WebRTC path.
+    """
+    if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
+        return None
+
+    now = int(time.time())
+    claims = {
+        'iss': LIVEKIT_API_KEY,
+        'sub': participant_identity,
+        'exp': now + 3600,    # 1-hour token lifetime (hardened from 24 h)
+        'nbf': now,
+        'video': {
+            'room': room_name,
+            'roomJoin': True,
+            'canPublish': True,
+            'canSubscribe': True,
+        },
+        'metadata': json.dumps({'room': room_name}),
+    }
+    if participant_name:
+        claims['name'] = participant_name
+    return jwt.encode(claims, LIVEKIT_API_SECRET, algorithm='HS256')
 
 
 def check_password_reset_rate_limit(identifier: str) -> bool:
@@ -391,6 +454,11 @@ def create_message_object(username, msg_content, context, context_id, user_profi
     # Add reactions and mentions for new messages
     msg_obj['reactions'] = []
     msg_obj['mentions'] = []
+    
+    # Add is_bot flag if the sender is a bot
+    user_record = db.get_user(username)
+    if user_record and user_record.get('is_bot'):
+        msg_obj['is_bot'] = True
     
     return msg_obj
 
@@ -558,6 +626,12 @@ def build_user_servers_data(username):
                             'can_edit_messages': member.get('can_edit_messages', False),
                             'can_delete_messages': member.get('can_delete_messages', False)
                         }
+                        # Check rules_pending status
+                        if not member.get('rules_accepted', True):
+                            server_settings = db.get_server_settings(server_id)
+                            if server_settings and server_settings.get('rules_enabled'):
+                                server_info['rules_pending'] = True
+                                server_info['rules_text'] = server_settings.get('rules_text', '')
                         break
             user_servers.append(server_info)
     
@@ -646,6 +720,9 @@ def has_permission(server_id, username, permission):
     user_roles = db.get_user_roles(server_id, username)
     for role in user_roles:
         perms = role.get('permissions', {})
+        # Coerce legacy array format to dict
+        if isinstance(perms, list):
+            perms = {k: True for k in perms}
         
         # Administrator role has all permissions
         if perms.get('administrator', False):
@@ -730,8 +807,10 @@ async def broadcast(message, exclude=None):
             await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def broadcast_to_server(server_id, message, exclude=None):
-    """Broadcast a message to all members of a server, or to all users if server_id is None."""
+async def broadcast_to_server(server_id, message, exclude=None, channel_id=None):
+    """Broadcast a message to all members of a server, or to all users if server_id is None.
+    If channel_id is provided, only members with view_channel permission for that channel receive it.
+    """
     if server_id is None:
         # Broadcast to all connected users (for instance webhooks)
         tasks = []
@@ -748,7 +827,23 @@ async def broadcast_to_server(server_id, message, exclude=None):
         tasks = []
         for client_ws, client_username in clients.items():
             if client_username in server_members and client_ws != exclude:
-                tasks.append(client_ws.send_str(message))
+                # If channel_id provided, enforce view_channel permission
+                if channel_id:
+                    server = db.get_server(server_id)
+                    # Owners always see all channels
+                    if server and server['owner'] == client_username:
+                        tasks.append(client_ws.send_str(message))
+                        continue
+                    # Check channel overrides — if any override exists, enforce
+                    overrides = db.get_channel_all_overrides(channel_id)
+                    if overrides:
+                        if db.has_channel_permission(server_id, client_username, channel_id, 'view_channel'):
+                            tasks.append(client_ws.send_str(message))
+                    else:
+                        # No overrides set — default allow
+                        tasks.append(client_ws.send_str(message))
+                else:
+                    tasks.append(client_ws.send_str(message))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -760,6 +855,75 @@ async def send_to_user(username, message):
         if client_username == username:
             await client_ws.send_str(message)
             break
+
+
+def check_bot_rate_limit(bot_id: str, limit_type: str, limit: int, window: int = 10, channel_id: str = None) -> tuple:
+    """Check and enforce bot rate limiting.
+    
+    Args:
+        bot_id: The bot's ID
+        limit_type: 'messages' or 'api'
+        limit: Maximum number of actions per window
+        window: Time window in seconds (default 10 for messages, 60 for api)
+        channel_id: Optional channel ID for per-channel message limits
+    
+    Returns:
+        (allowed: bool, retry_after: float)
+    """
+    import time as _time
+    now = _time.time()
+    
+    if bot_id not in bot_rate_limits:
+        bot_rate_limits[bot_id] = {}
+    
+    key = channel_id or limit_type
+    if key not in bot_rate_limits[bot_id]:
+        bot_rate_limits[bot_id][key] = []
+    
+    # Remove timestamps outside the window
+    bot_rate_limits[bot_id][key] = [t for t in bot_rate_limits[bot_id][key] if now - t < window]
+    
+    if len(bot_rate_limits[bot_id][key]) >= limit:
+        oldest = bot_rate_limits[bot_id][key][0]
+        retry_after = window - (now - oldest)
+        return False, retry_after
+    
+    bot_rate_limits[bot_id][key].append(now)
+    return True, 0
+
+
+async def deliver_bot_event(event_name: str, data: dict, server_id: str = None, channel_id: str = None):
+    """Deliver an event to all bot WebSocket clients that are subscribed to the intent.
+    
+    Args:
+        event_name: The event name (e.g., 'message_create')
+        data: The event payload
+        server_id: The server this event belongs to (for filtering)
+        channel_id: Optional channel ID
+    """
+    if not bot_clients:
+        return
+    
+    event_msg = json.dumps({
+        'type': 'bot_event',
+        'event': event_name,
+        'data': data,
+        'server_id': server_id,
+        'channel_id': channel_id
+    })
+    
+    tasks = []
+    for ws, bot_info in bot_clients.items():
+        # Check if bot is subscribed to this event's intent
+        if not has_intent(bot_info.get('intents', []), event_name):
+            continue
+        # Check if bot is in this server
+        if server_id and server_id not in bot_info.get('servers', []):
+            continue
+        tasks.append(ws.send_str(event_msg))
+    
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def broadcast_to_dm_participants(username, dm_id, message):
@@ -852,6 +1016,8 @@ async def handler(websocket):
     """Handle client connections."""
     username = None
     authenticated = False
+    is_bot_connection = False
+    bot_info = None
     
     try:
         # Register client
@@ -867,6 +1033,75 @@ async def handler(websocket):
                 break
             else:
                 break
+            
+            # Respond to keepalive pings during auth phase
+            if auth_data.get('type') == 'ping':
+                await websocket.send_str(json.dumps({'type': 'pong'}))
+                continue
+            
+            # Handle bot authentication
+            if auth_data.get('type') == 'bot_auth':
+                bot_token = auth_data.get('token', '')
+                if not bot_token:
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'Bot token is required'
+                    }))
+                    continue
+                
+                # Hash the token and look up the bot
+                import hashlib
+                token_hash = hashlib.sha256(bot_token.encode()).hexdigest()
+                bot = db.get_bot_by_token_hash(token_hash)
+                
+                if not bot:
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'Invalid bot token'
+                    }))
+                    continue
+                
+                if not bot.get('is_active', True):
+                    await websocket.send_str(json.dumps({
+                        'type': 'auth_error',
+                        'message': 'Bot is deactivated'
+                    }))
+                    continue
+                
+                # Get bot's servers
+                bot_servers = db.get_bot_servers(bot['bot_id'])
+                server_ids = [s['server_id'] for s in bot_servers]
+                
+                # Register bot connection
+                username = bot['username']
+                is_bot_connection = True
+                bot_info = {
+                    'bot_id': bot['bot_id'],
+                    'username': bot['username'],
+                    'scopes': bot.get('scopes', []),
+                    'intents': bot.get('intents', []),
+                    'servers': server_ids,
+                    'rate_limit_messages': bot.get('rate_limit_messages', 30),
+                    'rate_limit_api': bot.get('rate_limit_api', 120)
+                }
+                bot_clients[websocket] = bot_info
+                clients[websocket] = username
+                authenticated = True
+                
+                # Send bot auth success
+                await websocket.send_str(json.dumps({
+                    'type': 'bot_auth_success',
+                    'bot_id': bot['bot_id'],
+                    'name': bot['name'],
+                    'username': bot['username'],
+                    'servers': [{'server_id': s['server_id'], 'name': s['name']} for s in bot_servers],
+                    'scopes': bot.get('scopes', []),
+                    'intents': bot.get('intents', [])
+                }))
+                
+                db.log_bot_action(bot['bot_id'], 'connected', detail={'servers': server_ids})
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Bot '{bot['name']}' ({bot['username']}) connected")
+                continue
             
             # Handle signup
             if auth_data.get('type') == 'signup':
@@ -1563,18 +1798,92 @@ async def handler(websocket):
                 try:
                     data = json.loads(msg.data)
                     msg_type = data.get('type')
+                    
+                    # Respond to client-level keepalive pings immediately
+                    if msg_type == 'ping':
+                        await websocket.send_str(json.dumps({'type': 'pong'}))
+                        continue
+                    
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] Received message type: {msg_type}", flush=True)
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Full data: {data}", flush=True)
                     
                     if msg_type == 'request_password_reset':
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: MATCHED request_password_reset at top of handler!")
                     
+                    # ── Slash command handling ──────────────────────────────
+                    if msg_type == 'slash_command':
+                        command_name = data.get('command', '').strip().lower()
+                        command_args = data.get('args', {})
+                        cmd_server_id = data.get('server_id', '')
+                        cmd_channel_id = data.get('channel_id', '')
+                        
+                        if not command_name or not cmd_server_id or not cmd_channel_id:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid slash command'
+                            }))
+                            continue
+                        
+                        # Find matching slash command
+                        server_commands = db.get_server_slash_commands(cmd_server_id)
+                        matched_cmd = None
+                        for cmd in server_commands:
+                            if cmd['name'] == command_name:
+                                matched_cmd = cmd
+                                break
+                        
+                        if not matched_cmd:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': f'Unknown command: /{command_name}'
+                            }))
+                            continue
+                        
+                        # Send ack to the invoking user
+                        await websocket.send_str(json.dumps({
+                            'type': 'slash_command_ack',
+                            'command': command_name,
+                            'channel_id': cmd_channel_id,
+                            'server_id': cmd_server_id
+                        }))
+                        
+                        # Deliver event to the owning bot
+                        event_data = {
+                            'command': command_name,
+                            'command_id': matched_cmd['command_id'],
+                            'args': command_args,
+                            'user': username,
+                            'server_id': cmd_server_id,
+                            'channel_id': cmd_channel_id
+                        }
+                        
+                        # Send to the specific bot that owns this command
+                        target_bot_id = matched_cmd['bot_id']
+                        for ws, bi in bot_clients.items():
+                            if bi.get('bot_id') == target_bot_id and has_intent(bi.get('intents', []), 'slash_command'):
+                                await ws.send_str(json.dumps({
+                                    'type': 'bot_event',
+                                    'event': 'slash_command',
+                                    'data': event_data,
+                                    'server_id': cmd_server_id,
+                                    'channel_id': cmd_channel_id
+                                }))
+                                break
+                        
+                        db.log_bot_action(target_bot_id, 'slash_command_received',
+                                          server_id=cmd_server_id,
+                                          detail={'command': command_name, 'user': username})
+                        
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Slash command /{command_name} invoked by {username} in {cmd_server_id}/{cmd_channel_id}")
+                        continue
+                    
                     if msg_type == 'message':
                         msg_content = data.get('content', '')
                         context = data.get('context', 'global')  # 'global', 'server', or 'dm'
                         context_id = data.get('context_id', None)
                         message_key = data.get('messageKey')  # Extract messageKey for file attachment correlation
-                        mentions = data.get('mentions', [])  # Extract mentions
+                        mentions = data.get('mentions', [])  # Extract user mentions
+                        role_mentions = data.get('role_mentions', [])  # Extract role mentions (list of role IDs)
                         reply_to = data.get('reply_to')  # Extract reply_to message ID
                         nonce = data.get('nonce')  # Extract nonce for delivery confirmation
                         
@@ -1617,6 +1926,18 @@ async def handler(websocket):
                                     members = db.get_server_members(server_id)
                                     member_usernames = {m['username'] for m in members}
                                     if username in member_usernames:
+                                        # Enforce send_messages permission (channel override aware)
+                                        channel_overrides = db.get_channel_all_overrides(channel_id)
+                                        can_send = True
+                                        if channel_overrides:
+                                            # Overrides exist — check explicitly
+                                            can_send = db.has_channel_permission(server_id, username, channel_id, 'send_messages')
+                                        if not can_send and server['owner'] != username:
+                                            await websocket.send_str(json.dumps({
+                                                'type': 'error',
+                                                'message': 'You do not have permission to send messages in this channel'
+                                            }))
+                                            continue
                                         # Save message to database and get ID
                                         message_id = db.save_message(username, msg_content, 'server', context_id, reply_to)
                                         
@@ -1638,6 +1959,24 @@ async def handler(websocket):
                                                         'context_id': context_id
                                                     }
                                                     await send_to_user(mentioned_user, json.dumps(notification))
+                                        
+                                        # Process role mentions — notify all members of each mentioned role
+                                        if role_mentions and message_id:
+                                            already_notified = set(valid_mentions) if mentions else set()
+                                            for role_mention_id in role_mentions:
+                                                role_members = db.get_role_members(role_mention_id)
+                                                for role_member in role_members:
+                                                    if role_member != username and role_member not in already_notified and role_member in member_usernames:
+                                                        already_notified.add(role_member)
+                                                        await send_to_user(role_member, json.dumps({
+                                                            'type': 'role_mention_notification',
+                                                            'message_id': message_id,
+                                                            'mentioned_by': username,
+                                                            'role_id': role_mention_id,
+                                                            'content': msg_content[:100],
+                                                            'context_type': 'server',
+                                                            'context_id': context_id
+                                                        }))
                                         
                                         # Send reply notification
                                         if reply_to and replied_to_user and replied_to_user != username:
@@ -1667,13 +2006,20 @@ async def handler(websocket):
                                         # Add mentions to message object
                                         if mentions:
                                             msg_obj['mentions'] = [m for m in mentions if m in member_usernames]
+                                        # Add role mentions to message object
+                                        if role_mentions:
+                                            msg_obj['role_mentions'] = role_mentions
                                         
                                         # Add nonce for delivery confirmation (only sender sees it)
                                         if nonce:
                                             msg_obj['nonce'] = nonce
                                         
-                                        # Broadcast to server members
-                                        await broadcast_to_server(server_id, json.dumps(msg_obj))
+                                        # Broadcast to server members (filtered by view_channel if overrides set)
+                                        await broadcast_to_server(server_id, json.dumps(msg_obj), channel_id=channel_id)
+                                        
+                                        # Deliver bot event for message_create
+                                        await deliver_bot_event('message_create', msg_obj, server_id=server_id, channel_id=channel_id)
+                                        
                                         print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} sent message in {server_id}/{channel_id}")
                         
                         elif context == 'dm' and context_id:
@@ -3094,7 +3440,7 @@ async def handler(websocket):
                         # Check if user is admin
                         first_user = db.get_first_user()
                         if username != first_user:
-                            # Non-admin users get filtered settings (no sensitive data like SMTP credentials)
+                            # Non-admin users get filtered settings (no sensitive data like SMTP/SSO credentials)
                             filtered_settings = {
                                 'allow_file_attachments': settings.get('allow_file_attachments', True),
                                 'max_attachment_size_mb': settings.get('max_attachment_size_mb', 10),
@@ -3102,17 +3448,24 @@ async def handler(websocket):
                                 'announcement_enabled': settings.get('announcement_enabled', False),
                                 'announcement_message': settings.get('announcement_message', ''),
                                 'announcement_duration_minutes': settings.get('announcement_duration_minutes', 60),
-                                'announcement_set_at': settings.get('announcement_set_at')
+                                'announcement_set_at': settings.get('announcement_set_at'),
+                                'sso_enabled': settings.get('sso_enabled', False),
+                                'sso_provider': settings.get('sso_provider', None),
                             }
                             await websocket.send_str(json.dumps({
                                 'type': 'admin_settings',
                                 'settings': filtered_settings
                             }))
                         else:
-                            # Admin users get all settings
+                            # Admin users get all settings (mask SSO secrets with asterisks for display)
+                            admin_settings = dict(settings)
+                            # Mask sensitive SSO fields so they aren't leaked to the browser
+                            for secret_key in ['sso_oidc_client_secret', 'sso_ldap_bind_password', 'scim_bearer_token']:
+                                if admin_settings.get(secret_key):
+                                    admin_settings[secret_key] = '••••••••'
                             await websocket.send_str(json.dumps({
                                 'type': 'admin_settings',
-                                'settings': settings
+                                'settings': admin_settings
                             }))
                     
                     elif data.get('type') == 'save_admin_settings':
@@ -3126,6 +3479,46 @@ async def handler(websocket):
                         else:
                             settings = data.get('settings', {})
                             
+                            # Fetch current settings once — used for diffing in the license gates
+                            from license_validator import check_feature_access as _check_feat, license_validator as _lv
+                            current_settings = db.get_admin_settings()
+                            
+                            # SSO / SCIM license gate — only fires when values actually change
+                            sso_fields = {'sso_enabled', 'sso_provider', 'sso_oidc_issuer_url',
+                                          'sso_oidc_client_id', 'sso_oidc_client_secret', 'sso_oidc_preset',
+                                          'sso_saml_entity_id', 'sso_saml_sso_url', 'sso_saml_certificate',
+                                          'sso_ldap_server_url', 'sso_ldap_bind_dn', 'sso_ldap_bind_password',
+                                          'sso_ldap_user_search_base', 'sso_ldap_user_filter',
+                                          'scim_enabled', 'scim_bearer_token'}
+                            has_sso_changes = any(
+                                settings.get(k) != current_settings.get(k)
+                                for k in sso_fields if k in settings
+                            )
+                            if has_sso_changes and not _check_feat('sso'):
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'SSO/SCIM configuration requires a paid license tier.'
+                                }))
+                                continue
+                            
+                            # Branding license gate — server name / logo require any paid tier
+                            branding_fields = {'server_name', 'server_logo'}
+                            has_branding_changes = any(
+                                settings.get(k) != current_settings.get(k)
+                                for k in branding_fields if k in settings
+                            )
+                            if has_branding_changes and _lv.get_tier() == 'community':
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Custom server branding requires a paid license.'
+                                }))
+                                continue
+                            
+                            # Don't overwrite secrets with the masked placeholder
+                            for secret_key in ['sso_oidc_client_secret', 'sso_ldap_bind_password', 'scim_bearer_token']:
+                                if settings.get(secret_key) == '••••••••':
+                                    settings.pop(secret_key)
+                            
                             # Server-side validation for announcement settings
                             if settings.get('announcement_enabled'):
                                 # Validate message length
@@ -3137,9 +3530,9 @@ async def handler(websocket):
                                     }))
                                     continue
                                 
-                                # Validate duration
-                                duration = settings.get('announcement_duration_minutes')
-                                if duration is None or not isinstance(duration, (int, float)):
+                                # Validate duration — default to 60 if missing or null
+                                duration = settings.get('announcement_duration_minutes') or 60
+                                if not isinstance(duration, (int, float)):
                                     await websocket.send_str(json.dumps({
                                         'type': 'error',
                                         'message': 'Invalid announcement duration value'
@@ -3158,8 +3551,7 @@ async def handler(websocket):
                             
                             # If announcement is enabled and message is set, update timestamp
                             if settings.get('announcement_enabled') and settings.get('announcement_message'):
-                                # Get current settings to check if announcement changed
-                                current_settings = db.get_admin_settings()
+                                # Use current_settings fetched above to check if announcement changed
                                 if (not current_settings.get('announcement_enabled') or 
                                     current_settings.get('announcement_message') != settings.get('announcement_message') or
                                     current_settings.get('announcement_duration_minutes') != settings.get('announcement_duration_minutes')):
@@ -3337,6 +3729,9 @@ async def handler(websocket):
                                 old_name = server['name']
                                 db.update_server_name(server_id, new_name)
                                 
+                                db.add_audit_log_entry(server_id, 'server_rename', actor=username,
+                                                       detail={'old_name': old_name, 'new_name': new_name})
+
                                 # Notify all server members
                                 await broadcast_to_server(server_id, json.dumps({
                                     'type': 'server_renamed',
@@ -3497,9 +3892,41 @@ async def handler(websocket):
                                     if current_uses >= max_uses:
                                         db.deactivate_invite_code(invite_code)
                                 
+                                # ── Server automation: auto-role & rules gate ──
+                                server_settings = db.get_server_settings(server_id)
+                                rules_pending = False
+                                
+                                # Auto-role assignment
+                                if server_settings and server_settings.get('auto_role_id'):
+                                    auto_role_id = server_settings['auto_role_id']
+                                    auto_role = db.get_role(auto_role_id)
+                                    if auto_role and auto_role.get('server_id') == server_id:
+                                        db.assign_role(server_id, username, auto_role_id)
+                                        # Notify joining user about their new role
+                                        await websocket.send_str(json.dumps({
+                                            'type': 'role_assigned',
+                                            'server_id': server_id,
+                                            'role': auto_role
+                                        }))
+                                        # Broadcast to other members
+                                        await broadcast_to_server(server_id, json.dumps({
+                                            'type': 'member_role_updated',
+                                            'server_id': server_id,
+                                            'username': username,
+                                            'role_id': auto_role_id,
+                                            'action': 'added'
+                                        }), exclude=websocket)
+                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Auto-assigned role {auto_role.get('name')} to {username} in server {server_id}")
+                                
+                                # Rules screening gate
+                                if server_settings and server_settings.get('rules_enabled') and server_settings.get('rules_text', '').strip():
+                                    db.set_member_rules_accepted(server_id, username, False)
+                                    rules_pending = True
+                                
                                 # Get channels for response
                                 channels = db.get_server_channels(server_id)
-                                await websocket.send_str(json.dumps({
+                                categories = db.get_server_categories(server_id)
+                                server_joined_payload = {
                                     'type': 'server_joined',
                                     'server': {
                                         'id': server_id,
@@ -3509,11 +3936,21 @@ async def handler(websocket):
                                         'icon_type': server.get('icon_type', 'emoji'),
                                         'icon_data': server.get('icon_data'),
                                         'channels': [
-                                            {'id': ch['channel_id'], 'name': ch['name'], 'type': ch.get('type', 'text')}
+                                            {'id': ch['channel_id'], 'name': ch['name'], 'type': ch.get('type', 'text'),
+                                             'category_id': ch.get('category_id'), 'position': ch.get('position', 0)}
                                             for ch in channels
+                                        ],
+                                        'categories': [
+                                            {'id': cat['category_id'], 'name': cat['name'], 'position': cat.get('position', 0)}
+                                            for cat in categories
                                         ]
                                     }
-                                }))
+                                }
+                                if rules_pending:
+                                    server_joined_payload['server']['rules_pending'] = True
+                                    server_joined_payload['server']['rules_text'] = server_settings.get('rules_text', '')
+                                
+                                await websocket.send_str(json.dumps(server_joined_payload))
                                 
                                 # Notify other server members
                                 await broadcast_to_server(server_id, json.dumps({
@@ -3523,6 +3960,9 @@ async def handler(websocket):
                                 }), exclude=websocket)
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} joined server {server_id} via invite")
                                 
+                                db.add_audit_log_entry(server_id, 'member_join', actor=username,
+                                                       target=username, detail={'invite_code': invite_code})
+
                                 # Send welcome message if enabled
                                 welcome = db.get_welcome_message(server_id)
                                 if welcome and welcome['enabled'] and welcome['message']:
@@ -3693,6 +4133,10 @@ async def handler(websocket):
                         role_name = data.get('name', '').strip()
                         color = data.get('color', '#99AAB5')
                         permissions = data.get('permissions', {})
+                        hoist = data.get('hoist', False)
+                        # Coerce array format to dict {key: True}
+                        if isinstance(permissions, list):
+                            permissions = {k: True for k in permissions}
                         
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] server_id={server_id}, role_name={role_name}, color={color}", flush=True)
                         
@@ -3708,7 +4152,7 @@ async def handler(websocket):
                                 position = max([r['position'] for r in existing_roles] + [0]) + 1
                                 
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Creating role with position {position}")
-                                if db.create_role(role_id, server_id, role_name, color, position, permissions):
+                                if db.create_role(role_id, server_id, role_name, color, position, permissions, hoist):
                                     print(f"[{datetime.now().strftime('%H:%M:%S')}] Role created in DB, fetching...")
                                     role = db.get_role(role_id)
                                     print(f"[{datetime.now().strftime('%H:%M:%S')}] Role fetched: {role}")
@@ -3739,12 +4183,16 @@ async def handler(websocket):
                         role_name = data.get('name')
                         color = data.get('color')
                         permissions = data.get('permissions')
+                        hoist = data.get('hoist')  # None means unchanged
+                        # Coerce array format to dict {key: True}
+                        if isinstance(permissions, list):
+                            permissions = {k: True for k in permissions}
                         
                         role = db.get_role(role_id)
                         if role:
                             server = db.get_server(role['server_id'])
                             if server and username == server['owner']:
-                                if db.update_role(role_id, role_name, color, None, permissions):
+                                if db.update_role(role_id, role_name, color, None, permissions, hoist):
                                     updated_role = db.get_role(role_id)
                                     
                                     # Broadcast to all server members
@@ -3821,6 +4269,9 @@ async def handler(websocket):
                                     'action': 'added'
                                 }))
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} assigned role {role_id} to {target_username}")
+                                db.add_audit_log_entry(server_id, 'role_assign', actor=username,
+                                                       target=target_username,
+                                                       detail={'role_id': role_id, 'role_name': role.get('name', '')})
                             else:
                                 await websocket.send_str(json.dumps({
                                     'type': 'error',
@@ -3860,6 +4311,8 @@ async def handler(websocket):
                                 'action': 'removed'
                             }))
                             print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} removed role {role_id} from {target_username}")
+                            db.add_audit_log_entry(server_id, 'role_remove', actor=username,
+                                                   target=target_username, detail={'role_id': role_id})
                         else:
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
@@ -3896,6 +4349,150 @@ async def handler(websocket):
                                 'username': target_username,
                                 'roles': [serialize_role(r) for r in roles]
                             }))
+                    
+                    elif data.get('type') == 'reorder_roles':
+                        # Move a role up or down by one position slot
+                        server_id = data.get('server_id', '')
+                        role_id = data.get('role_id', '')
+                        direction = data.get('direction', '')  # 'up' or 'down'
+                        
+                        server = db.get_server(server_id)
+                        if not server or username != server['owner']:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Only the server owner can reorder roles'
+                            }))
+                        elif direction not in ('up', 'down'):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'direction must be up or down'
+                            }))
+                        else:
+                            roles = sorted(db.get_server_roles(server_id), key=lambda r: r['position'])
+                            idx = next((i for i, r in enumerate(roles) if r['role_id'] == role_id), None)
+                            if idx is not None:
+                                swap_idx = idx + 1 if direction == 'up' else idx - 1
+                                if 0 <= swap_idx < len(roles):
+                                    # Swap positions
+                                    p1 = roles[idx]['position']
+                                    p2 = roles[swap_idx]['position']
+                                    db.update_role_positions(server_id, [
+                                        {'role_id': roles[idx]['role_id'], 'position': p2},
+                                        {'role_id': roles[swap_idx]['role_id'], 'position': p1},
+                                    ])
+                                    updated_roles = db.get_server_roles(server_id)
+                                    await broadcast_to_server(server_id, json.dumps({
+                                        'type': 'roles_reordered',
+                                        'server_id': server_id,
+                                        'roles': [serialize_role(r) for r in updated_roles]
+                                    }))
+                    
+                    elif data.get('type') == 'get_channel_permissions':
+                        channel_id = data.get('channel_id', '')
+                        server_id = data.get('server_id', '')
+                        
+                        server = db.get_server(server_id)
+                        if server and (username == server['owner'] or has_permission(server_id, username, 'manage_channels')):
+                            overrides = db.get_channel_all_overrides(channel_id)
+                            await websocket.send_str(json.dumps({
+                                'type': 'channel_permissions',
+                                'channel_id': channel_id,
+                                'overrides': overrides
+                            }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'No permission to view channel permissions'
+                            }))
+                    
+                    elif data.get('type') == 'set_channel_role_permissions':
+                        channel_id = data.get('channel_id', '')
+                        role_id = data.get('role_id', '')
+                        permissions = data.get('permissions', {})
+                        server_id = data.get('server_id', '')
+                        
+                        if isinstance(permissions, list):
+                            permissions = {k: True for k in permissions}
+                        
+                        server = db.get_server(server_id)
+                        if not server or not (username == server['owner'] or has_permission(server_id, username, 'manage_channels')):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'No permission to set channel permissions'
+                            }))
+                        else:
+                            if db.set_channel_role_permissions(channel_id, role_id, permissions):
+                                overrides = db.get_channel_all_overrides(channel_id)
+                                await broadcast_to_server(server_id, json.dumps({
+                                    'type': 'channel_permissions_updated',
+                                    'server_id': server_id,
+                                    'channel_id': channel_id,
+                                    'overrides': overrides
+                                }))
+                    
+                    elif data.get('type') == 'delete_channel_role_permissions':
+                        channel_id = data.get('channel_id', '')
+                        role_id = data.get('role_id', '')
+                        server_id = data.get('server_id', '')
+                        
+                        server = db.get_server(server_id)
+                        if not server or not (username == server['owner'] or has_permission(server_id, username, 'manage_channels')):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'No permission to delete channel permissions'
+                            }))
+                        else:
+                            if db.delete_channel_role_permissions(channel_id, role_id):
+                                overrides = db.get_channel_all_overrides(channel_id)
+                                await broadcast_to_server(server_id, json.dumps({
+                                    'type': 'channel_permissions_updated',
+                                    'server_id': server_id,
+                                    'channel_id': channel_id,
+                                    'overrides': overrides
+                                }))
+                    
+                    elif data.get('type') == 'get_category_permissions':
+                        category_id = data.get('category_id', '')
+                        server_id = data.get('server_id', '')
+                        
+                        server = db.get_server(server_id)
+                        if server and (username == server['owner'] or has_permission(server_id, username, 'manage_categories')):
+                            overrides = db.get_category_all_overrides(category_id)
+                            await websocket.send_str(json.dumps({
+                                'type': 'category_permissions',
+                                'category_id': category_id,
+                                'overrides': overrides
+                            }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'No permission to view category permissions'
+                            }))
+                    
+                    elif data.get('type') == 'set_category_role_permissions':
+                        category_id = data.get('category_id', '')
+                        role_id = data.get('role_id', '')
+                        permissions = data.get('permissions', {})
+                        server_id = data.get('server_id', '')
+                        
+                        if isinstance(permissions, list):
+                            permissions = {k: True for k in permissions}
+                        
+                        server = db.get_server(server_id)
+                        if not server or not (username == server['owner'] or has_permission(server_id, username, 'manage_categories')):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'No permission to set category permissions'
+                            }))
+                        else:
+                            if db.set_category_role_permissions(category_id, role_id, permissions):
+                                overrides = db.get_category_all_overrides(category_id)
+                                await broadcast_to_server(server_id, json.dumps({
+                                    'type': 'category_permissions_updated',
+                                    'server_id': server_id,
+                                    'category_id': category_id,
+                                    'overrides': overrides
+                                }))
                     
                     # Ban management handlers
                     elif data.get('type') == 'ban_member':
@@ -3971,6 +4568,8 @@ async def handler(websocket):
                             }))
                             
                             print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} banned {target_username} from server {server_id}")
+                            db.add_audit_log_entry(server_id, 'member_ban', actor=username,
+                                                   target=target_username, detail={'reason': reason})
                         else:
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
@@ -4015,6 +4614,8 @@ async def handler(websocket):
                             }))
                             
                             print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} unbanned {target_username} from server {server_id}")
+                            db.add_audit_log_entry(server_id, 'member_unban', actor=username,
+                                                   target=target_username)
                         else:
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
@@ -4052,6 +4653,104 @@ async def handler(websocket):
                             } for ban in bans]
                         }))
                     
+                    elif data.get('type') == 'kick_member':
+                        server_id = data.get('server_id', '')
+                        target_username = data.get('username', '').strip()
+                        reason = data.get('reason', '').strip()
+
+                        server = db.get_server(server_id)
+                        if not server:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Server not found'
+                            }))
+                            continue
+
+                        if not has_permission(server_id, username, 'ban_members'):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'You do not have permission to kick members'
+                            }))
+                            continue
+
+                        if target_username == server['owner']:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Cannot kick the server owner'
+                            }))
+                            continue
+
+                        if target_username == username:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Cannot kick yourself'
+                            }))
+                            continue
+
+                        if not db.get_user(target_username):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'User not found'
+                            }))
+                            continue
+
+                        members = db.get_server_members(server_id)
+                        if target_username not in [m['username'] for m in members]:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'User is not a member of this server'
+                            }))
+                            continue
+
+                        if db.remove_server_member(server_id, target_username):
+                            await send_to_user(target_username, json.dumps({
+                                'type': 'kicked_from_server',
+                                'server_id': server_id,
+                                'server_name': server['name'],
+                                'reason': reason,
+                                'kicked_by': username
+                            }))
+                            await broadcast_to_server(server_id, json.dumps({
+                                'type': 'member_kicked',
+                                'server_id': server_id,
+                                'username': target_username,
+                                'kicked_by': username,
+                                'reason': reason
+                            }))
+                            db.add_audit_log_entry(server_id, 'member_kick', actor=username,
+                                                   target=target_username, detail={'reason': reason})
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} kicked {target_username} from server {server_id}")
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Failed to kick user'
+                            }))
+
+                    elif data.get('type') == 'get_server_audit_log':
+                        server_id = data.get('server_id', '')
+
+                        server = db.get_server(server_id)
+                        if not server:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Server not found'
+                            }))
+                            continue
+
+                        if not has_permission(server_id, username, 'access_settings'):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'You do not have permission to view the audit log'
+                            }))
+                            continue
+
+                        entries = db.get_server_audit_log(server_id, limit=200)
+                        await websocket.send_str(json.dumps({
+                            'type': 'server_audit_log',
+                            'server_id': server_id,
+                            'entries': entries
+                        }))
+
                     # Channel creation handlers
                     elif data.get('type') == 'create_channel':
                         server_id = data.get('server_id', '')
@@ -4381,6 +5080,22 @@ async def handler(websocket):
                                     'state': 'joined',
                                     'voice_members': voice_members_list
                                 }))
+
+                                # Send voice_channel_joined directly to the joining user.
+                                # Includes a LiveKit token so the client can switch to SFU
+                                # mode; token is None when LiveKit is not configured.
+                                room_name = f"{server_id}__{channel_id}"
+                                livekit_token = generate_livekit_token(
+                                    room_name, username, username
+                                )
+                                await websocket.send_str(json.dumps({
+                                    'type': 'voice_channel_joined',
+                                    'server_id': server_id,
+                                    'channel_id': channel_id,
+                                    'participants': [m['username'] for m in voice_members_list],
+                                    'livekit_token': livekit_token,
+                                    'livekit_url': LIVEKIT_URL if livekit_token else None,
+                                }))
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} joined voice channel {channel_id}")
                     
                     elif data.get('type') == 'leave_voice_channel':
@@ -4584,6 +5299,368 @@ async def handler(websocket):
                             'username': username,
                             'user_status': user_status
                         }))
+                        # Validate email format
+                        if not new_email or not is_valid_email(new_email):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid email address format'
+                            }))
+                            continue
+
+                        # Verify password
+                        user = db.get_user(username)
+                        if not user or not verify_password(password, user['password_hash']):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid password'
+                            }))
+                            continue
+
+                        # Check same email
+                        if user.get('email') == new_email:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'New email is the same as current email'
+                            }))
+                            continue
+
+                        # Attempt update
+                        if db.update_user_email(username, new_email):
+                            # Optionally send verification email if SMTP configured
+                            admin_settings = db.get_admin_settings()
+                            if admin_settings.get('require_email_verification'):
+                                try:
+                                    email_sender = EmailSender(admin_settings)
+                                    if email_sender.is_configured():
+                                        verification_code = ''.join(secrets.choice(string.digits) for _ in range(6))
+                                        expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+                                        db.create_email_verification_code(new_email, username, verification_code, expires_at)
+                                        email_sender.send_verification_email(new_email, username, verification_code)
+                                except Exception as e:
+                                    print(f"Failed to send verification email: {e}")
+
+                            await websocket.send_str(json.dumps({
+                                'type': 'email_changed',
+                                'email': new_email,
+                                'email_verified': False
+                            }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Email address already in use'
+                            }))
+
+                    elif data.get('type') == 'verify_email_change':
+                        # Handle verification of changed email
+                        code = data.get('code', '').strip()
+                        
+                        # Validate verification code format (must be exactly 6 digits)
+                        if not code or not code.isdigit() or len(code) != 6:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid verification code format'
+                            }))
+                            continue
+                        
+                        # Get user's current email
+                        user = db.get_user(username)
+                        if not user:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'User not found'
+                            }))
+                            continue
+                        
+                        email = user.get('email')
+                        if not email:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'No email associated with this account'
+                            }))
+                            continue
+                        
+                        # Verify the code
+                        verification_data = db.get_email_verification_code(email, username)
+                        if not verification_data or verification_data['code'] != code:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid or expired verification code'
+                            }))
+                            continue
+                        
+                        # Mark email as verified
+                        if db.verify_user_email(username):
+                            # Clean up ALL verification codes for this user
+                            # This prevents reuse of old codes if deletion fails
+                            if not db.delete_all_user_verification_codes(username):
+                                print(f"Warning: Failed to delete verification codes after email verification")
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Email verified but failed to clean up verification codes'
+                                }))
+                                continue
+                            
+                            await websocket.send_str(json.dumps({
+                                'type': 'email_verified',
+                                'email': email,
+                                'email_verified': True
+                            }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Failed to verify email'
+                            }))
+
+                    elif data.get('type') == 'change_username':
+                        new_username = data.get('new_username', '').strip()
+                        password = data.get('password', '')
+
+                        # Validate
+                        if not new_username:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'New username is required'
+                            }))
+                            continue
+
+                        if len(new_username) > 255:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Username is too long. Maximum 255 characters.'
+                            }))
+                            continue
+
+                        if new_username == username:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'New username is the same as current username'
+                            }))
+                            continue
+
+                        # Check availability
+                        if db.get_user(new_username):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Username already taken'
+                            }))
+                            continue
+
+                        # Verify password
+                        user = db.get_user(username)
+                        if not user or not verify_password(password, user['password_hash']):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid password'
+                            }))
+                            continue
+
+                        old_username = username
+                        if db.change_username(old_username, new_username):
+                            # Update in-memory state
+                            clients[websocket] = new_username
+
+                            if old_username in voice_states:
+                                voice_states[new_username] = voice_states.pop(old_username)
+
+                            for call_id, call_data in voice_calls.items():
+                                if old_username in call_data.get('participants', set()):
+                                    call_data['participants'].discard(old_username)
+                                    call_data['participants'].add(new_username)
+
+                            # Update session username variable
+                            username = new_username
+
+                            # Generate new JWT token
+                            new_token = generate_jwt_token(new_username)
+
+                            # Confirm to user
+                            await websocket.send_str(json.dumps({
+                                'type': 'username_changed',
+                                'old_username': old_username,
+                                'new_username': new_username,
+                                'token': new_token
+                            }))
+
+                            # Broadcast to friends
+                            for friend_username in db.get_friends(new_username):
+                                await send_to_user(friend_username, json.dumps({
+                                    'type': 'user_renamed',
+                                    'old_username': old_username,
+                                    'new_username': new_username
+                                }))
+
+                            # Broadcast to all servers user is in
+                            for server_id in db.get_user_servers(new_username):
+                                await broadcast_to_server(server_id, json.dumps({
+                                    'type': 'user_renamed',
+                                    'old_username': old_username,
+                                    'new_username': new_username
+                                }), exclude=websocket)
+
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Username changed: {old_username} -> {new_username}")
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Failed to change username. It may already be taken.'
+                            }))
+
+                    elif data.get('type') == 'request_password_reset':
+                        # Handle password reset request from logged-in user
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Processing password reset for authenticated user: {username}")
+                        try:
+                            # For authenticated users, always rate limit by their actual account
+                            rate_limit_key = username
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: password reset rate_limit_key={rate_limit_key}")
+                            
+                            # Check rate limiting to prevent abuse
+                            if not check_password_reset_rate_limit(rate_limit_key):
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Too many password reset requests. Please try again later.'
+                                }))
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] Rate limit exceeded for password reset: {rate_limit_key}")
+                                continue
+                            
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Rate limit passed")
+                            
+                            # Get user data
+                            user = db.get_user(username)
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: user={user}")
+                            
+                            if user and user.get('email'):
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: User has email, generating token")
+                                # Generate reset token
+                                reset_token = secrets.token_urlsafe(32)
+                                expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+                                
+                                # Save token to database
+                                if db.create_password_reset_token(user['username'], reset_token, expires_at):
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Token created, sending email")
+                                    # Send password reset email
+                                    email_sender = EmailSender(db.get_admin_settings())
+                                    try:
+                                        if email_sender.send_password_reset_email(
+                                            user['email'], 
+                                            user['username'], 
+                                            reset_token
+                                        ):
+                                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Password reset email sent to {user['username']} at {user['email']}")
+                                        else:
+                                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to send password reset email to {user['username']} at {user['email']}")
+                                    except Exception as e:
+                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Error sending password reset email to {user['username']}: {e}")
+                                        traceback.print_exc()
+                                else:
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed to create password reset token for {user['username']}")
+                            else:
+                                if user:
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] User {username} has no email address registered")
+                                else:
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] User {username} not found")
+                            
+                            # Always return success to prevent information leakage
+                            await websocket.send_str(json.dumps({
+                                'type': 'password_reset_requested',
+                                'message': 'If an email is registered for your account, a password reset link has been sent.'
+                            }))
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Response sent to client")
+                        except Exception as e:
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] EXCEPTION in password reset handler: {e}")
+                            traceback.print_exc()
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'An error occurred processing your request.'
+                            }))
+                    
+                    elif data.get('type') == 'change_user_status':
+                        # Update user status (online, away, busy, offline)
+                        user_status = data.get('user_status', 'online')
+                        
+                        # Validate status value
+                        if user_status not in ['online', 'away', 'busy', 'offline']:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Invalid status value'
+                            }))
+                            continue
+                        
+                        # Update status in database
+                        db.update_user_status(username, user_status)
+                        
+                        # Notify all friends about status change
+                        for friend_username in db.get_friends(username):
+                            await send_to_user(friend_username, json.dumps({
+                                'type': 'user_status_changed',
+                                'username': username,
+                                'user_status': user_status
+                            }))
+                        
+                        # Notify all servers the user is in
+                        for server_id in db.get_user_servers(username):
+                            await broadcast_to_server(server_id, json.dumps({
+                                'type': 'user_status_changed',
+                                'username': username,
+                                'user_status': user_status
+                            }))
+                        
+                        # Confirm to the user
+                        await websocket.send_str(json.dumps({
+                            'type': 'user_status_changed',
+                            'username': username,
+                            'user_status': user_status
+                        }))
+                    
+                    elif data.get('type') == 'update_user_preferences':
+                        # Update user preferences (theme_mode and/or keybinds)
+                        theme_mode = data.get('theme_mode')
+                        keybinds = data.get('keybinds')
+                        
+                        success = True
+                        error_message = None
+                        
+                        # Update theme if provided
+                        if theme_mode is not None:
+                            valid_themes = ['dark', 'light', 'high_contrast']
+                            if theme_mode not in valid_themes:
+                                success = False
+                                error_message = f'Invalid theme mode. Must be one of: {", ".join(valid_themes)}'
+                            elif not db.update_user_theme(username, theme_mode):
+                                success = False
+                                error_message = 'Failed to update theme mode'
+                        
+                        # Update keybinds if provided
+                        if keybinds is not None and success:
+                            # Validate keybinds structure
+                            required_keys = ['push_to_talk', 'toggle_mute', 'toggle_deafen', 
+                                           'toggle_video', 'toggle_screen_share', 'answer_end_call']
+                            if not isinstance(keybinds, dict):
+                                success = False
+                                error_message = 'Keybinds must be an object'
+                            elif not all(k in keybinds for k in required_keys):
+                                success = False
+                                error_message = f'Missing required keybind keys: {", ".join(required_keys)}'
+                            elif not db.update_user_keybinds(username, keybinds):
+                                success = False
+                                error_message = 'Failed to update keybinds'
+                        
+                        if success:
+                            # Get updated preferences
+                            prefs = db.get_user_preferences(username)
+                            await websocket.send_str(json.dumps({
+                                'type': 'user_preferences_updated',
+                                'theme_mode': prefs.get('theme_mode', 'dark'),
+                                'keybinds': prefs.get('keybinds', {})
+                            }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': error_message or 'Failed to update preferences'
+                            }))
+                    
+                    elif data.get('type') == 'change_email':
+                        new_email = data.get('new_email', '').strip()
+                        password = data.get('password', '').strip()
+                        
                         # Validate email format
                         if not new_email or not is_valid_email(new_email):
                             await websocket.send_str(json.dumps({
@@ -5952,6 +7029,91 @@ async def handler(websocket):
                                     'message': 'Only the server owner can update purge settings'
                                 }))
                     
+                    elif data.get('type') == 'get_server_automation_settings':
+                        server_id = data.get('server_id', '')
+                        if server_id:
+                            server = db.get_server(server_id)
+                            if server and has_permission(server_id, username, 'manage_server'):
+                                settings = db.get_server_settings(server_id)
+                                roles = db.get_server_roles(server_id)
+                                await websocket.send_str(json.dumps({
+                                    'type': 'server_automation_settings',
+                                    'server_id': server_id,
+                                    'auto_role_id': settings.get('auto_role_id') if settings else None,
+                                    'rules_enabled': settings.get('rules_enabled', False) if settings else False,
+                                    'rules_text': settings.get('rules_text', '') if settings else '',
+                                    'roles': [{'role_id': r['role_id'], 'name': r['name'], 'color': r['color']} for r in roles]
+                                }))
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Permission denied'
+                                }))
+
+                    elif data.get('type') == 'update_server_automation_settings':
+                        server_id = data.get('server_id', '')
+                        auto_role_id = data.get('auto_role_id') or None
+                        rules_enabled = bool(data.get('rules_enabled', False))
+                        rules_text = str(data.get('rules_text', '')).strip()
+                        
+                        if server_id:
+                            server = db.get_server(server_id)
+                            if server and has_permission(server_id, username, 'manage_server'):
+                                # Validate auto_role_id if provided
+                                if auto_role_id:
+                                    role = db.get_role(auto_role_id)
+                                    if not role or role.get('server_id') != server_id:
+                                        await websocket.send_str(json.dumps({
+                                            'type': 'error',
+                                            'message': 'Invalid role selected'
+                                        }))
+                                        continue
+                                
+                                db.update_server_automation_settings(server_id, auto_role_id, rules_enabled, rules_text)
+                                await websocket.send_str(json.dumps({
+                                    'type': 'server_automation_settings_updated',
+                                    'server_id': server_id,
+                                    'auto_role_id': auto_role_id,
+                                    'rules_enabled': rules_enabled,
+                                    'rules_text': rules_text
+                                }))
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} updated automation settings for server {server_id}")
+                                
+                                db.add_audit_log_entry(server_id, 'automation_settings_update', actor=username,
+                                                       detail={'auto_role_id': auto_role_id, 'rules_enabled': rules_enabled})
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Only users with manage_server permission can update automation settings'
+                                }))
+
+                    elif data.get('type') == 'accept_server_rules':
+                        server_id = data.get('server_id', '')
+                        if server_id and db.is_server_member(server_id, username):
+                            success = db.accept_server_rules(server_id, username)
+                            if success:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'rules_accepted',
+                                    'server_id': server_id
+                                }))
+                                # Broadcast member_joined now that they've fully joined
+                                await broadcast_to_server(server_id, json.dumps({
+                                    'type': 'member_rules_accepted',
+                                    'server_id': server_id,
+                                    'username': username
+                                }), exclude=websocket)
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} accepted rules for server {server_id}")
+                            else:
+                                await websocket.send_str(json.dumps({
+                                    'type': 'error',
+                                    'message': 'Failed to accept server rules'
+                                }))
+                        else:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'You are not a member of this server'
+                            }))
+
                     elif data.get('type') == 'start_voice_call':
                         if not check_feature_access('voice_chat'):
                             await websocket.send_str(json.dumps({
@@ -6383,6 +7545,12 @@ async def handler(websocket):
         if websocket in clients:
             del clients[websocket]
         
+        # Clean up bot client tracking
+        if websocket in bot_clients:
+            bot_info_cleanup = bot_clients[websocket]
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Bot '{bot_info_cleanup.get('username', '?')}' disconnected")
+            del bot_clients[websocket]
+        
         if username and authenticated:
             # Clean up voice state
             if username in voice_states:
@@ -6442,7 +7610,7 @@ async def handler(websocket):
 
 async def websocket_handler(request):
     """Handle WebSocket upgrade requests."""
-    ws = web.WebSocketResponse()
+    ws = web.WebSocketResponse(heartbeat=30.0)
     await ws.prepare(request)
     
     # Use the existing handler logic
@@ -6754,6 +7922,14 @@ async def main():
     
     print("Starting HTTPS server on https://0.0.0.0:8765")
     print("Starting WebSocket server on wss://0.0.0.0:8765")
+    # ── Voice configuration sanity checks ────────────────────────────────────
+    if not COTURN_SECRET:
+        print("[WARN] COTURN_SECRET is not set — voice relay (TURN) will be disabled. "
+              "Set COTURN_SECRET in your .env file.")
+    if 'localhost' in LIVEKIT_URL or '127.0.0.1' in LIVEKIT_URL:
+        print("[WARN] LIVEKIT_URL contains 'localhost' — browsers on other machines will "
+              "not be able to reach LiveKit. Set LIVEKIT_URL to your public hostname/IP "
+              "(e.g. wss://your-domain.com:7880) in production.")
     print("=" * 50)
     
     # Initialize database counters from existing data
@@ -6766,9 +7942,70 @@ async def main():
     # Create aiohttp application
     app = web.Application()
     app.router.add_get('/ws', websocket_handler)
-    
-    # Setup REST API routes
-    setup_api_routes(app, db, verify_jwt_token, broadcast_to_server, send_to_user, get_or_create_dm, get_avatar_data)
+
+    # ── Voice / ICE-server endpoint (hardened) ────────────────────────────────
+    async def ice_servers_handler(request: web.Request) -> web.Response:
+        """
+        Return ICE server configuration with time-limited HMAC credentials.
+
+        SECURITY CHANGES:
+        - Requires a valid session token (Authorization header or ?token= param).
+        - Returns ONLY the self-hosted Coturn TURN relay — no third-party STUN.
+        - Generates short-lived HMAC-SHA1 credentials (RFC 8489) valid for 1 hour.
+        - With iceTransportPolicy:'relay' enforced on the client, all media is
+          routed through Coturn and peers never see each other's real IP addresses.
+        """
+        # ── Authenticate ──
+        token = None
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            token = auth_header[7:]
+        if not token:
+            token = request.query.get('token')
+        if not token:
+            return web.json_response({'error': 'Authentication required'}, status=401)
+        user_info = verify_jwt_token(token)
+        if not user_info:
+            return web.json_response({'error': 'Invalid or expired token'}, status=401)
+
+        # ── Generate time-limited Coturn HMAC credentials ──
+        # Format: username = "<expiry_timestamp>:<user_id>"
+        # credential = Base64(HMAC-SHA1(static_secret, username))
+        # Valid for 1 hour.  Coturn validates these using use-auth-secret mode.
+        # ── Early exit when TURN relay is not configured ──
+        if not COTURN_URL or not COTURN_SECRET:
+            return web.json_response(
+                {'error': 'TURN relay is not configured on this server — '
+                          'set COTURN_SECRET and COTURN_URL environment variables.'},
+                status=503,
+            )
+
+        import hmac as _hmac
+        ttl = 3600  # 1 hour
+        expiry = int(time.time()) + ttl
+        turn_username = f'{expiry}:{user_info["username"]}'
+        turn_credential = base64.b64encode(
+            _hmac.new(COTURN_SECRET.encode(), turn_username.encode(), hashlib.sha1).digest()
+        ).decode()
+
+        ice: list[dict] = [
+            {
+                'urls': COTURN_URL,
+                'username': turn_username,
+                'credential': turn_credential,
+            },
+            {
+                # TURN-over-TCP — for networks that block UDP
+                'urls': COTURN_URL + '?transport=tcp',
+                'username': turn_username,
+                'credential': turn_credential,
+            },
+        ]
+        return web.json_response({'ice_servers': ice})
+
+    app.router.add_get('/api/voice/ice-servers', ice_servers_handler)
+    # ─────────────────────────────────────────────────────────────────────────
+    setup_api_routes(app, db, verify_jwt_token, broadcast_to_server, send_to_user, get_or_create_dm, get_avatar_data, jwt_generate_func=generate_jwt_token)
     
     # Run the server with SSL
     runner = web.AppRunner(app)

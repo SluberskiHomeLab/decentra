@@ -10,6 +10,7 @@ const FEATURE_LABELS: Record<keyof LicenseFeatures, string> = {
   custom_emojis: 'Custom Emojis',
   audit_logs: 'Audit Logs',
   sso: 'Single Sign-On (SSO)',
+  scim: 'SCIM Provisioning',
 }
 
 const LIMIT_LABELS: Record<keyof LicenseLimits, string> = {

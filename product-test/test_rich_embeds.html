@@ -52,11 +52,15 @@
     </div>
 
     <script>
-        // Copy the embed functions from chat.js
+        // Pure string-replacement escaper — avoids reading back from the DOM
+        // (DOM-based escaping re-interprets text as HTML, which can mask XSS).
         function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+            return String(text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#x27;');
         }
         
         // URL regex to detect links in messages
@@ -300,7 +304,7 @@
             
             const testSection = document.createElement('div');
             testSection.className = 'test-message';
-            testSection.innerHTML = `<div class="test-label">${testCase.name}</div>`;
+            testSection.innerHTML = `<div class="test-label">${escapeHtml(testCase.name)}</div>`;
             testSection.appendChild(messageDiv);
             
             testResults.appendChild(testSection);

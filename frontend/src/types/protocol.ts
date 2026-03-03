@@ -40,6 +40,93 @@ export type ServerPermissions = {
   can_delete_messages?: boolean
 }
 
+// --- Role system types ---
+
+export type RolePermissions = {
+  administrator?: boolean
+  manage_server?: boolean
+  manage_channels?: boolean
+  manage_categories?: boolean
+  manage_roles?: boolean
+  create_invite?: boolean
+  ban_members?: boolean
+  delete_messages?: boolean
+  edit_messages?: boolean
+  send_files?: boolean
+  access_settings?: boolean
+  manage_emojis?: boolean
+  send_messages?: boolean
+  read_messages?: boolean
+  view_channel?: boolean
+  [key: string]: boolean | undefined
+}
+
+export type Role = {
+  id: string
+  role_id?: string
+  server_id: string
+  name: string
+  color: string
+  position: number
+  permissions: RolePermissions
+  hoist: boolean
+  created_at?: string
+}
+
+export type ChannelPermissionOverride = {
+  channel_id: string
+  role_id: string
+  role_name: string
+  role_color: string
+  permissions: RolePermissions
+}
+
+export type CategoryPermissionOverride = {
+  category_id: string
+  role_id: string
+  role_name: string
+  role_color: string
+  permissions: RolePermissions
+}
+
+export type WsRoleCreated = {
+  type: 'role_created'
+  server_id: string
+  role: Role
+}
+
+export type WsRoleUpdated = {
+  type: 'role_updated'
+  server_id: string
+  role: Role
+}
+
+export type WsRoleDeleted = {
+  type: 'role_deleted'
+  server_id: string
+  role_id: string
+}
+
+export type WsRolesReordered = {
+  type: 'roles_reordered'
+  server_id: string
+  roles: Role[]
+}
+
+export type WsChannelPermissionsUpdated = {
+  type: 'channel_permissions_updated'
+  server_id: string
+  channel_id: string
+  overrides: ChannelPermissionOverride[]
+}
+
+export type WsCategoryPermissionsUpdated = {
+  type: 'category_permissions_updated'
+  server_id: string
+  category_id: string
+  overrides: CategoryPermissionOverride[]
+}
+
 export type UnreadChannelInfo = {
   unread_count: number
   has_mention: boolean
@@ -58,6 +145,8 @@ export type Server = {
   unread_count?: number
   has_mention?: boolean
   channel_unreads?: Record<string, UnreadChannelInfo>
+  rules_pending?: boolean
+  rules_text?: string
 }
 
 export type Dm = {
@@ -151,6 +240,7 @@ export type WsChatMessage = {
   reactions?: Reaction[]
   attachments?: Attachment[]
   mentions?: string[]
+  role_mentions?: string[]
   user_status?: 'online' | 'away' | 'busy' | 'offline'
   role_color?: string
   pinned?: boolean
@@ -163,6 +253,7 @@ export type WsChatMessage = {
     content: string
     deleted: boolean
   }
+  is_bot?: boolean
 } & Avatar
 
 export type WsHistory = {
@@ -195,7 +286,7 @@ export type WsServerCreated = {
 
 export type WsServerJoined = {
   type: 'server_joined'
-  server: Pick<Server, 'id' | 'name' | 'owner' | 'channels' | 'icon' | 'icon_type' | 'icon_data'>
+  server: Pick<Server, 'id' | 'name' | 'owner' | 'channels' | 'icon' | 'icon_type' | 'icon_data' | 'categories' | 'rules_pending' | 'rules_text'>
 }
 
 export type WsInviteCode = {
@@ -309,6 +400,7 @@ export type WsDmStarted = {
 export type ServerMember = {
   username: string
   is_owner: boolean
+  is_bot?: boolean
   permissions?: ServerPermissions
 } & Avatar & Profile
 
@@ -316,6 +408,40 @@ export type WsServerMembers = {
   type: 'server_members'
   server_id: string
   members: ServerMember[]
+}
+
+// --- Kick / Audit log types ---
+
+export type WsKickedFromServer = {
+  type: 'kicked_from_server'
+  server_id: string
+  server_name?: string
+  reason?: string
+  kicked_by: string
+}
+
+export type WsMemberKicked = {
+  type: 'member_kicked'
+  server_id: string
+  username: string
+  kicked_by: string
+  reason?: string
+}
+
+export type AuditLogEntry = {
+  id: number
+  server_id: string
+  action: string
+  actor: string | null
+  target: string | null
+  detail: Record<string, any>
+  created_at: string
+}
+
+export type WsServerAuditLog = {
+  type: 'server_audit_log'
+  server_id: string
+  entries: AuditLogEntry[]
 }
 
 export type Ws2FASetup = {
@@ -634,7 +760,31 @@ export type WsMessage =
   | WsMessagePinned
   | WsMessageUnpinned
   | WsPinnedMessages
+  | WsRulesAccepted
   | { type: string; [k: string]: any }
+
+export type WsRulesAccepted = {
+  type: 'rules_accepted'
+  server_id: string
+}
+
+export type WsOutboundAcceptServerRules = {
+  type: 'accept_server_rules'
+  server_id: string
+}
+
+export type WsOutboundGetServerAutomation = {
+  type: 'get_server_automation_settings'
+  server_id: string
+}
+
+export type WsOutboundUpdateServerAutomation = {
+  type: 'update_server_automation_settings'
+  server_id: string
+  auto_role_id: string | null
+  rules_enabled: boolean
+  rules_text: string
+}
 
 export type WsOutboundLogin = {
   type: 'login'
@@ -688,6 +838,7 @@ export type WsOutboundSendMessage = {
   context?: 'global' | 'server' | 'dm'
   context_id?: string | null
   mentions?: string[]
+  role_mentions?: string[]
   messageKey?: string
   reply_to?: number
   nonce?: string
@@ -1001,6 +1152,7 @@ export interface LicenseFeatures {
   custom_emojis: boolean
   audit_logs: boolean
   sso: boolean
+  scim: boolean
 }
 
 export interface LicenseLimits {
@@ -1091,4 +1243,96 @@ export type WsInboundUserPreferencesUpdated = {
   type: 'user_preferences_updated'
   theme_mode: 'dark' | 'light' | 'high_contrast'
   keybinds: Record<string, string>
+}
+
+// ── Bot System Types ──────────────────────────────────────
+
+export type BotScope =
+  | 'READ_MESSAGES' | 'SEND_MESSAGES' | 'MANAGE_MESSAGES'
+  | 'READ_MEMBERS' | 'MANAGE_MEMBERS' | 'MANAGE_CHANNELS'
+  | 'MANAGE_ROLES' | 'ADD_REACTIONS' | 'MANAGE_THREADS'
+  | 'USE_SLASH_COMMANDS' | 'SEND_DMS' | 'MANAGE_SERVER'
+  | 'READ_VOICE_STATE' | 'ADMINISTRATOR'
+
+export type BotIntent =
+  | 'GUILD_MESSAGES' | 'GUILD_MEMBERS' | 'GUILD_REACTIONS'
+  | 'GUILD_CHANNELS' | 'GUILD_ROLES' | 'GUILD_VOICE_STATE'
+  | 'GUILD_THREADS' | 'GUILD_POLLS' | 'DIRECT_MESSAGES'
+  | 'SLASH_COMMANDS'
+
+export type Bot = {
+  bot_id: string
+  name: string
+  username: string
+  description?: string
+  avatar?: string
+  avatar_type?: string
+  avatar_data?: string | null
+  scopes: BotScope[]
+  intents: BotIntent[]
+  rate_limit_messages?: number
+  rate_limit_api?: number
+  is_active: boolean
+  created_at?: string
+  owner?: string
+  server_count?: number
+  servers?: { server_id: string; name: string }[]
+  commands?: SlashCommand[]
+  token?: string  // Only returned on creation
+}
+
+export type SlashCommandParameter = {
+  name: string
+  description: string
+  type: 'string' | 'integer' | 'boolean' | 'choice'
+  required: boolean
+  choices?: { name: string; value: string }[]
+}
+
+export type SlashCommand = {
+  command_id: string
+  bot_id: string
+  bot_name?: string
+  bot_avatar?: string
+  bot_username?: string
+  name: string
+  description: string
+  parameters: SlashCommandParameter[]
+  server_id?: string | null
+  enabled: boolean
+}
+
+// ── Bot WS Messages ────────────────────────────────────────
+
+export type WsBotJoinedServer = {
+  type: 'bot_joined_server'
+  server_id: string
+  bot: {
+    bot_id: string
+    name: string
+    username: string
+    avatar: string
+    is_bot: true
+  }
+}
+
+export type WsBotLeftServer = {
+  type: 'bot_left_server'
+  server_id: string
+  bot_username: string
+}
+
+export type WsSlashCommandAck = {
+  type: 'slash_command_ack'
+  command: string
+  channel_id: string
+  server_id: string
+}
+
+export type WsOutboundSlashCommand = {
+  type: 'slash_command'
+  command: string
+  args: Record<string, string | number | boolean>
+  server_id: string
+  channel_id: string
 }

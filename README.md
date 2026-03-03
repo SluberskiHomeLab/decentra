@@ -2,6 +2,10 @@
 
 A decentralized Discord-like chat server and client that is non-federated and self-hostable. Built with Python and WebSockets, designed to run in Docker containers with persistent data storage using PostgreSQL.
 
+## Wiki
+
+The Decentra Wiki lives here: [Decentra Wiki](https://decentrachat.atlassian.net/wiki/spaces/DecentraWiki)
+
 ## Features
 
 - 🚀 Real-time WebSocket-based messaging

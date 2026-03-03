@@ -261,9 +261,14 @@ class Database:
                             color VARCHAR(7) DEFAULT '#99AAB5',
                             position INTEGER DEFAULT 0,
                             permissions JSONB DEFAULT '{}',
+                            hoist BOOLEAN DEFAULT FALSE,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
                         )
+                    ''')
+                    # Idempotent migration: add hoist column if missing (upgrade from older schema)
+                    cursor.execute('''
+                        ALTER TABLE server_roles ADD COLUMN IF NOT EXISTS hoist BOOLEAN DEFAULT FALSE
                     ''')
                     
                     # User roles junction table
@@ -275,6 +280,30 @@ class Database:
                             PRIMARY KEY (server_id, username, role_id),
                             FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE,
                             FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE,
+                            FOREIGN KEY (role_id) REFERENCES server_roles(role_id) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Per-channel role permission overrides
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS channel_role_permissions (
+                            channel_id VARCHAR(255) NOT NULL,
+                            role_id VARCHAR(255) NOT NULL,
+                            permissions JSONB DEFAULT '{}',
+                            PRIMARY KEY (channel_id, role_id),
+                            FOREIGN KEY (channel_id) REFERENCES channels(channel_id) ON DELETE CASCADE,
+                            FOREIGN KEY (role_id) REFERENCES server_roles(role_id) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # Per-category role permission overrides
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS category_role_permissions (
+                            category_id VARCHAR(255) NOT NULL,
+                            role_id VARCHAR(255) NOT NULL,
+                            permissions JSONB DEFAULT '{}',
+                            PRIMARY KEY (category_id, role_id),
+                            FOREIGN KEY (category_id) REFERENCES categories(category_id) ON DELETE CASCADE,
                             FOREIGN KEY (role_id) REFERENCES server_roles(role_id) ON DELETE CASCADE
                         )
                     ''')
@@ -293,6 +322,24 @@ class Database:
                             FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE,
                             FOREIGN KEY (banned_by) REFERENCES users(username)
                         )
+                    ''')
+
+                    # Server audit log table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS server_audit_log (
+                            id SERIAL PRIMARY KEY,
+                            server_id VARCHAR(255) NOT NULL,
+                            action VARCHAR(100) NOT NULL,
+                            actor VARCHAR(255),
+                            target VARCHAR(255),
+                            detail JSONB DEFAULT '{}',
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (server_id) REFERENCES servers(server_id) ON DELETE CASCADE
+                        )
+                    ''')
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_audit_log_server_id
+                        ON server_audit_log(server_id, created_at DESC)
                     ''')
                     
                     # Email verification codes table
@@ -1295,6 +1342,308 @@ class Database:
                         END $$;
                     ''')
 
+                    # Add server automation columns to server_settings (migration)
+                    # auto_role_id: role to auto-assign on join
+                    # rules_enabled: whether rules screening is active
+                    # rules_text: the server rules content
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'server_settings' AND column_name = 'auto_role_id'
+                            ) THEN
+                                ALTER TABLE server_settings ADD COLUMN auto_role_id VARCHAR(255) DEFAULT NULL;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'server_settings' AND column_name = 'rules_enabled'
+                            ) THEN
+                                ALTER TABLE server_settings ADD COLUMN rules_enabled BOOLEAN DEFAULT FALSE;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'server_settings' AND column_name = 'rules_text'
+                            ) THEN
+                                ALTER TABLE server_settings ADD COLUMN rules_text TEXT DEFAULT '';
+                            END IF;
+                        END $$;
+                    ''')
+
+                    # Add rules_accepted to server_members (migration)
+                    # Default TRUE so existing members aren't retroactively gated
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'server_members' AND column_name = 'rules_accepted'
+                            ) THEN
+                                ALTER TABLE server_members ADD COLUMN rules_accepted BOOLEAN DEFAULT TRUE;
+                            END IF;
+                        END $$;
+                    ''')
+
+                    # ── SSO / SCIM columns on admin_settings (migration) ──
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_enabled'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_enabled BOOLEAN DEFAULT FALSE;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_provider'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_provider VARCHAR(20) DEFAULT NULL;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_oidc_issuer_url'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_oidc_issuer_url TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_oidc_client_id'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_oidc_client_id TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_oidc_client_secret'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_oidc_client_secret TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_oidc_preset'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_oidc_preset VARCHAR(20) DEFAULT 'custom';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_saml_entity_id'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_saml_entity_id TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_saml_sso_url'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_saml_sso_url TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_saml_certificate'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_saml_certificate TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_ldap_server_url'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_ldap_server_url TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_ldap_bind_dn'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_ldap_bind_dn TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_ldap_bind_password'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_ldap_bind_password TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_ldap_user_search_base'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_ldap_user_search_base TEXT DEFAULT '';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'sso_ldap_user_filter'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN sso_ldap_user_filter TEXT DEFAULT '(uid={username})';
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'scim_enabled'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN scim_enabled BOOLEAN DEFAULT FALSE;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'scim_bearer_token'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN scim_bearer_token TEXT DEFAULT '';
+                            END IF;
+                        END $$;
+                    ''')
+
+                    # ── SSO identities table ──
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS sso_identities (
+                            id SERIAL PRIMARY KEY,
+                            username VARCHAR(255) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+                            provider VARCHAR(20) NOT NULL,
+                            external_id TEXT NOT NULL,
+                            email TEXT,
+                            display_name TEXT,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE(provider, external_id)
+                        )
+                    ''')
+
+                    # ── SCIM tokens table ──
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS scim_tokens (
+                            id SERIAL PRIMARY KEY,
+                            token_hash VARCHAR(255) NOT NULL,
+                            description TEXT DEFAULT '',
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            last_used_at TIMESTAMP
+                        )
+                    ''')
+
+                    # ── Make password_hash nullable for SSO-only users ──
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+                        EXCEPTION WHEN others THEN
+                            NULL;
+                        END $$;
+                    ''')
+
+                    # ── Add is_bot column to users table (migration) ──
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'users' AND column_name = 'is_bot'
+                            ) THEN
+                                ALTER TABLE users ADD COLUMN is_bot BOOLEAN DEFAULT FALSE;
+                            END IF;
+                        END $$;
+                    ''')
+
+                    # ── Bots table ──
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS bots (
+                            bot_id VARCHAR(255) PRIMARY KEY,
+                            name VARCHAR(255) NOT NULL,
+                            username VARCHAR(255) UNIQUE NOT NULL,
+                            token_hash VARCHAR(255) NOT NULL,
+                            avatar VARCHAR(255) DEFAULT '🤖',
+                            avatar_type VARCHAR(10) DEFAULT 'emoji',
+                            avatar_data TEXT,
+                            description TEXT DEFAULT '',
+                            owner VARCHAR(255) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+                            scopes JSONB DEFAULT '[]'::jsonb,
+                            intents JSONB DEFAULT '[]'::jsonb,
+                            rate_limit_messages INTEGER DEFAULT 30,
+                            rate_limit_api INTEGER DEFAULT 120,
+                            is_active BOOLEAN DEFAULT TRUE,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    ''')
+
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_bots_owner ON bots(owner)
+                    ''')
+
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_bots_username ON bots(username)
+                    ''')
+
+                    # ── Bot server memberships table ──
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS bot_server_memberships (
+                            bot_id VARCHAR(255) NOT NULL REFERENCES bots(bot_id) ON DELETE CASCADE,
+                            server_id VARCHAR(255) NOT NULL REFERENCES servers(server_id) ON DELETE CASCADE,
+                            added_by VARCHAR(255) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+                            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            scopes_override JSONB DEFAULT NULL,
+                            is_active BOOLEAN DEFAULT TRUE,
+                            PRIMARY KEY (bot_id, server_id)
+                        )
+                    ''')
+
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_bot_memberships_server ON bot_server_memberships(server_id)
+                    ''')
+
+                    # ── Bot slash commands table ──
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS bot_slash_commands (
+                            command_id VARCHAR(255) PRIMARY KEY,
+                            bot_id VARCHAR(255) NOT NULL REFERENCES bots(bot_id) ON DELETE CASCADE,
+                            name VARCHAR(100) NOT NULL,
+                            description VARCHAR(255) DEFAULT '',
+                            parameters JSONB DEFAULT '[]'::jsonb,
+                            server_id VARCHAR(255) REFERENCES servers(server_id) ON DELETE CASCADE,
+                            enabled BOOLEAN DEFAULT TRUE,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE (bot_id, name, server_id)
+                        )
+                    ''')
+
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_slash_commands_bot ON bot_slash_commands(bot_id)
+                    ''')
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_slash_commands_server ON bot_slash_commands(server_id)
+                    ''')
+
+                    # ── Bot audit log table ──
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS bot_audit_log (
+                            id SERIAL PRIMARY KEY,
+                            bot_id VARCHAR(255) NOT NULL REFERENCES bots(bot_id) ON DELETE CASCADE,
+                            action VARCHAR(50) NOT NULL,
+                            server_id VARCHAR(255),
+                            detail JSONB DEFAULT '{}'::jsonb,
+                            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    ''')
+
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_bot_audit_log_bot ON bot_audit_log(bot_id)
+                    ''')
+
+                    # ── Add bot rate limit defaults to admin_settings (migration) ──
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'bot_default_rate_limit_messages'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN bot_default_rate_limit_messages INTEGER DEFAULT 30;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'bot_default_rate_limit_api'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN bot_default_rate_limit_api INTEGER DEFAULT 120;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'admin_settings' AND column_name = 'server_logo'
+                            ) THEN
+                                ALTER TABLE admin_settings ADD COLUMN server_logo TEXT DEFAULT '';
+                            END IF;
+                        END $$;
+                    ''')
+
                     conn.commit()
 
                 # If we get here, connection was successful
@@ -1903,7 +2252,7 @@ class Database:
     
     # Admin settings operations
     def get_admin_settings(self) -> Dict:
-        """Get admin settings from database with decrypted SMTP password."""
+        """Get admin settings from database with decrypted sensitive fields."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM admin_settings WHERE id = 1')
@@ -1915,21 +2264,22 @@ class Database:
                 settings.pop('created_at', None)
                 settings.pop('updated_at', None)
                 
-                # Decrypt SMTP password if present
-                if settings.get('smtp_password'):
-                    try:
-                        encryption_manager = get_encryption_manager()
-                        settings['smtp_password'] = encryption_manager.decrypt(settings['smtp_password'])
-                    except RuntimeError as e:
-                        print(f"Error decrypting SMTP password: {e}")
-                        # Return empty password if decryption fails with key mismatch
-                        settings['smtp_password'] = ''
+                # Decrypt sensitive fields if present
+                encrypted_fields = ['smtp_password', 'sso_oidc_client_secret', 'sso_ldap_bind_password', 'scim_bearer_token']
+                for field in encrypted_fields:
+                    if settings.get(field):
+                        try:
+                            encryption_manager = get_encryption_manager()
+                            settings[field] = encryption_manager.decrypt(settings[field])
+                        except RuntimeError as e:
+                            print(f"Error decrypting {field}: {e}")
+                            settings[field] = ''
                 
                 return settings
             return {}
     
     def update_admin_settings(self, settings: Dict) -> bool:
-        """Update admin settings in database with encrypted SMTP password."""
+        """Update admin settings in database with encrypted sensitive fields."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -1937,16 +2287,16 @@ class Database:
                 # Build dynamic UPDATE query from settings dict
                 set_clauses = []
                 values = []
+                encrypted_fields = ['smtp_password', 'sso_oidc_client_secret', 'sso_ldap_bind_password', 'scim_bearer_token']
                 for key, value in settings.items():
                     if key not in ['id', 'created_at', 'updated_at']:
-                        # Encrypt SMTP password before storing
-                        if key == 'smtp_password' and value:
+                        # Encrypt sensitive fields before storing
+                        if key in encrypted_fields and value:
                             try:
                                 encryption_manager = get_encryption_manager()
                                 value = encryption_manager.encrypt(value)
                             except RuntimeError as e:
-                                print(f"Error encrypting SMTP password: {e}")
-                                # Return False to indicate save failure
+                                print(f"Error encrypting {key}: {e}")
                                 return False
                         
                         set_clauses.append(f"{key} = %s")
@@ -2213,11 +2563,14 @@ class Database:
     
     # Role operations
     def create_role(self, role_id: str, server_id: str, name: str, color: str,
-                    position: int = 0, permissions: Dict = None) -> bool:
+                    position: int = 0, permissions: Dict = None, hoist: bool = False) -> bool:
         """Create a new server role."""
         try:
             if permissions is None:
                 permissions = {}
+            # Coerce list format to dict
+            if isinstance(permissions, list):
+                permissions = {k: True for k in permissions}
             
             print(f"[DB] Attempting to create role: id={role_id}, server={server_id}, name={name}", flush=True)
             
@@ -2225,9 +2578,9 @@ class Database:
                 cursor = conn.cursor()
                 print(f"[DB] Executing INSERT for role {role_id}", flush=True)
                 cursor.execute('''
-                    INSERT INTO server_roles (role_id, server_id, name, color, position, permissions)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                ''', (role_id, server_id, name, color, position, json.dumps(permissions)))
+                    INSERT INTO server_roles (role_id, server_id, name, color, position, permissions, hoist)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ''', (role_id, server_id, name, color, position, json.dumps(permissions), hoist))
                 print(f"[DB] INSERT executed successfully", flush=True)
                 return True
         except psycopg2.IntegrityError as e:
@@ -2244,7 +2597,7 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT role_id, server_id, name, color, position, permissions, created_at
+                SELECT role_id, server_id, name, color, position, permissions, hoist, created_at
                 FROM server_roles
                 WHERE server_id = %s
                 ORDER BY position DESC
@@ -2255,6 +2608,9 @@ class Database:
                 # Parse JSON permissions
                 if isinstance(role['permissions'], str):
                     role['permissions'] = json.loads(role['permissions'])
+                # Coerce list format
+                if isinstance(role['permissions'], list):
+                    role['permissions'] = {k: True for k in role['permissions']}
                 roles.append(role)
             return roles
     
@@ -2263,7 +2619,7 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT role_id, server_id, name, color, position, permissions, created_at
+                SELECT role_id, server_id, name, color, position, permissions, hoist, created_at
                 FROM server_roles
                 WHERE role_id = %s
             ''', (role_id,))
@@ -2272,13 +2628,18 @@ class Database:
                 role = dict(row)
                 if isinstance(role['permissions'], str):
                     role['permissions'] = json.loads(role['permissions'])
+                if isinstance(role['permissions'], list):
+                    role['permissions'] = {k: True for k in role['permissions']}
                 return role
             return None
     
     def update_role(self, role_id: str, name: str = None, color: str = None, 
-                    position: int = None, permissions: Dict = None) -> bool:
+                    position: int = None, permissions: Dict = None, hoist: bool = None) -> bool:
         """Update a role."""
         try:
+            # Coerce list format to dict
+            if isinstance(permissions, list):
+                permissions = {k: True for k in permissions}
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 updates = []
@@ -2293,6 +2654,9 @@ class Database:
                 if position is not None:
                     updates.append("position = %s")
                     values.append(position)
+                if hoist is not None:
+                    updates.append("hoist = %s")
+                    values.append(hoist)
                 if permissions is not None:
                     updates.append("permissions = %s")
                     values.append(json.dumps(permissions))
@@ -2352,7 +2716,7 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT r.role_id, r.server_id, r.name, r.color, r.position, r.permissions
+                SELECT r.role_id, r.server_id, r.name, r.color, r.position, r.permissions, r.hoist
                 FROM server_roles r
                 JOIN user_roles ur ON r.role_id = ur.role_id
                 WHERE ur.server_id = %s AND ur.username = %s
@@ -2363,6 +2727,8 @@ class Database:
                 role = dict(row)
                 if isinstance(role['permissions'], str):
                     role['permissions'] = json.loads(role['permissions'])
+                if isinstance(role['permissions'], list):
+                    role['permissions'] = {k: True for k in role['permissions']}
                 roles.append(role)
             return roles
     
@@ -2374,8 +2740,170 @@ class Database:
                 SELECT username FROM user_roles WHERE role_id = %s
             ''', (role_id,))
             return [row['username'] for row in cursor.fetchall()]
+
+    def update_role_positions(self, server_id: str, positions: List[Dict]) -> bool:
+        """Bulk update role positions. positions is a list of {role_id, position} dicts."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                for entry in positions:
+                    cursor.execute(
+                        'UPDATE server_roles SET position = %s WHERE role_id = %s AND server_id = %s',
+                        (entry['position'], entry['role_id'], server_id)
+                    )
+                return True
+        except Exception as e:
+            print(f"Error updating role positions: {e}")
+            return False
+
+    # Channel permission override helpers
+    def get_channel_all_overrides(self, channel_id: str) -> List[Dict]:
+        """Get all role permission overrides for a channel."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT crp.channel_id, crp.role_id, crp.permissions,
+                       sr.name AS role_name, sr.color AS role_color
+                FROM channel_role_permissions crp
+                JOIN server_roles sr ON crp.role_id = sr.role_id
+                WHERE crp.channel_id = %s
+            ''', (channel_id,))
+            results = []
+            for row in cursor.fetchall():
+                entry = dict(row)
+                if isinstance(entry['permissions'], str):
+                    entry['permissions'] = json.loads(entry['permissions'])
+                results.append(entry)
+            return results
+
+    def set_channel_role_permissions(self, channel_id: str, role_id: str, permissions: Dict) -> bool:
+        """Upsert role permission overrides for a channel."""
+        try:
+            if isinstance(permissions, list):
+                permissions = {k: True for k in permissions}
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO channel_role_permissions (channel_id, role_id, permissions)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (channel_id, role_id) DO UPDATE SET permissions = EXCLUDED.permissions
+                ''', (channel_id, role_id, json.dumps(permissions)))
+                return True
+        except Exception as e:
+            print(f"Error setting channel role permissions: {e}")
+            return False
+
+    def delete_channel_role_permissions(self, channel_id: str, role_id: str) -> bool:
+        """Remove a role's permission override from a channel."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'DELETE FROM channel_role_permissions WHERE channel_id = %s AND role_id = %s',
+                    (channel_id, role_id)
+                )
+                return True
+        except Exception as e:
+            print(f"Error deleting channel role permissions: {e}")
+            return False
+
+    # Category permission override helpers
+    def get_category_all_overrides(self, category_id: str) -> List[Dict]:
+        """Get all role permission overrides for a category."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT crp.category_id, crp.role_id, crp.permissions,
+                       sr.name AS role_name, sr.color AS role_color
+                FROM category_role_permissions crp
+                JOIN server_roles sr ON crp.role_id = sr.role_id
+                WHERE crp.category_id = %s
+            ''', (category_id,))
+            results = []
+            for row in cursor.fetchall():
+                entry = dict(row)
+                if isinstance(entry['permissions'], str):
+                    entry['permissions'] = json.loads(entry['permissions'])
+                results.append(entry)
+            return results
+
+    def set_category_role_permissions(self, category_id: str, role_id: str, permissions: Dict) -> bool:
+        """Upsert role permission overrides for a category."""
+        try:
+            if isinstance(permissions, list):
+                permissions = {k: True for k in permissions}
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO category_role_permissions (category_id, role_id, permissions)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (category_id, role_id) DO UPDATE SET permissions = EXCLUDED.permissions
+                ''', (category_id, role_id, json.dumps(permissions)))
+                return True
+        except Exception as e:
+            print(f"Error setting category role permissions: {e}")
+            return False
+
+    def delete_category_role_permissions(self, category_id: str, role_id: str) -> bool:
+        """Remove a role's permission override from a category."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'DELETE FROM category_role_permissions WHERE category_id = %s AND role_id = %s',
+                    (category_id, role_id)
+                )
+                return True
+        except Exception as e:
+            print(f"Error deleting category role permissions: {e}")
+            return False
+
+    def has_channel_permission(self, server_id: str, username: str, channel_id: str, permission: str) -> bool:
+        """Check if a user has a permission in a specific channel, considering overrides.
+        First checks base server role permissions, then applies channel-specific overrides.
+        Channel overrides can grant or explicitly deny (False) a permission.
+        """
+        # Owner always has all permissions
+        server = self.get_server(server_id)
+        if not server:
+            return False
+        if server['owner'] == username:
+            return True
+
+        # Get user's roles (highest position first)
+        user_roles = self.get_user_roles(server_id, username)
+        
+        # Collect channel overrides for this user's roles
+        channel_overrides = self.get_channel_all_overrides(channel_id)
+        override_map = {o['role_id']: o['permissions'] for o in channel_overrides}
+        
+        # Union of base permissions + override logic:
+        # Explicit True override grants access; explicit False denies for that role.
+        # If any role grants via base perms or override → allow.
+        # If all roles are denied → deny.
+        has_base = False
+        for role in user_roles:
+            perms = role.get('permissions', {})
+            if isinstance(perms, list):
+                perms = {k: True for k in perms}
+            # Administrator always wins
+            if perms.get('administrator', False):
+                return True
+            if perms.get(permission, False):
+                has_base = True
+            # Apply per-channel override
+            role_id = role['role_id']
+            if role_id in override_map:
+                override = override_map[role_id]
+                if isinstance(override, list):
+                    override = {k: True for k in override}
+                if override.get(permission) is True:
+                    return True
+                if override.get(permission) is False:
+                    has_base = False  # Explicit deny overrides base grant for this role
+        return has_base
+
     
-    # Ban operations
     def ban_user_from_server(self, server_id: str, username: str, banned_by: str, reason: str = None) -> bool:
         """Ban a user from a server."""
         try:
@@ -2467,6 +2995,63 @@ class Database:
         except Exception as e:
             print(f"Error getting user ban info: {e}")
             return None
+
+    def remove_server_member(self, server_id: str, username: str) -> bool:
+        """Remove a member from a server (kick, without banning)."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'DELETE FROM server_members WHERE server_id = %s AND username = %s',
+                    (server_id, username)
+                )
+                cursor.execute(
+                    'DELETE FROM user_roles WHERE server_id = %s AND username = %s',
+                    (server_id, username)
+                )
+                return True
+        except Exception as e:
+            print(f"Error kicking user: {e}")
+            return False
+
+    def add_audit_log_entry(self, server_id: str, action: str, actor: str = None,
+                            target: str = None, detail: Dict = None) -> bool:
+        """Append an entry to the server audit log."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO server_audit_log (server_id, action, actor, target, detail)
+                    VALUES (%s, %s, %s, %s, %s)
+                ''', (server_id, action, actor, target,
+                      json.dumps(detail) if detail else '{}'))
+                return True
+        except Exception as e:
+            print(f"Error adding audit log entry: {e}")
+            return False
+
+    def get_server_audit_log(self, server_id: str, limit: int = 200) -> List[Dict]:
+        """Get audit log entries for a server, newest first."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT id, server_id, action, actor, target, detail, created_at
+                    FROM server_audit_log
+                    WHERE server_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                ''', (server_id, limit))
+                rows = []
+                for row in cursor.fetchall():
+                    entry = dict(row)
+                    if isinstance(entry.get('created_at'), datetime):
+                        entry['created_at'] = entry['created_at'].isoformat()
+                    rows.append(entry)
+                return rows
+        except Exception as e:
+            print(f"Error getting audit log: {e}")
+            return []
     
     # Message operations
     def save_message(self, username: str, content: str, context_type: str, context_id: Optional[str] = None, reply_to: Optional[int] = None) -> int:
@@ -2538,78 +3123,203 @@ class Database:
                 messages.append(msg)
             return messages
     
-    def search_messages(self, username: str, query: str, limit: int = 50) -> List[Dict]:
-        """Search messages for a user. Searches across all DMs and server messages they have access to."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Get all DMs the user is part of
+    def _resolve_channel_filter(self, username: str, channel_names: List[str]) -> tuple:
+        """Resolve channel name filters into (dm_ids, server_channel_ids) the user can access.
+
+        Special values:
+          'dm' / 'dms' → only DM contexts
+          A server name  → all channels in that server
+          A channel name → matching channels across the user's servers
+        Returns (dm_ids, server_channel_ids) to use as the access scope.
+        """
+        dm_ids: List[str] = []
+        server_channel_ids: List[str] = []
+
+        include_dms = False
+        target_server_names: List[str] = []
+        target_channel_names: List[str] = []
+
+        for name in channel_names:
+            low = name.lower()
+            if low in ('dm', 'dms'):
+                include_dms = True
+            else:
+                target_server_names.append(low)
+                target_channel_names.append(low)
+
+        if include_dms:
             user_dms = self.get_user_dms(username)
             dm_ids = [dm['dm_id'] for dm in user_dms]
-            
-            # Get all servers the user is a member of
-            server_ids = self.get_user_servers(username)
-            server_channel_ids = []
+
+        server_ids = self.get_user_servers(username)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
             for server_id in server_ids:
+                # Check if server name matches
+                cursor.execute('SELECT name FROM servers WHERE server_id = %s', (server_id,))
+                row = cursor.fetchone()
+                server_name = (row['name'] if row else '').lower()
+                server_matched = server_name in target_server_names
+
                 channels = self.get_server_channels(server_id)
-                for channel in channels:
-                    server_channel_ids.append(f"{server_id}/{channel['channel_id']}")
-            
-            # Build query to search messages
-            # We'll fetch all messages from contexts the user has access to, then filter by content after decryption
-            dm_conditions = ' OR '.join(['(m.context_type = %s AND m.context_id = %s)'] * len(dm_ids))
-            server_conditions = ' OR '.join(['(m.context_type = %s AND m.context_id = %s)'] * len(server_channel_ids))
-            
-            conditions = []
-            params = []
-            
+                for ch in channels:
+                    ch_name = ch.get('name', '').lower()
+                    if server_matched or ch_name in target_channel_names:
+                        server_channel_ids.append(f"{server_id}/{ch['channel_id']}")
+
+        return dm_ids, server_channel_ids
+
+    def search_messages(self, username: str, query: str, limit: int = 50,
+                        filters: 'Dict | None' = None) -> List[Dict]:
+        """Search messages for a user. Searches across all DMs and server messages they have access to.
+
+        When *filters* is provided (from search_parser.parse_search_query) the method
+        pushes as many predicates as possible into the SQL query so fewer rows need
+        decryption.  *query* is still used as the free-text portion.
+        """
+        import re as _re  # local import for URL detection in has:link
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # --- Determine accessible contexts (possibly narrowed by 'in:' filter) ---
+            if filters and filters.get('in'):
+                dm_ids, server_channel_ids = self._resolve_channel_filter(username, filters['in'])
+            else:
+                # Default: all contexts the user can access
+                user_dms = self.get_user_dms(username)
+                dm_ids = [dm['dm_id'] for dm in user_dms]
+
+                server_ids = self.get_user_servers(username)
+                server_channel_ids = []
+                for server_id in server_ids:
+                    channels = self.get_server_channels(server_id)
+                    for channel in channels:
+                        server_channel_ids.append(f"{server_id}/{channel['channel_id']}")
+
+            # --- Build context access clause ---
+            ctx_parts = []
+            params: list = []
+
             if dm_ids:
-                conditions.append(f'({dm_conditions})')
+                placeholders = ' OR '.join(['(m.context_type = %s AND m.context_id = %s)'] * len(dm_ids))
+                ctx_parts.append(f'({placeholders})')
                 for dm_id in dm_ids:
                     params.extend(['dm', dm_id])
-            
+
             if server_channel_ids:
-                conditions.append(f'({server_conditions})')
-                for context_id in server_channel_ids:
-                    params.extend(['server', context_id])
-            
-            if not conditions:
+                placeholders = ' OR '.join(['(m.context_type = %s AND m.context_id = %s)'] * len(server_channel_ids))
+                ctx_parts.append(f'({placeholders})')
+                for cid in server_channel_ids:
+                    params.extend(['server', cid])
+
+            if not ctx_parts:
                 return []
-            
-            where_clause = ' OR '.join(conditions)
-            
+
+            where_parts = [f'({" OR ".join(ctx_parts)})', 'm.deleted = FALSE']
+
+            # --- Apply DB-level filters ---
+            if filters:
+                # from: (OR across usernames)
+                if filters.get('from'):
+                    from_ph = ' OR '.join(['m.username = %s'] * len(filters['from']))
+                    where_parts.append(f'({from_ph})')
+                    params.extend(filters['from'])
+
+                # mentions:
+                if filters.get('mentions'):
+                    mention_ph = ' OR '.join(
+                        ['EXISTS (SELECT 1 FROM message_mentions mm WHERE mm.message_id = m.id AND mm.mentioned_username = %s)']
+                        * len(filters['mentions'])
+                    )
+                    where_parts.append(f'({mention_ph})')
+                    params.extend(filters['mentions'])
+
+                # has: (attachment / image / video / audio — DB-level; link checked post-decrypt)
+                has_flags = filters.get('has', [])
+                for h in has_flags:
+                    if h in ('file', 'attachment'):
+                        where_parts.append(
+                            'EXISTS (SELECT 1 FROM message_attachments ma WHERE ma.message_id = m.id)')
+                    elif h == 'image':
+                        where_parts.append(
+                            "EXISTS (SELECT 1 FROM message_attachments ma WHERE ma.message_id = m.id AND ma.content_type LIKE 'image/%')")
+                    elif h == 'video':
+                        where_parts.append(
+                            "EXISTS (SELECT 1 FROM message_attachments ma WHERE ma.message_id = m.id AND ma.content_type LIKE 'video/%')")
+                    elif h == 'audio':
+                        where_parts.append(
+                            "EXISTS (SELECT 1 FROM message_attachments ma WHERE ma.message_id = m.id AND ma.content_type LIKE 'audio/%')")
+                    # 'link' and 'embed' handled post-decryption
+
+                # before:
+                if filters.get('before'):
+                    where_parts.append('m.timestamp < %s')
+                    params.append(filters['before'] + ' 23:59:59')
+
+                # after:
+                if filters.get('after'):
+                    where_parts.append('m.timestamp > %s')
+                    params.append(filters['after'] + ' 00:00:00')
+
+                # during: (specific date)
+                if filters.get('during'):
+                    where_parts.append('m.timestamp >= %s AND m.timestamp < %s::date + INTERVAL \'1 day\'')
+                    params.extend([filters['during'], filters['during']])
+
+                # is:pinned
+                if 'pinned' in filters.get('is', []):
+                    where_parts.append('m.pinned = TRUE')
+
+            where_clause = ' AND '.join(where_parts)
+
+            # Decide fetch multiplier: if we have only DB-level filters and no free text,
+            # we can trust the DB result count; otherwise over-fetch for post-decrypt filtering.
+            needs_content_filter = bool(query.strip()) or 'link' in (filters or {}).get('has', []) or 'embed' in (filters or {}).get('has', [])
+            fetch_limit = limit * 10 if needs_content_filter else limit
+
             cursor.execute(f'''
-                SELECT m.id, m.username, m.content, 
+                SELECT m.id, m.username, m.content,
                        m.timestamp::text as timestamp,
                        m.context_type, m.context_id,
                        m.edited_at::text as edited_at,
-                       m.deleted,
+                       m.deleted, m.pinned,
                        u.avatar, u.avatar_type, u.avatar_data
                 FROM messages m
                 LEFT JOIN users u ON m.username = u.username
-                WHERE ({where_clause}) AND m.deleted = FALSE
+                WHERE {where_clause}
                 ORDER BY m.timestamp DESC
                 LIMIT %s
-            ''', tuple(params) + (limit * 10,))  # Fetch more to filter by content
-            
-            # Decrypt and filter messages by query
+            ''', tuple(params) + (fetch_limit,))
+
+            # --- Post-decryption filtering ---
+            _url_re = _re.compile(r'https?://\S+')
+            query_lower = query.strip().lower() if query else ''
+            check_link = 'link' in (filters or {}).get('has', [])
+            check_embed = 'embed' in (filters or {}).get('has', [])
+
             messages = []
-            query_lower = query.lower()
             for row in cursor.fetchall():
                 msg = dict(row)
                 try:
                     decrypted_content = self.encryption_manager.decrypt(msg['content'])
                     msg['content'] = decrypted_content
-                    
-                    # Check if query matches in content or username
-                    if query_lower in decrypted_content.lower() or query_lower in msg['username'].lower():
-                        messages.append(msg)
-                        if len(messages) >= limit:
-                            break
+
+                    # has:link / has:embed → require URL in content
+                    if (check_link or check_embed) and not _url_re.search(decrypted_content):
+                        continue
+
+                    # Free-text substring match (content or username)
+                    if query_lower:
+                        if query_lower not in decrypted_content.lower() and query_lower not in msg['username'].lower():
+                            continue
+
+                    messages.append(msg)
+                    if len(messages) >= limit:
+                        break
                 except Exception:
-                    # Skip messages that can't be decrypted
                     continue
-            
+
             return messages
     
     def edit_message(self, message_id: int, new_content: str) -> bool:
@@ -2791,6 +3501,56 @@ class Database:
                 ON CONFLICT (server_id) 
                 DO UPDATE SET purge_schedule = EXCLUDED.purge_schedule, updated_at = CURRENT_TIMESTAMP
             ''', (server_id, purge_schedule))
+    
+    def update_server_automation_settings(self, server_id: str, auto_role_id: str | None, rules_enabled: bool, rules_text: str):
+        """Update server automation settings (auto-role, rules screening)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO server_settings (server_id, auto_role_id, rules_enabled, rules_text, updated_at)
+                VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (server_id) 
+                DO UPDATE SET auto_role_id = EXCLUDED.auto_role_id,
+                              rules_enabled = EXCLUDED.rules_enabled,
+                              rules_text = EXCLUDED.rules_text,
+                              updated_at = CURRENT_TIMESTAMP
+            ''', (server_id, auto_role_id, rules_enabled, rules_text))
+
+    def accept_server_rules(self, server_id: str, username: str) -> bool:
+        """Mark a member as having accepted the server rules."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE server_members SET rules_accepted = TRUE
+                    WHERE server_id = %s AND username = %s
+                ''', (server_id, username))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error accepting server rules: {e}")
+            return False
+
+    def has_accepted_rules(self, server_id: str, username: str) -> bool:
+        """Check if a member has accepted the server rules."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT rules_accepted FROM server_members
+                WHERE server_id = %s AND username = %s
+            ''', (server_id, username))
+            row = cursor.fetchone()
+            if row:
+                return row['rules_accepted'] if row['rules_accepted'] is not None else True
+            return True
+
+    def set_member_rules_accepted(self, server_id: str, username: str, accepted: bool):
+        """Set rules_accepted flag for a member."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE server_members SET rules_accepted = %s
+                WHERE server_id = %s AND username = %s
+            ''', (accepted, server_id, username))
     
     def get_channel_exemptions(self, server_id: str) -> List[str]:
         """Get list of exempted channel IDs for a server."""
@@ -3991,6 +4751,363 @@ class Database:
             print(f"Error deleting instance webhook: {e}")
             return False
     
+    # ── Bot operations ────────────────────────────────────────────────────────
+
+    def ensure_bot_system_user(self, username: str, avatar: str = '🤖', avatar_type: str = 'emoji') -> None:
+        """Ensure a bot user exists in the users table."""
+        bot_user = self.get_user(username)
+        if not bot_user:
+            import bcrypt
+            password_hash = bcrypt.hashpw(secrets.token_hex(32).encode(), bcrypt.gensalt()).decode()
+            self.create_user(username, password_hash, email=f'{username}@bot.system', email_verified=True)
+            self.update_user_avatar(username, avatar, avatar_type, None)
+            # Mark as bot
+            try:
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('UPDATE users SET is_bot = TRUE WHERE username = %s', (username,))
+            except Exception as e:
+                print(f"Error marking user as bot: {e}")
+
+    def create_bot(self, bot_id: str, name: str, username: str, token_hash: str, owner: str,
+                   description: str = '', avatar: str = '🤖', scopes: list = None,
+                   intents: list = None, rate_limit_messages: int = 30,
+                   rate_limit_api: int = 120) -> bool:
+        """Create a new bot."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO bots (bot_id, name, username, token_hash, avatar, description, owner,
+                                      scopes, intents, rate_limit_messages, rate_limit_api, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (bot_id, name, username, token_hash, avatar, description, owner,
+                      json.dumps(scopes or []), json.dumps(intents or []),
+                      rate_limit_messages, rate_limit_api, datetime.now()))
+                return True
+        except Exception as e:
+            print(f"Error creating bot: {e}")
+            return False
+
+    def get_bot(self, bot_id: str) -> Optional[Dict]:
+        """Get bot by ID."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM bots WHERE bot_id = %s', (bot_id,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            print(f"Error getting bot: {e}")
+            return None
+
+    def get_bot_by_username(self, username: str) -> Optional[Dict]:
+        """Get bot by username."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM bots WHERE username = %s', (username,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            print(f"Error getting bot by username: {e}")
+            return None
+
+    def get_bot_by_token_hash(self, token_hash: str) -> Optional[Dict]:
+        """Get bot by token hash."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM bots WHERE token_hash = %s', (token_hash,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            print(f"Error getting bot by token hash: {e}")
+            return None
+
+    def get_all_bots(self) -> List[Dict]:
+        """Get all bots."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM bots ORDER BY created_at DESC')
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting all bots: {e}")
+            return []
+
+    def update_bot(self, bot_id: str, **kwargs) -> bool:
+        """Update bot properties. Accepted kwargs: name, description, avatar, avatar_type,
+        avatar_data, scopes, intents, rate_limit_messages, rate_limit_api, is_active."""
+        try:
+            updates = []
+            params = []
+            json_fields = {'scopes', 'intents'}
+            allowed = {'name', 'description', 'avatar', 'avatar_type', 'avatar_data',
+                        'scopes', 'intents', 'rate_limit_messages', 'rate_limit_api', 'is_active'}
+            for key, val in kwargs.items():
+                if key in allowed and val is not None:
+                    updates.append(f"{key} = %s")
+                    params.append(json.dumps(val) if key in json_fields else val)
+            if not updates:
+                return True
+            params.append(bot_id)
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(f'UPDATE bots SET {", ".join(updates)} WHERE bot_id = %s', params)
+                return True
+        except Exception as e:
+            print(f"Error updating bot: {e}")
+            return False
+
+    def delete_bot(self, bot_id: str) -> bool:
+        """Delete a bot and all memberships/commands (cascade)."""
+        try:
+            bot = self.get_bot(bot_id)
+            if bot:
+                # Remove the bot user from users table too
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('DELETE FROM bots WHERE bot_id = %s', (bot_id,))
+                    # Also remove from server_members and users
+                    cursor.execute('DELETE FROM server_members WHERE username = %s', (bot['username'],))
+                    cursor.execute('DELETE FROM users WHERE username = %s AND is_bot = TRUE', (bot['username'],))
+                return True
+            return False
+        except Exception as e:
+            print(f"Error deleting bot: {e}")
+            return False
+
+    def regenerate_bot_token(self, bot_id: str, new_token_hash: str) -> bool:
+        """Regenerate a bot's token."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('UPDATE bots SET token_hash = %s WHERE bot_id = %s', (new_token_hash, bot_id))
+                return True
+        except Exception as e:
+            print(f"Error regenerating bot token: {e}")
+            return False
+
+    # Bot server membership operations
+
+    def add_bot_to_server(self, bot_id: str, server_id: str, added_by: str, scopes_override: list = None) -> bool:
+        """Add a bot to a server."""
+        try:
+            bot = self.get_bot(bot_id)
+            if not bot:
+                return False
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO bot_server_memberships (bot_id, server_id, added_by, scopes_override)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (bot_id, server_id) DO UPDATE SET is_active = TRUE, scopes_override = EXCLUDED.scopes_override
+                ''', (bot_id, server_id, added_by, json.dumps(scopes_override) if scopes_override else None))
+                # Also add bot user to server_members so it appears in member lists
+                cursor.execute('''
+                    INSERT INTO server_members (server_id, username)
+                    VALUES (%s, %s)
+                    ON CONFLICT (server_id, username) DO NOTHING
+                ''', (server_id, bot['username']))
+            return True
+        except Exception as e:
+            print(f"Error adding bot to server: {e}")
+            return False
+
+    def remove_bot_from_server(self, bot_id: str, server_id: str) -> bool:
+        """Remove a bot from a server."""
+        try:
+            bot = self.get_bot(bot_id)
+            if not bot:
+                return False
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM bot_server_memberships WHERE bot_id = %s AND server_id = %s', (bot_id, server_id))
+                cursor.execute('DELETE FROM server_members WHERE server_id = %s AND username = %s', (server_id, bot['username']))
+            return True
+        except Exception as e:
+            print(f"Error removing bot from server: {e}")
+            return False
+
+    def get_server_bots(self, server_id: str) -> List[Dict]:
+        """Get all bots in a server."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT b.*, bsm.added_by, bsm.added_at, bsm.scopes_override, bsm.is_active as membership_active
+                    FROM bots b
+                    JOIN bot_server_memberships bsm ON b.bot_id = bsm.bot_id
+                    WHERE bsm.server_id = %s AND bsm.is_active = TRUE AND b.is_active = TRUE
+                    ORDER BY bsm.added_at DESC
+                ''', (server_id,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting server bots: {e}")
+            return []
+
+    def get_bot_servers(self, bot_id: str) -> List[Dict]:
+        """Get all servers a bot is in."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT s.server_id, s.name, s.icon, s.icon_type, bsm.added_by, bsm.added_at
+                    FROM servers s
+                    JOIN bot_server_memberships bsm ON s.server_id = bsm.server_id
+                    WHERE bsm.bot_id = %s AND bsm.is_active = TRUE
+                    ORDER BY bsm.added_at DESC
+                ''', (bot_id,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting bot servers: {e}")
+            return []
+
+    def get_bot_server_membership(self, bot_id: str, server_id: str) -> Optional[Dict]:
+        """Get a specific bot-server membership."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT * FROM bot_server_memberships
+                    WHERE bot_id = %s AND server_id = %s
+                ''', (bot_id, server_id))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            print(f"Error getting bot server membership: {e}")
+            return None
+
+    # Bot slash command operations
+
+    def register_slash_command(self, command_id: str, bot_id: str, name: str,
+                               description: str = '', parameters: list = None,
+                               server_id: str = None) -> bool:
+        """Register a slash command for a bot."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO bot_slash_commands (command_id, bot_id, name, description, parameters, server_id)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (bot_id, name, server_id) DO UPDATE SET
+                        description = EXCLUDED.description,
+                        parameters = EXCLUDED.parameters,
+                        command_id = EXCLUDED.command_id
+                ''', (command_id, bot_id, name, description, json.dumps(parameters or []), server_id))
+                return True
+        except Exception as e:
+            print(f"Error registering slash command: {e}")
+            return False
+
+    def get_bot_slash_commands(self, bot_id: str) -> List[Dict]:
+        """Get all slash commands for a bot."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM bot_slash_commands WHERE bot_id = %s ORDER BY name', (bot_id,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting bot slash commands: {e}")
+            return []
+
+    def get_server_slash_commands(self, server_id: str) -> List[Dict]:
+        """Get all slash commands available in a server (global + server-specific)."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT sc.*, b.name as bot_name, b.avatar as bot_avatar, b.username as bot_username
+                    FROM bot_slash_commands sc
+                    JOIN bots b ON sc.bot_id = b.bot_id
+                    JOIN bot_server_memberships bsm ON sc.bot_id = bsm.bot_id AND bsm.server_id = %s
+                    WHERE sc.enabled = TRUE AND b.is_active = TRUE AND bsm.is_active = TRUE
+                    AND (sc.server_id IS NULL OR sc.server_id = %s)
+                    ORDER BY sc.name
+                ''', (server_id, server_id))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting server slash commands: {e}")
+            return []
+
+    def update_slash_command(self, command_id: str, **kwargs) -> bool:
+        """Update a slash command."""
+        try:
+            updates = []
+            params = []
+            allowed = {'name', 'description', 'parameters', 'enabled'}
+            for key, val in kwargs.items():
+                if key in allowed and val is not None:
+                    updates.append(f"{key} = %s")
+                    params.append(json.dumps(val) if key == 'parameters' else val)
+            if not updates:
+                return True
+            params.append(command_id)
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(f'UPDATE bot_slash_commands SET {", ".join(updates)} WHERE command_id = %s', params)
+                return True
+        except Exception as e:
+            print(f"Error updating slash command: {e}")
+            return False
+
+    def delete_slash_command(self, command_id: str) -> bool:
+        """Delete a slash command."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM bot_slash_commands WHERE command_id = %s', (command_id,))
+                return True
+        except Exception as e:
+            print(f"Error deleting slash command: {e}")
+            return False
+
+    def toggle_slash_command(self, command_id: str, enabled: bool) -> bool:
+        """Enable or disable a slash command."""
+        return self.update_slash_command(command_id, enabled=enabled)
+
+    def delete_bot_commands(self, bot_id: str) -> bool:
+        """Delete all commands for a bot."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM bot_slash_commands WHERE bot_id = %s', (bot_id,))
+                return True
+        except Exception as e:
+            print(f"Error deleting bot commands: {e}")
+            return False
+
+    # Bot audit log
+
+    def log_bot_action(self, bot_id: str, action: str, server_id: str = None, detail: dict = None) -> bool:
+        """Log a bot action."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO bot_audit_log (bot_id, action, server_id, detail)
+                    VALUES (%s, %s, %s, %s)
+                ''', (bot_id, action, server_id, json.dumps(detail or {})))
+                return True
+        except Exception as e:
+            print(f"Error logging bot action: {e}")
+            return False
+
+    def get_bot_audit_log(self, bot_id: str, limit: int = 50) -> List[Dict]:
+        """Get bot audit log entries."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT * FROM bot_audit_log WHERE bot_id = %s
+                    ORDER BY timestamp DESC LIMIT %s
+                ''', (bot_id, limit))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting bot audit log: {e}")
+            return []
+    
     def save_license_key(self, license_key: str, tier: str, expires_at, customer_name: str, customer_email: str) -> bool:
         """Save license key information."""
         try:
@@ -4219,3 +5336,110 @@ class Database:
                     pass
                 messages.append(msg)
             return messages
+
+    # ── SSO Identity operations ───────────────────────────────────────────────
+
+    def get_sso_identity(self, provider: str, external_id: str) -> Optional[Dict]:
+        """Look up an SSO identity by provider and external ID."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM sso_identities WHERE provider = %s AND external_id = %s',
+                (provider, external_id)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_user_sso_identities(self, username: str) -> List[Dict]:
+        """Get all SSO identities linked to a user."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM sso_identities WHERE username = %s ORDER BY created_at',
+                (username,)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def create_sso_identity(self, username: str, provider: str, external_id: str,
+                            email: str = None, display_name: str = None) -> bool:
+        """Link an SSO identity to a user."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO sso_identities (username, provider, external_id, email, display_name)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (provider, external_id) DO UPDATE
+                    SET email = EXCLUDED.email, display_name = EXCLUDED.display_name
+                ''', (username, provider, external_id, email, display_name))
+                return True
+        except Exception as e:
+            print(f"Error creating SSO identity: {e}")
+            return False
+
+    def delete_sso_identity(self, username: str, provider: str) -> bool:
+        """Unlink an SSO identity from a user."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'DELETE FROM sso_identities WHERE username = %s AND provider = %s',
+                    (username, provider)
+                )
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error deleting SSO identity: {e}")
+            return False
+
+    # ── SCIM Token operations ─────────────────────────────────────────────────
+
+    def create_scim_token(self, token_hash: str, description: str = '') -> Optional[int]:
+        """Store a hashed SCIM bearer token. Returns the token ID."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO scim_tokens (token_hash, description)
+                    VALUES (%s, %s)
+                    RETURNING id
+                ''', (token_hash, description))
+                row = cursor.fetchone()
+                return row['id'] if row else None
+        except Exception as e:
+            print(f"Error creating SCIM token: {e}")
+            return None
+
+    def verify_scim_token(self, token_hash: str) -> bool:
+        """Verify a SCIM bearer token and update last_used_at."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT id FROM scim_tokens WHERE token_hash = %s',
+                (token_hash,)
+            )
+            row = cursor.fetchone()
+            if row:
+                cursor.execute(
+                    'UPDATE scim_tokens SET last_used_at = CURRENT_TIMESTAMP WHERE id = %s',
+                    (row['id'],)
+                )
+                return True
+            return False
+
+    def get_scim_tokens(self) -> List[Dict]:
+        """List all SCIM tokens (without the hash)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT id, description, created_at, last_used_at FROM scim_tokens ORDER BY created_at DESC')
+            return [dict(row) for row in cursor.fetchall()]
+
+    def delete_scim_token(self, token_id: int) -> bool:
+        """Revoke a SCIM token by ID."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM scim_tokens WHERE id = %s', (token_id,))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error deleting SCIM token: {e}")
+            return False

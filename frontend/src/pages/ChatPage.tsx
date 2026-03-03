@@ -1,0 +1,8099 @@
+﻿import React, { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { wsClient } from '../api/wsClient'
+import { clearStoredAuth, getStoredAuth, setStoredAuth } from '../auth/storage'
+import { contextKey, useAppStore } from '../store/appStore'
+import { useToastStore } from '../store/toastStore'
+import { VoiceChat } from '../lib/VoiceChat'
+import { VoiceChatSFU } from '../lib/VoiceChatSFU'
+import type { ChatContext, TypingUser } from '../store/appStore'
+import type { Attachment, AuditLogEntry, Reaction, Server, ServerMember, Thread, WsChatMessage, WsMessage } from '../types/protocol'
+import { LicensePanel } from '../components/admin/LicensePanel'
+import { WebhookPanel } from '../components/admin/WebhookPanel'
+import { UsersPanel } from '../components/admin/UsersPanel'
+import { SsoPanel } from '../components/admin/SSOPanel'
+import BotPanel from '../components/admin/BotPanel'
+import ServerBotPanel from '../components/server/ServerBotPanel'
+import SlashCommandPicker from '../components/chat/SlashCommandPicker'
+import { useLicenseStore } from '../store/licenseStore'
+import { useSettingsStore, type Keybinds } from '../store/settingsStore'
+import { notificationManager } from '../utils/notifications'
+import { keybindManager } from '../utils/keybindManager'
+import { SearchBar, type SearchResult } from '../components/SearchBar'
+import SoundboardPanel from '../components/SoundboardPanel'
+import { AvatarWithStatus } from '../components/AvatarWithStatus'
+import { isWsChatMessage, isWsServerJoined } from '../lib/typeGuards'
+import { linkifyText } from '../lib/linkify'
+import { MessageEmbeds } from '../components/chat/MessageEmbeds'
+import { MessageRenderer } from '../components/chat/MessageRenderer'
+import { ReactionPicker } from '../components/chat/ReactionPicker'
+import { useChatLayoutState } from '../hooks/useChatLayoutState'
+import { useMessageDraft } from '../hooks/useMessageDraft'
+import { useFileUpload } from '../hooks/useFileUpload'
+import { useInviteUsage } from '../hooks/useInviteUsage'
+
+/**
+ * Sanitize a server logo URL to prevent DOM XSS via javascript: / vbscript:
+ * protocol injection. Accepts:
+ *   - relative paths starting with /
+ *   - http: and https: absolute URLs
+ *   - data:image/ data URIs (needed for base64-uploaded images)
+ * Returns null for anything else.
+ */
+function sanitizeLogoUrl(raw: string | undefined | null): string | null {
+  if (!raw) return null
+  const trimmed = raw.trim()
+  // Relative path
+  if (trimmed.startsWith('/')) return trimmed
+  // data:image/ URI (base64 uploads)
+  if (/^data:image\//i.test(trimmed)) return trimmed
+  // Absolute URL — only http/https
+  try {
+    const { protocol } = new URL(trimmed)
+    if (protocol === 'http:' || protocol === 'https:') return trimmed
+  } catch {
+    // not a valid URL
+  }
+  return null
+}
+
+export function ChatPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const connectionStatus = useAppStore((s) => s.connectionStatus)
+  const setConnectionStatus = useAppStore((s) => s.setConnectionStatus)
+  const authToken = useAppStore((s) => s.authToken)
+  const authUsername = useAppStore((s) => s.authUsername)
+  const init = useAppStore((s) => s.init)
+  const setInit = useAppStore((s) => s.setInit)
+  const setAuth = useAppStore((s) => s.setAuth)
+  const setLastAuthError = useAppStore((s) => s.setLastAuthError)
+  const selectedContext = useAppStore((s) => s.selectedContext)
+  const selectContext = useAppStore((s) => s.selectContext)
+  const messagesByContext = useAppStore((s) => s.messagesByContext)
+  const setMessagesForContext = useAppStore((s) => s.setMessagesForContext)
+  const appendMessage = useAppStore((s) => s.appendMessage)
+  const pinnedByContext = useAppStore((s) => s.pinnedByContext)
+  const setPinnedMessages = useAppStore((s) => s.setPinnedMessages)
+  const addPinnedMessage = useAppStore((s) => s.addPinnedMessage)
+  const removePinnedMessage = useAppStore((s) => s.removePinnedMessage)
+  const typingUsers = useAppStore((s) => s.typingUsers)
+  const addTypingUser = useAppStore((s) => s.addTypingUser)
+  const removeTypingUser = useAppStore((s) => s.removeTypingUser)
+  const threadsByServer = useAppStore((s) => s.threadsByServer)
+  const addThread = useAppStore((s) => s.addThread)
+  const closeThreadInStore = useAppStore((s) => s.closeThread)
+  const setThreadsForServer = useAppStore((s) => s.setThreadsForServer)
+
+  const themeMode = useSettingsStore((s) => s.themeMode)
+  const setThemeMode = useSettingsStore((s) => s.setThemeMode)
+  const keybinds = useSettingsStore((s) => s.keybinds) 
+  const loadPreferences = useSettingsStore((s) => s.loadPreferences)
+
+  const { draft, setDraft, replyingTo, setReplyingTo, editingMessageId, setEditingMessageId, editDraft, setEditDraft } = useMessageDraft()
+  const [showSlashPicker, setShowSlashPicker] = useState(false)
+  const [slashFilter, setSlashFilter] = useState('')
+  const [serverName, setServerName] = useState('')
+  const [channelName, setChannelName] = useState('')
+  const [channelType, setChannelType] = useState<'text' | 'voice'>('text')
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>('')
+  const [categoryName, setCategoryName] = useState('')
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null)
+  const [editingCategoryName, setEditingCategoryName] = useState('')
+  const [dmUsername, setDmUsername] = useState('')
+  const [lastInviteCode, setLastInviteCode] = useState<string | null>(null)
+  const {
+    inviteUsageServerId,
+    inviteUsageLogs, setInviteUsageLogs,
+    isLoadingInviteUsage, setIsLoadingInviteUsage,
+    serverInviteMaxUses, setServerInviteMaxUses,
+    instanceInviteMaxUses, setInstanceInviteMaxUses,
+    instanceInvitesList, setInstanceInvitesList,
+    showInstanceInvitesList, setShowInstanceInvitesList,
+    loadInviteUsage,
+  } = useInviteUsage()
+  
+  // Server invite modal state
+  const [showServerInviteModal, setShowServerInviteModal] = useState(false)
+  const [serverInviteInfo, setServerInviteInfo] = useState<{
+    code: string
+    server: {
+      id: string
+      name: string
+      icon?: string
+      icon_type?: string
+      icon_data?: string
+      description?: string
+      member_count: number
+    }
+  } | null>(null)
+  const [isJoiningServer, setIsJoiningServer] = useState(false)
+
+  // New UI state
+  const {
+    isUserMenuOpen, setIsUserMenuOpen,
+    isDmSidebarOpen, setIsDmSidebarOpen,
+    isMembersSidebarOpen, setIsMembersSidebarOpen,
+    showPinsPanel, setShowPinsPanel,
+    isSoundboardOpen, setIsSoundboardOpen,
+    isServerSettingsOpen, setIsServerSettingsOpen,
+    serverSettingsTab, setServerSettingsTab,
+    isAccountSettingsOpen, setIsAccountSettingsOpen,
+    accountSettingsTab, setAccountSettingsTab,
+    isAdminMode, setIsAdminMode,
+    adminSettingsTab, setAdminSettingsTab,
+    rebindingAction, setRebindingAction,
+    rebindConflict, setRebindConflict,
+  } = useChatLayoutState()
+  const [selectedServerId, setSelectedServerId] = useState<string | null>(null)
+  const [serverMembers, setServerMembers] = useState<Record<string, ServerMember[]>>({})
+  const [adminSettings, setAdminSettings] = useState<Record<string, any>>({})
+  const {
+    selectedFiles, setSelectedFiles,
+    isUploading, setIsUploading,
+    isDragging,
+    fileInputRef,
+    handleFileSelect,
+    removeFile,
+    handleDragOver,
+    handleDragLeave,
+    handleDrop,
+  } = useFileUpload({
+    adminSettings,
+    onUrlsReady: (urls) => setDraft(prev => prev ? `${prev}\n${urls.join('\n')}` : urls.join('\n')),
+  })
+  const [isSavingSettings, setIsSavingSettings] = useState(false)
+  const [isTestingSMTP, setIsTestingSMTP] = useState(false)
+  const [testEmailAddress, setTestEmailAddress] = useState('')
+  
+  // Server emoji and icon state
+  const [serverEmojis, setServerEmojis] = useState<Record<string, any[]>>({})
+  const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false)
+  const [emojiFile, setEmojiFile] = useState<File | null>(null)
+  const [emojiName, setEmojiName] = useState('')
+  const [announcement, setAnnouncement] = useState<{
+    enabled: boolean
+    message: string
+    duration_minutes: number
+    set_at: string | null
+  } | null>(null)
+
+  // Message editing/deleting/reactions state
+  // editingMessageId, editDraft, replyingTo are provided by useMessageDraft() above
+  const [deletingMessageId, setDeletingMessageId] = useState<number | null>(null)
+  const [reactionPickerMessageId, setReactionPickerMessageId] = useState<number | null>(null)
+
+  // Voice/Video chat state
+  const [voiceChat, setVoiceChat] = useState<any>(null)
+  // SFU instance — active when the current voice channel uses LiveKit
+  const [voiceChatSFU, setVoiceChatSFU] = useState<VoiceChatSFU | null>(null)
+  const [isInVoice, setIsInVoice] = useState(false)
+  const [isVoiceConnecting, setIsVoiceConnecting] = useState(false)
+  const [voiceParticipants, setVoiceParticipants] = useState<string[]>([])
+  const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map())
+  const [isVoiceMuted, setIsVoiceMuted] = useState(false)
+  const [isVideoEnabled, setIsVideoEnabled] = useState(false)
+  const [isScreenSharing, setIsScreenSharing] = useState(false)
+  const [isE2EEActive, setIsE2EEActive] = useState(false)
+  // Incoming direct-call state — set when the server sends 'incoming_voice_call'
+  const [incomingCall, setIncomingCall] = useState<{ from: string } | null>(null)
+  
+  // Mention autocomplete state
+  const [showMentionAutocomplete, setShowMentionAutocomplete] = useState(false)
+  const [mentionSearch, setMentionSearch] = useState('')
+  const [mentionStartPos, _setMentionStartPos] = useState<number>(0)
+  const [selectedMentionIndex, setSelectedMentionIndex] = useState(0)
+  // Role mentions accumulated while composing
+  const [pendingRoleMentions, setPendingRoleMentions] = useState<string[]>([])
+  // const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
+  // const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([])
+  // const [speakerDevices, setSpeakerDevices] = useState<MediaDeviceInfo[]>([])
+  const [, setSelectedMicrophone] = useState<string | null>(null)
+  const [, setSelectedSpeaker] = useState<string | null>(null)
+  const [, setSelectedCamera] = useState<string | null>(null)
+  const [, setScreenShareResolution] = useState(1080)
+  const [, setScreenShareFramerate] = useState(60)
+
+  // Account settings state
+  const [profileBio, setProfileBio] = useState('')
+  const [profileStatus, setProfileStatus] = useState('')
+  const [userStatus, setUserStatus] = useState<'online' | 'away' | 'busy' | 'offline'>('online')
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null)
+  const [twoFASetup, setTwoFASetup] = useState<{ secret: string; qr_code: string; backup_codes: string[] } | null>(null)
+  const [twoFACode, setTwoFACode] = useState('')
+  
+  // Role management state
+  const [serverRoles, setServerRoles] = useState<Record<string, any[]>>({})
+  const [selectedRole, setSelectedRole] = useState<any | null>(null)
+  const [isCreateRoleOpen, setIsCreateRoleOpen] = useState(false)
+  const [roleName, setRoleName] = useState('')
+  const [roleColor, setRoleColor] = useState('#99AAB5')
+  const [rolePermissions, setRolePermissions] = useState<string[]>([])
+  const [roleHoist, setRoleHoist] = useState(false)
+  const [memberRoles, setMemberRoles] = useState<Record<string, any[]>>({})
+  const [channelOverrides, setChannelOverrides] = useState<Record<string, any[]>>({})
+  // categoryOverrides populated for future category-level permission UI
+  const [, setCategoryOverrides] = useState<Record<string, any[]>>({})
+  const [isViewingMemberRoles, setIsViewingMemberRoles] = useState(false)
+  const [selectedMemberForRole, setSelectedMemberForRole] = useState<string | null>(null)
+  
+  // Ban management state
+  const [serverBans, setServerBans] = useState<Record<string, any[]>>({})
+  const [isViewingBans, setIsViewingBans] = useState(false)
+  const [banUsername, setBanUsername] = useState('')
+  const [banReason, setBanReason] = useState('')
+  // Kick state
+  const [kickTargetUsername, setKickTargetUsername] = useState<string | null>(null)
+  const [kickReason, setKickReason] = useState('')
+  // Audit log state
+  const [serverAuditLog, setServerAuditLog] = useState<Record<string, AuditLogEntry[]>>({})
+  const [disable2FAPassword, setDisable2FAPassword] = useState('')
+  const [disable2FACode, setDisable2FACode] = useState('')
+  const [notificationMode, setNotificationMode] = useState<'all' | 'mentions' | 'none'>('all')
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default')
+  const [newEmail, setNewEmail] = useState('')
+  const [emailPassword, setEmailPassword] = useState('')
+  const [emailChangeStatus, setEmailChangeStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null)
+  const [newUsername, setNewUsername] = useState('')
+  const [usernamePassword, setUsernamePassword] = useState('')
+  const [usernameChangeStatus, setUsernameChangeStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null)
+  // Typing indicator state
+  const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const isTypingRef = useRef(false)
+
+  // Delivery state: use ref so the useEffect closure always sees fresh data
+  const pendingNoncesRef = useRef<Set<string>>(new Set())
+  const [deliveredMessageId, setDeliveredMessageId] = useState<number | null>(null)
+
+  // Pins panel state — showPinsPanel provided by useChatLayoutState() above
+
+  // Thread state
+  const [showCreateThreadModal, setShowCreateThreadModal] = useState(false)
+  const [createThreadParentMsg, setCreateThreadParentMsg] = useState<WsChatMessage | null>(null)
+  const [createThreadName, setCreateThreadName] = useState('')
+  const [createThreadPrivate, setCreateThreadPrivate] = useState(false)
+  const [createThreadInvited, setCreateThreadInvited] = useState<string[]>([])
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null)
+  const [activeThread, setActiveThread] = useState<Thread | null>(null)
+
+  // Channel mention autocomplete state
+  const [showChannelMentionAutocomplete, setShowChannelMentionAutocomplete] = useState(false)
+  const [channelMentionSearch, setChannelMentionSearch] = useState('')
+  const [channelMentionStartPos, setChannelMentionStartPos] = useState(0)
+  const [selectedChannelMentionIndex, setSelectedChannelMentionIndex] = useState(0)
+
+  // Automation state
+  const [scheduledMessages, setScheduledMessages] = useState<any[]>([])
+  const [scheduleContent, setScheduleContent] = useState('')
+  const [scheduleChannel, setScheduleChannel] = useState('')
+  const [scheduleDateTime, setScheduleDateTime] = useState('')
+  const [pollQuestion, setPollQuestion] = useState('')
+  const [pollOptions, setPollOptions] = useState(['', ''])
+  const [pollAllowMultiple, setPollAllowMultiple] = useState(false)
+  const [pollExpiresHours, setPollExpiresHours] = useState<number | null>(null)
+  const [welcomeEnabled, setWelcomeEnabled] = useState(false)
+  const [welcomeMessage, setWelcomeMessage] = useState('Welcome {user} to the server!')
+  const [welcomeChannel, setWelcomeChannel] = useState('')
+
+  // Server automation state (auto-role & rules screening)
+  const [autoRoleId, setAutoRoleId] = useState<string | null>(null)
+  const [rulesEnabled, setRulesEnabled] = useState(false)
+  const [rulesText, setRulesText] = useState('')
+  const [automationRoles, setAutomationRoles] = useState<{ role_id: string; name: string; color: string }[]>([])
+  const [rulesModalServerId, setRulesModalServerId] = useState<string | null>(null)
+  const [rulesModalText, setRulesModalText] = useState('')
+  const [rulesModalServerName, setRulesModalServerName] = useState('')
+
+  const pushToast = useToastStore((s) => s.push)
+
+  const selectedKey = contextKey(selectedContext)
+  const messages = messagesByContext[selectedKey] ?? []
+
+  const requestHistoryFor = (ctx: ChatContext) => {
+    if (wsClient.readyState !== WebSocket.OPEN) return
+
+    if (ctx.kind === 'server') {
+      // Load both history and emojis at the same time
+      wsClient.getChannelHistory({ type: 'get_channel_history', server_id: ctx.serverId, channel_id: ctx.channelId })
+      loadServerEmojis(ctx.serverId)
+    } else if (ctx.kind === 'dm') {
+      wsClient.getDmHistory({ type: 'get_dm_history', dm_id: ctx.dmId })
+    } else if (ctx.kind === 'thread') {
+      wsClient.getThreadHistory({ type: 'get_thread_history', thread_id: ctx.threadId })
+    }
+  }
+
+  const clearUnreadForContext = (ctx: ChatContext) => {
+    const prev = useAppStore.getState().init
+    if (!prev) return
+
+    if (ctx.kind === 'dm') {
+      // Clear DM unread count
+      const updatedDms = prev.dms?.map((dm) => {
+        if (dm.id === ctx.dmId) {
+          return {
+            ...dm,
+            unread_count: 0,
+            has_mention: false
+          }
+        }
+        return dm
+      })
+      setInit({ ...prev, dms: updatedDms })
+    } else if (ctx.kind === 'server') {
+      // Clear channel unread count
+      const updatedServers = prev.servers?.map((server) => {
+        if (server.id === ctx.serverId) {
+          const channelUnreads = { ...(server.channel_unreads ?? {}) }
+          channelUnreads[ctx.channelId] = {
+            unread_count: 0,
+            has_mention: false
+          }
+          
+          // Recalculate total server unreads
+          let totalUnread = 0
+          let hasAnyMention = false
+          Object.values(channelUnreads).forEach((ch: any) => {
+            totalUnread += ch.unread_count ?? 0
+            if (ch.has_mention) hasAnyMention = true
+          })
+          
+          return {
+            ...server,
+            unread_count: totalUnread,
+            has_mention: hasAnyMention,
+            channel_unreads: channelUnreads
+          }
+        }
+        return server
+      })
+      setInit({ ...prev, servers: updatedServers })
+    }
+  }
+
+  const handleSearchResultClick = (result: SearchResult) => {
+    // Navigate to the context where the message is
+    if (result.context_type === 'dm') {
+      const dm = init?.dms?.find(d => d.id === result.context_id)
+      if (dm) {
+        const next: ChatContext = { kind: 'dm', dmId: dm.id, username: dm.username }
+        selectContext(next)
+        requestHistoryFor(next)
+        setSelectedServerId(null)
+        setIsDmSidebarOpen(true)
+        
+        // Scroll to message after a short delay to allow messages to load
+        setTimeout(() => {
+          const messageElement = document.getElementById(`message-${result.id}`)
+          if (messageElement) {
+            messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            // Highlight the message briefly
+            messageElement.classList.add('bg-sky-500/20')
+            setTimeout(() => {
+              messageElement.classList.remove('bg-sky-500/20')
+            }, 2000)
+          }
+        }, 500)
+      }
+    } else if (result.context_type === 'server' && result.context_id) {
+      const [serverId, channelId] = result.context_id.split('/')
+      const server = init?.servers?.find(s => s.id === serverId)
+      
+      if (server) {
+        const channel = server.channels?.find(c => c.id === channelId)
+        if (channel) {
+          setSelectedServerId(serverId)
+          setIsDmSidebarOpen(false)
+          const next: ChatContext = { kind: 'server', serverId, channelId }
+          selectContext(next)
+          requestHistoryFor(next)
+          
+          // Request server members if not already loaded
+          if (!serverMembers[serverId]) {
+            wsClient.getServerMembers({ type: 'get_server_members', server_id: serverId })
+          }
+          
+          // Scroll to message after a short delay to allow messages to load
+          setTimeout(() => {
+            const messageElement = document.getElementById(`message-${result.id}`)
+            if (messageElement) {
+              messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              // Highlight the message briefly
+              messageElement.classList.add('bg-sky-500/20')
+              setTimeout(() => {
+                messageElement.classList.remove('bg-sky-500/20')
+              }, 2000)
+            }
+          }, 500)
+        }
+      }
+    }
+  }
+
+  const setDefaultContextFromServers = (servers: Server[] | undefined) => {
+    if (!servers?.length) return
+    const firstServer = servers[0]
+    const firstChannel = firstServer.channels?.[0]
+    if (!firstChannel) return
+    const next: ChatContext = { kind: 'server', serverId: firstServer.id, channelId: firstChannel.id }
+    selectContext(next)
+    requestHistoryFor(next)
+  }
+
+  // Check notification permission on mount
+  useEffect(() => {
+    if (notificationManager.isSupported()) {
+      setNotificationPermission(notificationManager.getPermission())
+    }
+  }, [])
+
+  // Fetch license info and admin settings whenever auth completes (init username is set).
+  // This handles the interactive-login race where auth_success is consumed by LoginPage
+  // before ChatPage has mounted and registered its own message handler.
+  const initUsername = init?.username
+  useEffect(() => {
+    if (!initUsername) return
+    try { wsClient.getLicenseInfo() } catch { /* ignore */ }
+    try { wsClient.send({ type: 'get_admin_settings' }) } catch { /* ignore */ }
+  }, [initUsername])
+
+  // Keep document.title and favicon in sync with admin branding settings.
+  useEffect(() => {
+    const name = adminSettings.server_name || 'Decentra'
+    document.title = name
+
+    // Update favicon — sanitize to block javascript:/vbscript: injection
+    const logo = sanitizeLogoUrl(adminSettings.server_logo)
+    let link = document.querySelector<HTMLLinkElement>('link[rel~="icon"]')
+    if (!link) {
+      link = document.createElement('link')
+      link.rel = 'icon'
+      document.head.appendChild(link)
+    }
+    link.href = logo ?? '/favicon.ico'
+  }, [adminSettings.server_name, adminSettings.server_logo])
+
+  // Connect and authenticate with stored token on mount
+  useEffect(() => {
+    if (!authToken) return
+
+    const ws = wsClient.connect()
+    
+    const handleOpen = () => {
+      setConnectionStatus('connected')
+    }
+    
+    const handleClose = () => {
+      setConnectionStatus('disconnected')
+    }
+    
+    const handleError = () => {
+      setConnectionStatus('disconnected')
+    }
+    
+    const sendAuth = () => {
+      wsClient.authenticateWithToken({ type: 'token', token: authToken })
+    }
+
+    // Set initial status
+    if (ws.readyState === WebSocket.OPEN) {
+      setConnectionStatus('connected')
+      sendAuth()
+    } else if (ws.readyState === WebSocket.CONNECTING) {
+      setConnectionStatus('connecting')
+    } else {
+      setConnectionStatus('disconnected')
+    }
+
+    // Register sendAuth as a persistent onOpen handler so it fires on every
+    // reconnect (scheduleReconnect creates a new WebSocket internally).
+    const unsubscribeOpen = wsClient.onOpen(sendAuth)
+    ws.addEventListener('open', handleOpen)
+    ws.addEventListener('close', handleClose)
+    ws.addEventListener('error', handleError)
+
+    return () => {
+      unsubscribeOpen()
+      ws.removeEventListener('open', handleOpen)
+      ws.removeEventListener('close', handleClose)
+      ws.removeEventListener('error', handleError)
+    }
+  }, [authToken, setConnectionStatus])
+
+  // Check for server invite in URL parameters
+  useEffect(() => {
+    const serverInviteCode = searchParams.get('server_invite')
+    if (serverInviteCode && connectionStatus === 'connected' && init) {
+      // Request server info (only after authentication is complete)
+      wsClient.getServerInfoByInvite({ type: 'get_server_info_by_invite', invite_code: serverInviteCode })
+      // Clear the URL parameter
+      setSearchParams({})
+    }
+  }, [searchParams, setSearchParams, connectionStatus, init])
+
+  useEffect(() => {
+    const unsubscribe = wsClient.onMessage(async (msg: WsMessage) => {
+      if (msg.type === 'auth_error') {
+        const message = typeof msg.message === 'string' ? msg.message : 'Authentication failed'
+        setLastAuthError(message)
+      }
+      if (msg.type === 'verification_required') {
+        setLastAuthError(null)
+      }
+      if (msg.type === 'auth_success') {
+        // Load user preferences from server
+        if (msg.theme_mode || msg.keybinds) {
+          loadPreferences(
+            msg.theme_mode || 'dark',
+            msg.keybinds || {}
+          )
+        }
+
+        // Request admin settings (includes announcement info for all users)
+        try {
+          wsClient.send({ type: 'get_admin_settings' })
+        } catch {
+          // ignore
+        }
+
+        // Request license info
+        try {
+          wsClient.getLicenseInfo()
+        } catch {
+          // ignore
+        }
+
+        // Re-request history for the currently selected context after re-auth.
+        requestHistoryFor(useAppStore.getState().selectedContext)
+      }
+      if (msg.type === 'init') {
+        const initUsername = typeof msg.username === 'string' ? msg.username : (init?.username || authUsername || '')
+        if (!initUsername) return
+        console.log('Init message full:', JSON.stringify(msg, null, 2))
+        setInit({
+          username: initUsername,
+          is_admin: msg.is_admin,
+          notification_mode: msg.notification_mode,
+          avatar: msg.avatar,
+          avatar_type: msg.avatar_type,
+          avatar_data: msg.avatar_data,
+          bio: msg.bio,
+          status_message: msg.status_message,
+          user_status: msg.user_status,
+          servers: msg.servers,
+          dms: msg.dms,
+          friends: msg.friends,
+          friend_requests_sent: msg.friend_requests_sent,
+          friend_requests_received: msg.friend_requests_received,
+        })
+
+        // Sync user status
+        console.log('Init message received, user_status:', msg.user_status)
+        if (msg.user_status) {
+          setUserStatus(msg.user_status)
+          console.log('Set userStatus to:', msg.user_status)
+        }
+
+        // If the user hasn't selected a context yet, default to first channel.
+        if (useAppStore.getState().selectedContext.kind === 'global') {
+          setDefaultContextFromServers(msg.servers)
+        } else {
+          // On reconnect, ensure current context has history.
+          requestHistoryFor(useAppStore.getState().selectedContext)
+        }
+
+        // Initialize VoiceChat
+        if (!voiceChat && initUsername) {
+          const vc = new VoiceChat(wsClient, initUsername)
+          vc.setOnStateChange(() => {
+            setIsVoiceMuted(vc.getIsMuted())
+            setIsVideoEnabled(vc.getIsVideoEnabled())
+            setIsScreenSharing(vc.getIsScreenSharing())
+            setIsInVoice(vc.getIsInVoice())
+            setIsVoiceConnecting(vc.getIsConnecting())
+          })
+          vc.setOnRemoteStreamChange((peer, stream) => {
+            setRemoteStreams((prev) => {
+              const newMap = new Map(prev)
+              if (stream) {
+                newMap.set(peer, stream)
+              } else {
+                newMap.delete(peer)
+              }
+              return newMap
+            })
+          })
+          vc.setOnParticipantsChange((participants) => {
+            setVoiceParticipants(participants)
+          })
+          setVoiceChat(vc)
+
+          // Load devices (commented out to avoid unused variable warnings)
+          // vc.getAudioDevices().then(setAudioDevices)
+          // vc.getVideoDevices().then(setVideoDevices)
+          // vc.getSpeakerDevices().then(setSpeakerDevices)
+
+          const devices = vc.getSelectedDevices()
+          setSelectedMicrophone(devices.microphone)
+          setSelectedSpeaker(devices.speaker)
+          setSelectedCamera(devices.camera)
+          setScreenShareResolution(devices.screenShareResolution)
+          setScreenShareFramerate(devices.screenShareFramerate)
+        }
+      }
+
+      if (msg.type === 'auth_error') {
+        const message = typeof msg.message === 'string' ? msg.message : 'Authentication failed'
+        setLastAuthError(message)
+        pushToast({ kind: 'error', message })
+        setIsLoadingInviteUsage(false)
+        
+        // Clear authentication and redirect to login
+        clearStoredAuth()
+        useAppStore.getState().clearAuth()
+      }
+
+      if (msg.type === 'error') {
+        const message = typeof msg.message === 'string' ? msg.message : 'Request failed'
+        setLastAuthError(message)
+        pushToast({ kind: 'error', message })
+        setIsLoadingInviteUsage(false)
+        // Set error status for email/username change forms if applicable
+        const lowerMsg = message.toLowerCase()
+        if (lowerMsg.includes('email')) {
+          setEmailChangeStatus({ type: 'error', message })
+        }
+        if (lowerMsg.includes('username')) {
+          setUsernameChangeStatus({ type: 'error', message })
+        }
+      }
+
+      if (msg.type === 'channel_history') {
+        const serverId = msg.server_id
+        const channelId = msg.channel_id
+        const messages = msg.messages || []
+        const ctx: ChatContext = { kind: 'server', serverId, channelId }
+        setMessagesForContext(ctx, messages)
+      }
+
+      if (msg.type === 'dm_history') {
+        const dmId = msg.dm_id
+        const messages = msg.messages || []
+        const ctx: ChatContext = { kind: 'dm', dmId }
+        setMessagesForContext(ctx, messages)
+      }
+
+      if (msg.type === 'category_created') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) =>
+            s.id === msg.server_id ? { ...s, categories: [...(s.categories ?? []), msg.category] } : s,
+          )
+          setInit({ ...prev, servers: nextServers })
+        }
+      }
+
+      if (msg.type === 'category_updated') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) =>
+            s.id === msg.server_id
+              ? { ...s, categories: (s.categories ?? []).map((cat) => (cat.id === msg.category_id ? { ...cat, name: msg.name } : cat)) }
+              : s,
+          )
+          setInit({ ...prev, servers: nextServers })
+        }
+      }
+
+      if (msg.type === 'category_deleted') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) =>
+            s.id === msg.server_id
+              ? {
+                  ...s,
+                  categories: (s.categories ?? []).filter((cat) => cat.id !== msg.category_id),
+                  channels: (s.channels ?? []).map((ch) => (ch.category_id === msg.category_id ? { ...ch, category_id: null } : ch))
+                }
+              : s,
+          )
+          setInit({ ...prev, servers: nextServers })
+          
+          // If the current channel was deleted, switch to the first available channel
+          const currentCtx = useAppStore.getState().selectedContext
+          if (currentCtx.kind === 'server' && currentCtx.serverId === msg.server_id && currentCtx.channelId === msg.channel_id) {
+            const updatedServer = nextServers.find(s => s.id === msg.server_id)
+            if (updatedServer && updatedServer.channels && updatedServer.channels.length > 0) {
+              const firstChannel = updatedServer.channels[0]
+              const next: ChatContext = { kind: 'server', serverId: msg.server_id, channelId: firstChannel.id }
+              selectContext(next)
+              requestHistoryFor(next)
+            }
+          }
+        }
+      }
+
+      if (msg.type === 'category_positions_updated') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) => {
+            if (s.id === msg.server_id) {
+              const positionMap = new Map<string, number>(
+                msg.positions.map((p: { category_id: string; position: number }) => [p.category_id, p.position])
+              )
+              return {
+                ...s,
+                categories: (s.categories ?? [])
+                  .map((cat) => {
+                    const newPos = positionMap.get(cat.id)
+                    return newPos !== undefined ? { ...cat, position: newPos } : cat
+                  })
+                  .sort((a, b) => {
+                    const aPos = typeof a.position === 'number' ? a.position : 0
+                    const bPos = typeof b.position === 'number' ? b.position : 0
+                    return aPos - bPos
+                  })
+              }
+            }
+            return s
+          })
+          setInit({ ...prev, servers: nextServers })
+        }
+      }
+
+      if (msg.type === 'channel_positions_updated') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) => {
+            if (s.id === msg.server_id) {
+              const positionMap = new Map<string, { position: number; category_id?: string | null }>(
+                msg.positions.map((p: { channel_id: string; position: number; category_id?: string | null }) => [
+                  p.channel_id,
+                  { position: p.position, category_id: p.category_id }
+                ])
+              )
+              return {
+                ...s,
+                channels: (s.channels ?? [])
+                  .map((ch) => {
+                    const update = positionMap.get(ch.id)
+                    if (update) {
+                      return {
+                        ...ch,
+                        position: update.position,
+                        category_id: update.category_id !== undefined ? update.category_id : ch.category_id
+                      }
+                    }
+                    return ch
+                  })
+                  .sort((a, b) => {
+                    const aPos = typeof a.position === 'number' ? a.position : 0
+                    const bPos = typeof b.position === 'number' ? b.position : 0
+                    return aPos - bPos
+                  })
+              }
+            }
+            return s
+          })
+          setInit({ ...prev, servers: nextServers })
+        }
+      }
+
+      if (msg.type === 'channel_category_updated') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) =>
+            s.id === msg.server_id
+              ? {
+                  ...s,
+                  channels: (s.channels ?? []).map((ch) =>
+                    ch.id === msg.channel_id ? { ...ch, category_id: msg.category_id } : ch
+                  )
+                }
+              : s
+          )
+          setInit({ ...prev, servers: nextServers })
+        }
+      }
+
+      if (msg.type === 'channel_deleted') {
+        const prev = useAppStore.getState().init
+        if (prev?.servers) {
+          const nextServers = prev.servers.map((s) =>
+            s.id === msg.server_id
+              ? { ...s, channels: (s.channels ?? []).filter((ch) => ch.id !== msg.channel_id) }
+              : s
+          )
+          setInit({ ...prev, servers: nextServers })
+          
+          // If the current channel was deleted, switch to the first available channel
+          const currentCtx = useAppStore.getState().selectedContext
+          if (currentCtx.kind === 'server' && currentCtx.serverId === msg.server_id && currentCtx.channelId === msg.channel_id) {
+            const updatedServer = nextServers.find(s => s.id === msg.server_id)
+            if (updatedServer && updatedServer.channels && updatedServer.channels.length > 0) {
+              const firstChannel = updatedServer.channels[0]
+              const next: ChatContext = { kind: 'server', serverId: msg.server_id, channelId: firstChannel.id }
+              selectContext(next)
+              requestHistoryFor(next)
+            }
+          }
+        }
+      }
+
+      if (msg.type === 'dm_started') {
+        const prev = useAppStore.getState().init
+        if (prev) {
+          const existing = prev.dms ?? []
+          const already = existing.some((d) => d.id === msg.dm.id)
+          setInit({ ...prev, dms: already ? existing : [...existing, msg.dm] })
+        }
+        const next: ChatContext = { kind: 'dm', dmId: msg.dm.id, username: msg.dm.username }
+        selectContext(next)
+        requestHistoryFor(next)
+      }
+
+      if (msg.type === 'server_members') {
+        setServerMembers((prev) => ({
+          ...prev,
+          [msg.server_id]: msg.members ?? [],
+        }))
+      }
+
+      if (isWsServerJoined(msg)) {
+        const prev = useAppStore.getState().init
+        if (prev) {
+          const servers = prev.servers ?? []
+          const exists = servers.some((s) => s.id === msg.server.id)
+          setInit({ ...prev, servers: exists ? servers : [...servers, msg.server] })
+        }
+        pushToast({ kind: 'success', message: `Joined server: ${msg.server.name}` })
+        
+        // Close the invite modal and reset joining state
+        setShowServerInviteModal(false)
+        setIsJoiningServer(false)
+        
+        // Check if the server has rules the user must accept first
+        const joinedServer = msg.server as any
+        if (joinedServer.rules_pending && joinedServer.rules_text) {
+          setRulesModalServerId(joinedServer.id)
+          setRulesModalText(joinedServer.rules_text)
+          setRulesModalServerName(joinedServer.name)
+        } else {
+          // Navigate to the newly joined server only if no rules gate
+          const firstChannel = msg.server.channels?.[0]
+          if (firstChannel) {
+            selectContext({
+              kind: 'server',
+              serverId: msg.server.id,
+              channelId: firstChannel.id,
+            })
+          }
+        }
+      }
+
+      if (isWsChatMessage(msg)) {
+        appendMessage(msg)
+        
+        // Update unread counts if message is not from current user and not in selected context
+        const currentUsername = useAppStore.getState().init?.username
+        const currentContext = useAppStore.getState().selectedContext
+        const isOwnMessage = msg.username === currentUsername
+        
+        if (!isOwnMessage) {
+          const prev = useAppStore.getState().init
+          if (prev) {
+            // Check if message is in current context
+            let isInCurrentContext = false
+            if (msg.context === 'dm' && currentContext.kind === 'dm') {
+              isInCurrentContext = msg.context_id === currentContext.dmId
+            } else if (msg.context === 'server' && currentContext.kind === 'server') {
+              const contextId = `${currentContext.serverId}/${currentContext.channelId}`
+              isInCurrentContext = msg.context_id === contextId
+            }
+            
+            // Only increment unread if not in current context
+            if (!isInCurrentContext) {
+              const isMention = msg.mentions?.includes(currentUsername ?? '') ?? false
+              
+              if (msg.context === 'dm' && msg.context_id) {
+                // Update DM unread count
+                const updatedDms = prev.dms?.map((dm) => {
+                  if (dm.id === msg.context_id) {
+                    return {
+                      ...dm,
+                      unread_count: (dm.unread_count ?? 0) + 1,
+                      has_mention: dm.has_mention || isMention
+                    }
+                  }
+                  return dm
+                })
+                setInit({ ...prev, dms: updatedDms })
+              } else if (msg.context === 'server' && msg.context_id) {
+                // Update server/channel unread count
+                const [serverId, channelId] = msg.context_id.split('/')
+                const updatedServers = prev.servers?.map((server) => {
+                  if (server.id === serverId) {
+                    const channelUnreads = { ...(server.channel_unreads ?? {}) }
+                    channelUnreads[channelId] = {
+                      unread_count: ((channelUnreads[channelId]?.unread_count ?? 0) + 1),
+                      has_mention: (channelUnreads[channelId]?.has_mention || isMention)
+                    }
+                    
+                    // Calculate total server unreads
+                    let totalUnread = 0
+                    let hasAnyMention = false
+                    Object.values(channelUnreads).forEach((ch: any) => {
+                      totalUnread += ch.unread_count ?? 0
+                      if (ch.has_mention) hasAnyMention = true
+                    })
+                    
+                    return {
+                      ...server,
+                      unread_count: totalUnread,
+                      has_mention: hasAnyMention,
+                      channel_unreads: channelUnreads
+                    }
+                  }
+                  return server
+                })
+                setInit({ ...prev, servers: updatedServers })
+              }
+            }
+          }
+        }
+        
+        // Load emojis for the server this message is from
+        if (msg.context === 'server' && msg.context_id) {
+          const serverId = msg.context_id.split('/')[0]
+          if (!serverEmojis[serverId] && wsClient.readyState === WebSocket.OPEN) {
+            loadServerEmojis(serverId)
+          }
+        }
+        
+        // Show browser notification for new messages based on notification mode
+        const shouldNotify = currentUsername && msg.username !== currentUsername
+        
+        if (shouldNotify && notificationMode === 'all') {
+          console.log('[App] Showing message notification for:', msg.username, 'mode:', notificationMode)
+          const contextType = msg.context === 'global' ? 'global' : msg.context === 'server' ? 'server' : 'dm'
+          notificationManager.showMessageNotification(
+            msg.username || 'Someone',
+            msg.content || '',
+            contextType
+          )
+        } else if (shouldNotify) {
+          console.log('[App] Skipping message notification, mode:', notificationMode, 'shouldNotify:', shouldNotify)
+        }
+      }
+
+      if (msg.type === 'admin_settings') {
+        const s = msg.settings || {}
+        setAdminSettings({
+          ...s,
+          // Ensure announcement_duration_minutes is never null/undefined so the
+          // server-side validation (which requires a number) never fires spuriously.
+          announcement_duration_minutes: s.announcement_duration_minutes ?? 60,
+        })
+      }
+
+      if (msg.type === 'license_info') {
+        useLicenseStore.getState().setLicenseInfo(msg.data)
+      }
+      if (msg.type === 'license_updated') {
+        // The broadcast may contain partial license data (e.g., missing is_admin/customer/expires_at).
+        // Instead of overwriting the store with a partial payload, request a full license_info refresh.
+        wsClient.send({ type: 'get_license_info' })
+      }
+
+      if (msg.type === 'settings_saved') {
+        setIsSavingSettings(false)
+        pushToast({ kind: 'success', message: 'Admin settings saved successfully' })
+      }
+
+      if (msg.type === 'smtp_test_result') {
+        setIsTestingSMTP(false)
+        if (msg.success) {
+          pushToast({ kind: 'success', message: msg.message || 'SMTP test successful' })
+        } else {
+          pushToast({ kind: 'error', message: msg.message || 'SMTP test failed' })
+        }
+      }
+      
+      // Role management messages
+      if (msg.type === 'server_roles') {
+        setServerRoles((prev) => ({
+          ...prev,
+          [msg.server_id]: msg.roles ?? [],
+        }))
+      }
+      
+      if (msg.type === 'role_created') {
+        pushToast({ kind: 'success', message: 'Role created successfully' })
+        if (selectedServerId) {
+          wsClient.send({ type: 'get_server_roles', server_id: selectedServerId })
+        }
+      }
+      
+      if (msg.type === 'role_updated') {
+        pushToast({ kind: 'success', message: 'Role updated successfully' })
+        if (selectedServerId) {
+          wsClient.send({ type: 'get_server_roles', server_id: selectedServerId })
+        }
+      }
+      
+      if (msg.type === 'role_deleted') {
+        pushToast({ kind: 'success', message: 'Role deleted successfully' })
+        if (selectedServerId) {
+          wsClient.send({ type: 'get_server_roles', server_id: selectedServerId })
+        }
+      }
+      
+      if (msg.type === 'role_assigned') {
+        pushToast({ kind: 'success', message: 'Role assigned successfully' })
+      }
+      
+      if (msg.type === 'role_removed') {
+        pushToast({ kind: 'success', message: 'Role removed successfully' })
+      }
+      
+      if (msg.type === 'user_roles') {
+        setMemberRoles((prev) => ({
+          ...prev,
+          [`${msg.server_id}:${msg.username}`]: msg.roles ?? [],
+        }))
+      }
+      
+      if (msg.type === 'roles_reordered') {
+        setServerRoles((prev) => ({
+          ...prev,
+          [msg.server_id]: msg.roles ?? [],
+        }))
+      }
+      
+      if (msg.type === 'channel_permissions_updated') {
+        setChannelOverrides((prev) => ({
+          ...prev,
+          [msg.channel_id]: msg.overrides ?? [],
+        }))
+      }
+      
+      // Initial load of channel/category permissions
+      if (msg.type === 'channel_permissions') {
+        setChannelOverrides((prev) => ({
+          ...prev,
+          [msg.channel_id]: msg.overrides ?? [],
+        }))
+      }
+      
+      if (msg.type === 'category_permissions') {
+        setCategoryOverrides((prev) => ({
+          ...prev,
+          [msg.category_id]: msg.overrides ?? [],
+        }))
+      }
+      
+      if (msg.type === 'category_permissions_updated') {
+        setCategoryOverrides((prev) => ({
+          ...prev,
+          [msg.category_id]: msg.overrides ?? [],
+        }))
+      }
+      
+      // Ban management messages
+      if (msg.type === 'server_bans') {
+        setServerBans((prev) => ({
+          ...prev,
+          [msg.server_id]: msg.bans ?? [],
+        }))
+      }
+      
+      // Automation messages
+      if (msg.type === 'scheduled_messages') {
+        setScheduledMessages(msg.messages || [])
+      }
+      
+      if (msg.type === 'scheduled_message_created') {
+        pushToast({ kind: 'success', message: 'Message scheduled successfully' })
+        if (selectedServerId) {
+          wsClient.send({ type: 'get_scheduled_messages', server_id: selectedServerId })
+        }
+      }
+      
+      if (msg.type === 'scheduled_message_deleted') {
+        pushToast({ kind: 'success', message: 'Scheduled message deleted' })
+      }
+      
+      if (msg.type === 'poll_created' || msg.type === 'poll_updated') {
+        // Polls are shown as messages, no special handling needed
+      }
+      
+      if (msg.type === 'welcome_message') {
+        const welcome = msg.welcome || {}
+        setWelcomeEnabled(welcome.enabled || false)
+        setWelcomeMessage(welcome.message || 'Welcome {user} to the server!')
+        setWelcomeChannel(welcome.channel_id || '')
+      }
+      
+      if (msg.type === 'welcome_message_updated') {
+        pushToast({ kind: 'success', message: 'Welcome message updated' })
+      }
+
+      // Server automation settings response
+      if (msg.type === 'server_automation_settings') {
+        setAutoRoleId(msg.auto_role_id || null)
+        setRulesEnabled(msg.rules_enabled || false)
+        setRulesText(msg.rules_text || '')
+        setAutomationRoles(msg.roles || [])
+      }
+      
+      if (msg.type === 'server_automation_settings_updated') {
+        pushToast({ kind: 'success', message: 'Automation settings updated' })
+      }
+
+      // Rules accepted — clear the rules_pending flag on the server
+      if (msg.type === 'rules_accepted') {
+        const prev = useAppStore.getState().init
+        if (prev) {
+          const servers = (prev.servers ?? []).map((s) =>
+            s.id === msg.server_id ? { ...s, rules_pending: false, rules_text: undefined } : s
+          )
+          setInit({ ...prev, servers })
+        }
+        setRulesModalServerId(null)
+        pushToast({ kind: 'success', message: 'Welcome! You now have full access to the server.' })
+      }
+      
+      // Invite code messages
+      if (msg.type === 'invite_code') {
+        setLastInviteCode(msg.code)
+        pushToast({ kind: 'success', message: msg.message || 'Invite code generated' })
+      }
+      
+      if (msg.type === 'instance_invites_list') {
+        setInstanceInvitesList(msg.invites)
+      }
+      
+      if (msg.type === 'invite_revoked') {
+        pushToast({ kind: 'success', message: 'Invite revoked' })
+      }
+      
+      if (msg.type === 'server_invite_code') {
+        setLastInviteCode(msg.code)
+        pushToast({ kind: 'success', message: msg.message || 'Server invite code generated' })
+      }
+      
+      if (msg.type === 'server_info_preview') {
+        setServerInviteInfo({
+          code: msg.invite_code,
+          server: msg.server
+        })
+        setShowServerInviteModal(true)
+      }
+      
+      if (msg.type === 'server_invite_usage') {
+        setInviteUsageLogs(msg.usage_logs)
+        setIsLoadingInviteUsage(false)
+      }
+      
+      if (msg.type === 'admin_signup_notification') {
+        pushToast({ 
+          kind: 'info', 
+          message: `New user signup: ${msg.username}${msg.email ? ` (${msg.email})` : ''}` 
+        })
+      }
+      
+      if (msg.type === 'member_banned') {
+        pushToast({ kind: 'info', message: `${msg.username} has been banned` })
+        if (msg.server_id && selectedServerId === msg.server_id) {
+          // Refresh bans list if viewing
+          wsClient.send({ type: 'get_server_bans', server_id: msg.server_id })
+          // Refresh members list
+          wsClient.send({ type: 'get_server_members', server_id: msg.server_id })
+        }
+      }
+      
+      if (msg.type === 'member_unbanned') {
+        pushToast({ kind: 'success', message: `${msg.username} has been unbanned` })
+        if (msg.server_id && selectedServerId === msg.server_id) {
+          wsClient.send({ type: 'get_server_bans', server_id: msg.server_id })
+        }
+      }
+      
+      if (msg.type === 'banned_from_server') {
+        pushToast({ kind: 'error', message: `You have been banned from the server. Reason: ${msg.reason || 'No reason provided'}` })
+        // Remove server from list
+        const prev = useAppStore.getState().init
+        if (prev && msg.server_id) {
+          const servers = (prev.servers ?? []).filter((s) => s.id !== msg.server_id)
+          setInit({ ...prev, servers })
+        }
+      }
+
+      if (msg.type === 'kicked_from_server') {
+        pushToast({ kind: 'error', message: `You have been kicked from ${msg.server_name || 'the server'}. Reason: ${msg.reason || 'No reason provided'}` })
+        const prev = useAppStore.getState().init
+        if (prev && msg.server_id) {
+          const servers = (prev.servers ?? []).filter((s: any) => s.id !== msg.server_id)
+          setInit({ ...prev, servers })
+        }
+      }
+
+      if (msg.type === 'member_kicked') {
+        pushToast({ kind: 'info', message: `${msg.username} has been kicked${msg.reason ? `: ${msg.reason}` : ''}` })
+        if (msg.server_id && selectedServerId === msg.server_id) {
+          wsClient.send({ type: 'get_server_members', server_id: msg.server_id })
+        }
+      }
+
+      if (msg.type === 'server_audit_log') {
+        setServerAuditLog(prev => ({ ...prev, [msg.server_id]: msg.entries ?? [] }))
+      }
+      
+      if (msg.type === 'mention_notification') {
+        console.log('[App] Received mention_notification:', msg)
+        const mentionedBy = msg.mentioned_by || 'Someone'
+        const content = msg.content || ''
+        const preview = content.length > 50 ? content.substring(0, 50) + '...' : content
+        pushToast({ kind: 'info', message: `${mentionedBy} mentioned you: "${preview}"` })
+        
+        // Show browser notification if permission granted and mode allows
+        if (notificationMode !== 'none') {
+          console.log('[App] Showing mention notification, mode:', notificationMode)
+          notificationManager.showMentionNotification(mentionedBy, content, msg.context_type || 'global')
+        }
+      }
+      
+      if (msg.type === 'reply_notification') {
+        console.log('[App] Received reply_notification:', msg)
+        const repliedBy = msg.replied_by || 'Someone'
+        const content = msg.content || ''
+        const preview = content.length > 50 ? content.substring(0, 50) + '...' : content
+        pushToast({ kind: 'info', message: `${repliedBy} replied to your message: "${preview}"` })
+        
+        // Show browser notification if permission granted and mode allows
+        if (notificationMode !== 'none') {
+          console.log('[App] Showing reply notification, mode:', notificationMode)
+          notificationManager.showReplyNotification(repliedBy, content)
+        }
+      }
+
+      if (msg.type === 'announcement_update') {
+        const enabled = msg.enabled === true
+        const message = typeof msg.message === 'string' ? msg.message : ''
+        const duration_minutes = typeof msg.duration_minutes === 'number' ? msg.duration_minutes : 60
+        const set_at = typeof msg.set_at === 'string' ? msg.set_at : null
+        
+        if (enabled && message && set_at) {
+          // Check if announcement is still valid (within duration)
+          const setTime = new Date(set_at).getTime()
+          const now = Date.now()
+          const durationMs = duration_minutes * 60 * 1000
+          
+          if (now - setTime < durationMs) {
+            setAnnouncement({ enabled, message, duration_minutes, set_at })
+          } else {
+            setAnnouncement(null)
+          }
+        } else {
+          setAnnouncement(null)
+        }
+      }
+
+      if (msg.type === '2fa_setup') {
+        setTwoFASetup({
+          secret: msg.secret,
+          qr_code: msg.qr_code,
+          backup_codes: msg.backup_codes,
+        })
+        pushToast({ kind: 'success', message: '2FA setup started. Scan the QR code with your authenticator app.' })
+      }
+
+      if (msg.type === '2fa_enabled') {
+        setTwoFASetup(null)
+        setTwoFACode('')
+        pushToast({ kind: 'success', message: msg.message || '2FA enabled successfully' })
+        wsClient.requestSync()
+      }
+
+      if (msg.type === '2fa_disabled') {
+        setDisable2FAPassword('')
+        setDisable2FACode('')
+        pushToast({ kind: 'success', message: msg.message || '2FA disabled successfully' })
+        wsClient.requestSync()
+      }
+
+      if (msg.type === 'profile_updated') {
+        pushToast({ kind: 'success', message: 'Profile updated successfully' })
+        wsClient.requestSync()
+      }
+
+      if (msg.type === 'avatar_updated') {
+        pushToast({ kind: 'success', message: 'Avatar updated successfully' })
+        wsClient.requestSync()
+      }
+
+      if (msg.type === 'notification_mode_updated') {
+        pushToast({ kind: 'success', message: 'Notification settings updated' })
+        wsClient.requestSync()
+      }
+
+      if (msg.type === 'user_status_changed') {
+        const { username, user_status } = msg
+        // Update status in init if it's the current user
+        const prev = useAppStore.getState().init
+        if (prev && prev.username === username) {
+          setInit({ ...prev, user_status })
+          setUserStatus(user_status)
+        }
+        // Update status in friends list
+        if (prev?.friends) {
+          const updatedFriends = prev.friends.map((f) =>
+            f.username === username ? { ...f, user_status } : f
+          )
+          setInit({ ...prev, friends: updatedFriends })
+        }
+        // Update status in DMs list
+        if (prev?.dms) {
+          const updatedDms = prev.dms.map((dm) =>
+            dm.username === username ? { ...dm, user_status } : dm
+          )
+          setInit({ ...prev, dms: updatedDms })
+        }
+      }
+
+      if (msg.type === 'email_changed') {
+        const prev = useAppStore.getState().init
+        if (prev) {
+          setInit({ ...prev, email: msg.email, email_verified: msg.email_verified })
+        }
+        setNewEmail('')
+        setEmailPassword('')
+        setEmailChangeStatus({ type: 'success', message: 'Email updated successfully' })
+      }
+
+      if (msg.type === 'username_changed') {
+        // Update auth token and username
+        const newToken = msg.token
+        const renamedUsername = msg.new_username
+        setStoredAuth({ token: newToken, username: renamedUsername })
+        setAuth({ token: newToken, username: renamedUsername })
+        const prev = useAppStore.getState().init
+        if (prev) {
+          setInit({ ...prev, username: renamedUsername })
+        }
+        setNewUsername('')
+        setUsernamePassword('')
+        setUsernameChangeStatus({ type: 'success', message: 'Username changed successfully' })
+      }
+
+      if (msg.type === 'user_renamed') {
+        const { old_username, new_username } = msg
+        const prev = useAppStore.getState().init
+        if (!prev) return
+        // Update friends list and DMs
+        const updateUsername = (list?: any[]) =>
+          list?.map((item: any) => {
+            const updated = { ...item }
+            if (updated.username === old_username) updated.username = new_username
+            if (updated.friend_username === old_username) updated.friend_username = new_username
+            return updated
+          }) || []
+
+        setInit({
+          ...prev,
+          friends: updateUsername(prev.friends),
+          friend_requests_sent: updateUsername(prev.friend_requests_sent),
+          friend_requests_received: updateUsername(prev.friend_requests_received),
+          dms: prev.dms?.map((dm: any) => {
+            const updated = { ...dm }
+            if (updated.username === old_username) {
+              updated.username = new_username
+            }
+            return updated
+          }) || [],
+        })
+      }
+
+      if (msg.type === 'password_reset_requested') {
+        pushToast({ kind: 'success', message: msg.message || 'Password reset email sent' })
+      }
+
+      if (msg.type === 'server_icon_update') {
+        const prev = useAppStore.getState().init
+        if (!prev || !prev.servers) return
+        const updatedServers = prev.servers.map((s) =>
+          s.id === msg.server_id
+            ? { ...s, icon: msg.icon, icon_type: msg.icon_type, icon_data: msg.icon_data }
+            : s
+        )
+        setInit({ ...prev, servers: updatedServers })
+      }
+
+      if (msg.type === 'custom_emoji_added') {
+        setServerEmojis((prev) => ({
+          ...prev,
+          [msg.server_id]: [...(prev[msg.server_id] || []), msg.emoji],
+        }))
+        pushToast({ kind: 'success', message: `Emoji :${msg.emoji.name}: added` })
+      }
+
+      if (msg.type === 'custom_emoji_deleted') {
+        setServerEmojis((prev) => ({
+          ...prev,
+          [msg.server_id]: (prev[msg.server_id] || []).filter((e) => e.emoji_id !== msg.emoji_id),
+        }))
+      }
+
+      if (msg.type === 'server_emojis') {
+        console.log('📦 Received server_emojis:', { server_id: msg.server_id, emoji_count: msg.emojis.length })
+        setServerEmojis((prev) => ({
+          ...prev,
+          [msg.server_id]: msg.emojis,
+        }))
+        
+        // Force re-render of all messages in this server by triggering messages refresh
+        // This ensures emojis render correctly when data arrives after messages
+        setTimeout(() => {
+          const store = useAppStore.getState()
+          Object.keys(store.messagesByContext).forEach((key) => {
+            // Only update contexts that belong to this server
+            if (key.startsWith(`server:${msg.server_id}/`)) {
+              const messages = store.messagesByContext[key]
+              if (messages && messages.length > 0) {
+                console.log(`🔄 Forcing re-render for context ${key} after emojis arrived`)
+                // Extract the context from the key and trigger a re-render
+                const [, contextId] = key.split(':', 2)
+                if (contextId && contextId.includes('/')) {
+                  const [serverId, channelId] = contextId.split('/', 2)
+                  setMessagesForContext(
+                    { kind: 'server', serverId, channelId },
+                    [...messages]
+                  )
+                }
+              }
+            }
+          })
+        }, 0)
+      }
+
+      if (msg.type === 'message_edited') {
+        const { message_id, content, edited_at } = msg
+        // Update the message in all contexts
+        const store = useAppStore.getState()
+        Object.keys(store.messagesByContext).forEach((key) => {
+          const messages = store.messagesByContext[key]
+          const msgIndex = messages.findIndex((m) => m.id === message_id)
+          if (msgIndex !== -1) {
+            const updatedMessages = [...messages]
+            updatedMessages[msgIndex] = {
+              ...updatedMessages[msgIndex],
+              content,
+              edited_at,
+            }
+            useAppStore.setState({
+              messagesByContext: {
+                ...store.messagesByContext,
+                [key]: updatedMessages,
+              },
+            })
+          }
+        })
+      }
+
+      if (msg.type === 'message_deleted') {
+        const { message_id } = msg
+        // Remove the message from all contexts
+        const store = useAppStore.getState()
+        Object.keys(store.messagesByContext).forEach((key) => {
+          const messages = store.messagesByContext[key]
+          const filteredMessages = messages.filter((m) => m.id !== message_id)
+          if (filteredMessages.length !== messages.length) {
+            useAppStore.setState({
+              messagesByContext: {
+                ...store.messagesByContext,
+                [key]: filteredMessages,
+              },
+            })
+          }
+        })
+      }
+
+      if (msg.type === 'reaction_added' || msg.type === 'reaction_removed') {
+        const { message_id, reactions } = msg
+        // Update reactions for the message in all contexts
+        const store = useAppStore.getState()
+        Object.keys(store.messagesByContext).forEach((key) => {
+          const messages = store.messagesByContext[key]
+          const msgIndex = messages.findIndex((m) => m.id === message_id)
+          if (msgIndex !== -1) {
+            const updatedMessages = [...messages]
+            updatedMessages[msgIndex] = {
+              ...updatedMessages[msgIndex],
+              reactions,
+            }
+            useAppStore.setState({
+              messagesByContext: {
+                ...store.messagesByContext,
+                [key]: updatedMessages,
+              },
+            })
+          }
+        })
+      }
+
+      // ── Typing indicators ────────────────────────────────────────────
+      if (msg.type === 'user_typing') {
+        const { username, context, context_id } = msg as any
+        const currentUsername = useAppStore.getState().init?.username
+        if (username === currentUsername) return
+        const ctxKey = context === 'dm' && context_id ? `dm:${context_id}` : context === 'server' && context_id ? `server:${context_id}` : 'global'
+        addTypingUser(ctxKey, {
+          username,
+          avatar: (msg as any).avatar,
+          avatar_type: (msg as any).avatar_type,
+          avatar_data: (msg as any).avatar_data,
+        } as TypingUser)
+        // Auto-remove after 7s in case stop event is missed
+        setTimeout(() => removeTypingUser(ctxKey, username), 7000)
+      }
+
+      if (msg.type === 'user_stopped_typing') {
+        const { username, context, context_id } = msg as any
+        const ctxKey = context === 'dm' && context_id ? `dm:${context_id}` : context === 'server' && context_id ? `server:${context_id}` : 'global'
+        removeTypingUser(ctxKey, username)
+      }
+
+      // ── Delivery state (nonce echo) ───────────────────────────────────
+      if (msg.type === 'message') {
+        const chatMsg = msg as WsChatMessage
+        if (chatMsg.nonce && chatMsg.id && pendingNoncesRef.current.has(chatMsg.nonce)) {
+          pendingNoncesRef.current.delete(chatMsg.nonce)
+          setDeliveredMessageId(chatMsg.id)
+        }
+      }
+
+      // ── Threads ───────────────────────────────────────────────────────
+      if (msg.type === 'thread_created') {
+        const thread: Thread = (msg as any).thread
+        addThread(thread.server_id, thread)
+        // Re-fetch threads list so channel_id is populated
+        if (thread.server_id && wsClient.readyState === WebSocket.OPEN) {
+          wsClient.listThreads({ type: 'list_threads', server_id: thread.server_id })
+        }
+        pushToast({ kind: 'success', message: `Thread created: ${thread.name}` })
+      }
+
+      if (msg.type === 'thread_closed') {
+        const { thread_id, server_id } = msg as any
+        closeThreadInStore(server_id, thread_id)
+        pushToast({ kind: 'info', message: 'Thread closed' })
+        // If currently viewing the closed thread, go back to server channel
+        const currentCtx = useAppStore.getState().selectedContext
+        if (currentCtx.kind === 'thread' && currentCtx.threadId === thread_id) {
+          const server = useAppStore.getState().init?.servers?.find((s) => s.id === server_id)
+          const firstChannel = server?.channels?.[0]
+          if (firstChannel) {
+            selectContext({ kind: 'server', serverId: server_id, channelId: firstChannel.id })
+          }
+        }
+        if (activeThreadId === thread_id) {
+          setActiveThreadId(null)
+          setActiveThread(null)
+        }
+      }
+
+      if (msg.type === 'thread_history') {
+        const { thread_id, thread, messages: threadMessages } = msg as any
+        setActiveThread(thread as Thread)
+        const ctxKey = `thread:${thread.server_id}/${thread_id}`
+        useAppStore.setState((state) => ({
+          messagesByContext: { ...state.messagesByContext, [ctxKey]: threadMessages }
+        }))
+      }
+
+      if (msg.type === 'threads_list') {
+        const { server_id, threads } = msg as any
+        setThreadsForServer(server_id, threads as Thread[])
+      }
+
+      // Thread messages arrive as type 'message' with context='thread', handled by appendMessage
+
+      // ── Pinned messages ───────────────────────────────────────────────
+      if (msg.type === 'pinned_messages') {
+        const { context_type, context_id, messages: pinned } = msg as any
+        const ctxKey = context_type === 'dm' && context_id ? `dm:${context_id}` : context_type === 'server' && context_id ? `server:${context_id}` : 'global'
+        setPinnedMessages(ctxKey, pinned)
+      }
+
+      if (msg.type === 'message_pinned') {
+        const { message_id, pinned_by, context_type, context_id } = msg as any
+        const ctxKey = context_type === 'dm' && context_id ? `dm:${context_id}` : context_type === 'server' && context_id ? `server:${context_id}` : 'global'
+        addPinnedMessage(ctxKey, message_id, pinned_by, new Date().toISOString())
+        pushToast({ kind: 'success', message: `📌 Message pinned` })
+        // Refresh pinned panel if it's open
+        if (context_type && context_id) {
+          wsClient.getPinnedMessages({ type: 'get_pinned_messages', context_type, context_id })
+        }
+      }
+
+      if (msg.type === 'message_unpinned') {
+        const { message_id, context_type, context_id } = msg as any
+        const ctxKey = context_type === 'dm' && context_id ? `dm:${context_id}` : context_type === 'server' && context_id ? `server:${context_id}` : 'global'
+        removePinnedMessage(ctxKey, message_id)
+        pushToast({ kind: 'info', message: '📌 Message unpinned' })
+        // Refresh pinned panel if it's open
+        if (context_type && context_id) {
+          wsClient.getPinnedMessages({ type: 'get_pinned_messages', context_type, context_id })
+        }
+      }
+
+      // Voice/Video chat handlers
+      if (msg.type === 'voice_channel_joined') {
+        const livekitToken: string | null = (msg as any).livekit_token ?? null
+        const livekitUrl: string | null   = (msg as any).livekit_url   ?? null
+        const participants: string[]      = (msg as any).participants   ?? []
+        const serverId: string            = (msg as any).server_id      ?? ''
+        const channelId: string           = (msg as any).channel_id     ?? ''
+
+        if (livekitToken && livekitUrl && voiceChat) {
+          // ── SFU path — LiveKit is configured on this server ──
+          // Cancel the P2P pending join so VoiceChat.ts does not create peer connections.
+          voiceChat.cancelPendingJoin?.()
+
+          const sfu = new VoiceChatSFU(wsClient, init?.username ?? '')
+          sfu.setOnStateChange(() => {
+            setIsVoiceMuted(sfu.getIsMuted())
+            setIsVideoEnabled(sfu.getIsVideoEnabled())
+            setIsScreenSharing(sfu.getIsScreenSharing())
+            setIsInVoice(sfu.getIsInVoice())
+            setIsVoiceConnecting(sfu.getIsConnecting())
+            setIsE2EEActive(sfu.getIsE2EEActive())
+          })
+          sfu.setOnRemoteStreamChange((peer, stream) => {
+            setRemoteStreams((prev) => {
+              const m = new Map(prev)
+              if (stream) m.set(peer, stream)
+              else m.delete(peer)
+              return m
+            })
+          })
+          sfu.setOnParticipantsChange(setVoiceParticipants)
+
+          // Transfer device preferences from the P2P instance
+          const devices = voiceChat.getSelectedDevices?.() ?? {}
+          if (devices.microphone) sfu.setMicrophone(devices.microphone)
+          if (devices.speaker)    sfu.setSpeaker(devices.speaker)
+          if (devices.camera)     sfu.setCamera(devices.camera)
+          if (devices.screenShareResolution && devices.screenShareFramerate) {
+            sfu.setScreenShareSettings(devices.screenShareResolution, devices.screenShareFramerate)
+          }
+
+          setVoiceChatSFU(sfu)
+          // Connect to LiveKit (acquires mic, publishes, subscribes)
+          try {
+            await sfu.connect(livekitUrl, livekitToken, serverId, channelId, voiceChat?.getIsMuted?.() ?? false)
+          } catch (sfuErr) {
+            console.error('[SFU] Failed to connect to LiveKit:', sfuErr)
+            pushToast({ kind: 'error', message: 'Failed to connect to voice server' })
+          }
+        } else if (voiceChat) {
+          // ── P2P fallback — LiveKit not configured (or DM call) ──
+          voiceChat.handleVoiceJoined(participants)
+        }
+      }
+
+      if (msg.type === 'voice_state_update') {
+        console.log('Received voice_state_update:', msg)
+        // Update voice participants when someone joins/leaves
+        if (msg.voice_members && Array.isArray(msg.voice_members) && voiceChat) {
+          const participantUsernames = msg.voice_members.map((m: any) => m.username)
+          const currentChannel = voiceChat.getCurrentChannel()
+          
+          // Check if message matches current or pending channel
+          const matchesCurrentChannel =
+            !!currentChannel?.server &&
+            !!currentChannel?.channel &&
+            msg.server_id === currentChannel.server &&
+            msg.channel_id === currentChannel.channel
+          
+          // Also check pending channel (when first joining)
+          const pendingChannel = voiceChat.getPendingChannel?.()
+          const matchesPendingChannel = 
+            pendingChannel &&
+            !!pendingChannel?.server &&
+            !!pendingChannel?.channel &&
+            msg.server_id === pendingChannel.server &&
+            msg.channel_id === pendingChannel.channel
+
+          if (matchesCurrentChannel || matchesPendingChannel) {
+            setVoiceParticipants(participantUsernames)
+            const isUserInVoice = participantUsernames.includes(init?.username)
+            setIsInVoice(isUserInVoice)
+            // Only trigger P2P peer connection setup when SFU is NOT active;
+            // in SFU mode participant streams arrive via LiveKit RoomEvents.
+            if (!voiceChatSFU) {
+              voiceChat.handleVoiceJoined(participantUsernames)
+            }
+            console.log('Updated voice participants:', participantUsernames)
+          }
+        }
+      }
+
+      if (msg.type === 'direct_call_started' && voiceChat) {
+        voiceChat.handleVoiceJoined([msg.caller])
+      }
+
+      // ── Direct call signalling ───────────────────────────────────
+      if (msg.type === 'incoming_voice_call') {
+        const caller = (msg as any).from as string
+        setIncomingCall({ from: caller })
+        notificationManager.showCallNotification(caller, 'voice')
+      }
+
+      if (msg.type === 'voice_call_accepted' && voiceChat) {
+        const callee = (msg as any).from as string
+        setIsInVoice(true)
+        pushToast({ kind: 'success', message: `${callee} accepted your call` })
+        // Caller already has shouldInitiateOffers=true; passing both participants
+        // triggers the WebRTC offer flow in handleVoiceJoined.
+        await voiceChat.handleVoiceJoined([init?.username ?? '', callee])
+      }
+
+      if (msg.type === 'voice_call_rejected') {
+        const callee = (msg as any).from as string
+        pushToast({ kind: 'error', message: `${callee} declined your call` })
+      }
+
+      if (msg.type === 'user_joined_voice' && voiceChat) {
+        if (!voiceChatSFU) voiceChat.handleUserJoinedVoice(msg.username)
+      }
+
+      if (msg.type === 'user_left_voice' && voiceChat) {
+        if (!voiceChatSFU) voiceChat.handleUserLeftVoice(msg.username)
+        else voiceChatSFU.handleUserLeftVoice(msg.username)
+      }
+
+      if (msg.type === 'webrtc_offer' && voiceChat && !voiceChatSFU) {
+        const fromUsername = (msg as any).from_username ?? (msg as any).from
+        if (fromUsername) {
+          voiceChat.handleWebRTCOffer(fromUsername, msg.offer)
+        }
+      }
+
+      if (msg.type === 'webrtc_answer' && voiceChat && !voiceChatSFU) {
+        const fromUsername = (msg as any).from_username ?? (msg as any).from
+        if (fromUsername) {
+          voiceChat.handleWebRTCAnswer(fromUsername, msg.answer)
+        }
+      }
+
+      if (msg.type === 'webrtc_ice_candidate' && voiceChat && !voiceChatSFU) {
+        const fromUsername = (msg as any).from_username ?? (msg as any).from
+        if (fromUsername) {
+          voiceChat.handleICECandidate(fromUsername, msg.candidate)
+        }
+      }
+      
+      // Soundboard handler
+      if (msg.type === 'soundboard_play' && voiceChat) {
+        const soundId = (msg as any).sound_id
+        const soundName = (msg as any).sound_name || 'Unknown'
+        const playingUsername = (msg as any).username
+        
+        // Don't play if it's the current user (already played locally)
+        if (playingUsername && playingUsername === init?.username) {
+          return
+        }
+        
+        // Play the sound remotely (works for both P2P and SFU modes)
+        const activeRemoteVC = voiceChatSFU ?? voiceChat
+        if (soundId && activeRemoteVC) {
+          activeRemoteVC.playRemoteSoundboard(soundId).catch((err: any) => {
+            console.error('Failed to play remote soundboard sound:', err)
+          })
+          
+          // Show toast notification
+          pushToast({ 
+            kind: 'info', 
+            message: `🔊 ${playingUsername} played: ${soundName}` 
+          })
+        }
+      }
+    })
+
+    return () => unsubscribe()
+  }, [])
+
+  // Initialize keybind manager for voice chat controls
+  useEffect(() => {
+    keybindManager.init()
+
+    // Register keybind callbacks
+    keybindManager.on('push_to_talk', () => {
+      const avc = voiceChatSFU ?? voiceChat
+      if (avc && avc.getIsInVoice()) {
+        avc.toggleMute()
+      }
+    })
+
+    keybindManager.on('toggle_mute', () => {
+      const avc = voiceChatSFU ?? voiceChat
+      if (avc && avc.getIsInVoice()) {
+        avc.toggleMute()
+      }
+    })
+
+    keybindManager.on('toggle_deafen', () => {
+      // TODO: Implement deafen functionality in VoiceChat.ts
+      console.log('Toggle deafen not yet implemented')
+    })
+
+    keybindManager.on('toggle_video', () => {
+      const avc = voiceChatSFU ?? voiceChat
+      if (avc && avc.getIsInVoice()) {
+        avc.toggleVideo()
+      }
+    })
+
+    keybindManager.on('toggle_screen_share', () => {
+      const avc = voiceChatSFU ?? voiceChat
+      if (avc && avc.getIsInVoice()) {
+        avc.toggleScreenShare()
+      }
+    })
+
+    keybindManager.on('answer_end_call', () => {
+      // TODO: Implement answer/end call functionality
+      console.log('Answer/end call not yet implemented')
+    })
+
+    // Cleanup on unmount
+    return () => {
+      keybindManager.destroy()
+    }
+  }, [voiceChat])
+
+  // Populate account settings when init data is available
+  useEffect(() => {
+    if (init) {
+      setProfileBio(init.bio || '')
+      setProfileStatus(init.status_message || '')
+      setNotificationMode(init.notification_mode as 'all' | 'mentions' | 'none' || 'all')
+    }
+  }, [init])
+
+  // Load server emojis when selected server changes and when component mounts
+  useEffect(() => {
+    if (selectedContext.kind === 'server' && wsClient.readyState === WebSocket.OPEN) {
+      // Always load emojis when context changes to ensure we have fresh data
+      console.log('🎯 Loading emojis for server:', selectedContext.serverId)
+      loadServerEmojis(selectedContext.serverId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedContext, wsClient.readyState])
+
+  // Debug: Log whenever serverEmojis changes
+  useEffect(() => {
+    console.log('🔄 serverEmojis state updated:', Object.keys(serverEmojis).map(sid => ({ serverId: sid, count: serverEmojis[sid].length })))
+  }, [serverEmojis])
+
+  // Keep emojis for all visible servers in sync
+  useEffect(() => {
+    if (wsClient.readyState === WebSocket.OPEN && init?.servers) {
+      // Periodically ensure all server emojis are loaded
+      const serverIds = init.servers.map(s => s.id)
+      serverIds.forEach(serverId => {
+        // Only load if we don't have emojis for this server yet
+        if (!serverEmojis[serverId]) {
+          loadServerEmojis(serverId)
+        }
+      })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [init?.servers, wsClient.readyState])
+
+  // Debug logging for emoji state changes
+  useEffect(() => {
+    console.log('serverEmojis updated:', Object.keys(serverEmojis).map(key => ({ [key]: serverEmojis[key]?.length || 0 })))
+  }, [serverEmojis])
+
+  // Load threads when the selected server changes
+  useEffect(() => {
+    if (selectedServerId && wsClient.readyState === WebSocket.OPEN) {
+      wsClient.listThreads({ type: 'list_threads', server_id: selectedServerId })
+    }
+  }, [selectedServerId])
+
+  // Load server roles when server settings modal is opened
+  useEffect(() => {
+    if (isServerSettingsOpen && selectedServerId && wsClient.readyState === WebSocket.OPEN) {
+      loadServerRoles(selectedServerId)
+      loadServerBans(selectedServerId)
+      loadServerMembers(selectedServerId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isServerSettingsOpen, selectedServerId])
+
+  // Load member roles for the selected server
+  useEffect(() => {
+    if (selectedContext.kind === 'server' && wsClient.readyState === WebSocket.OPEN) {
+      const serverId = selectedContext.serverId
+      const members = serverMembers[serverId]
+      
+      if (members && members.length > 0) {
+        // Load roles for all members
+        members.forEach((member: any) => {
+          loadUserRoles(serverId, member.username)
+        })
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedContext, serverMembers])
+
+  // Helper function to get username style based on role color
+  const getUsernameStyle = (message: any) => {
+    if (message.role_color) {
+      return { color: message.role_color }
+    }
+    return {}
+  }
+
+  // Helper function to get the highest role color for a member
+  const getMemberRoleColor = (serverId: string, username: string) => {
+    const memberKey = `${serverId}:${username}`
+    const userRoles = memberRoles[memberKey] || []
+    
+    // Return the color of the first role (highest priority)
+    if (userRoles.length > 0 && userRoles[0].color) {
+      return userRoles[0].color
+    }
+    
+    return null
+  }
+
+  // Helper function to organize members by role
+  const organizeMembersByRole = (serverId: string, members: any[]) => {
+    const roleGroups: Record<string, { role: any | null; members: any[]; position: number }> = {}
+    
+    members.forEach((member) => {
+      const memberKey = `${serverId}:${member.username}`
+      const userRoles = memberRoles[memberKey] || []
+      
+      // Find the highest-position hoisted role
+      const hoistedRole = userRoles.find((r: any) => r.hoist) ?? null
+      const groupKey = hoistedRole ? hoistedRole.name : 'Online'
+      
+      if (!roleGroups[groupKey]) {
+        roleGroups[groupKey] = {
+          role: hoistedRole,
+          members: [],
+          // Use role position for sorting; "Online" (no hoist) group at bottom (position -1)
+          position: hoistedRole ? (hoistedRole.position ?? 0) : -1,
+        }
+      }
+      
+      roleGroups[groupKey].members.push(member)
+    })
+    
+    // Sort members within each role group alphabetically
+    Object.values(roleGroups).forEach((group) => {
+      group.members.sort((a: any, b: any) => a.username.localeCompare(b.username))
+    })
+    
+    // Convert to array and sort by role position DESCENDING (highest position = top)
+    const sortedGroups = Object.entries(roleGroups)
+      .map(([roleName, group]) => ({
+        roleName,
+        ...group
+      }))
+      .sort((a, b) => b.position - a.position)
+    
+    return sortedGroups
+  }
+
+  const selectedTitle =
+    selectedContext.kind === 'global'
+      ? 'Global'
+      : selectedContext.kind === 'dm'
+        ? selectedContext.username
+        : selectedContext.kind === 'thread'
+          ? `🧵 ${selectedContext.threadName || activeThread?.name || selectedContext.threadId}`
+          : (() => {
+              const server = init?.servers?.find((s) => s.id === selectedContext.serverId)
+              const channel = server?.channels?.find((c) => c.id === selectedContext.channelId)
+              return server && channel ? `${server.name} / ${channel.name}` : 'Channel'
+            })()
+
+  const canSend = wsClient.readyState === WebSocket.OPEN && (draft.trim().length > 0 || selectedFiles.length > 0)
+
+  const send = async () => {
+    const content = draft.trim()
+    if (!content && selectedFiles.length === 0) return
+
+    // Extract mentions from the message
+    const mentions = extractMentions(content)
+    
+    // Get reply_to ID if replying
+    const reply_to = replyingTo?.id || undefined
+
+    // Stop typing indicator
+    if (isTypingRef.current) {
+      isTypingRef.current = false
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current)
+      let context = 'global'
+      let context_id: string | null = null
+      if (selectedContext.kind === 'server') { context = 'server'; context_id = `${selectedContext.serverId}/${selectedContext.channelId}` }
+      else if (selectedContext.kind === 'dm') { context = 'dm'; context_id = selectedContext.dmId }
+      try { wsClient.sendTypingStop({ type: 'typing_stop', context, context_id }) } catch { /* ignore */ }
+    }
+
+    // Generate nonce for delivery tracking
+    const nonce = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`
+
+    // If there are files, send message first, then upload files
+    if (selectedFiles.length > 0) {
+      await sendMessageWithFiles(content || '', mentions, reply_to)
+    } else {
+      // Just send text message
+      if (selectedContext.kind === 'thread') {
+        // Send as thread message
+        wsClient.sendThreadMessage({ type: 'thread_message', thread_id: selectedContext.threadId, content, nonce })
+      } else if (selectedContext.kind === 'server') {
+        wsClient.sendMessage({ type: 'message', content, context: 'server', context_id: `${selectedContext.serverId}/${selectedContext.channelId}`, mentions, role_mentions: pendingRoleMentions, reply_to, nonce })
+      } else if (selectedContext.kind === 'dm') {
+        wsClient.sendMessage({ type: 'message', content, context: 'dm', context_id: selectedContext.dmId, mentions, reply_to, nonce })
+      } else {
+        wsClient.sendMessage({ type: 'message', content, context: 'global', context_id: null, mentions, reply_to, nonce })
+      }
+      pendingNoncesRef.current.add(nonce)
+      setDraft('')
+      setPendingRoleMentions([])
+      setReplyingTo(null)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }
+
+  const sendMessageWithFiles = async (content: string, mentions: string[] = [], reply_to?: number) => {
+    setIsUploading(true)
+    try {
+      // Create a one-time listener for the message response
+      let messageId: number | null = null
+      
+      const handleMessageResponse = (msg: WsMessage) => {
+        if (msg.type === 'message' && msg.id) {
+          messageId = msg.id
+        }
+      }
+      
+      const unsubscribe = wsClient.onMessage(handleMessageResponse)
+      
+      // Send the message first
+      if (selectedContext.kind === 'server') {
+        wsClient.sendMessage({ 
+          type: 'message', 
+          content, 
+          context: 'server', 
+          context_id: `${selectedContext.serverId}/${selectedContext.channelId}`,
+          mentions,
+          reply_to
+        })
+      } else if (selectedContext.kind === 'dm') {
+        wsClient.sendMessage({ 
+          type: 'message', 
+          content, 
+          context: 'dm', 
+          context_id: selectedContext.dmId,
+          mentions,
+          reply_to
+        })
+      } else {
+        wsClient.sendMessage({ 
+          type: 'message', 
+          content, 
+          context: 'global', 
+          context_id: null,
+          mentions,
+          reply_to
+        })
+      }
+
+      // Wait for message ID to be assigned
+      let attempts = 0
+      while (messageId === null && attempts < 20) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+        attempts++
+      }
+      
+      unsubscribe()
+      
+      if (messageId === null) {
+        pushToast({ kind: 'error', message: 'Failed to send message' })
+        setIsUploading(false)
+        return
+      }
+
+      // Upload each file
+      const token = authToken || getStoredAuth().token
+      if (!token) {
+        pushToast({ kind: 'error', message: 'Authentication required' })
+        setIsUploading(false)
+        return
+      }
+
+      const uploadedAttachments: Attachment[] = []
+
+      for (const file of selectedFiles) {
+        const formData = new FormData()
+        formData.append('file', file)
+        formData.append('token', token)
+        formData.append('message_id', String(messageId))
+
+        const response = await fetch('/api/upload-attachment', {
+          method: 'POST',
+          body: formData,
+        })
+
+        if (!response.ok) {
+          const data = await response.json()
+          pushToast({ kind: 'error', message: data.error || `Failed to upload ${file.name}` })
+        } else {
+          const data = await response.json()
+          if (data.success && data.attachment) {
+            uploadedAttachments.push(data.attachment)
+          }
+        }
+      }
+
+      // Update the message in local state with the attachments
+      if (uploadedAttachments.length > 0) {
+        useAppStore.getState().updateMessage(messageId, { attachments: uploadedAttachments })
+      }
+
+      // Clear files, draft, and reply
+      setSelectedFiles([])
+      setDraft('')
+      setReplyingTo(null)
+      pushToast({ kind: 'success', message: 'Message and files sent successfully' })
+    } catch (error) {
+      pushToast({ kind: 'error', message: 'Failed to upload files' })
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  // handleFileSelect, removeFile, handleDragOver, handleDragLeave, handleDrop,
+  // handleDroppedFiles, and uploadAndEmbedFiles are provided by useFileUpload() above
+
+  const contextServerId = selectedContext.kind === 'server' ? selectedContext.serverId : null
+
+  const createServer = () => {
+    const name = serverName.trim()
+    if (!name) return
+    wsClient.createServer({ type: 'create_server', name })
+    setServerName('')
+  }
+
+  const createChannel = () => {
+    const name = channelName.trim()
+    if (!name || !contextServerId) return
+    if (channelType === 'voice') {
+      wsClient.createVoiceChannel({ type: 'create_voice_channel', server_id: contextServerId, name })
+    } else {
+      wsClient.createChannel({
+        type: 'create_channel',
+        server_id: contextServerId,
+        name,
+        channel_type: 'text',
+        category_id: selectedCategoryId || undefined,
+      })
+    }
+    setChannelName('')
+  }
+
+  const startDm = () => {
+    const u = dmUsername.trim()
+    if (!u) return
+    wsClient.startDm({ type: 'start_dm', username: u })
+    setDmUsername('')
+  }
+
+  // loadInviteUsage is provided by useInviteUsage() above
+
+  const loadAdminSettings = () => {
+    if (wsClient.readyState !== WebSocket.OPEN) return
+    wsClient.send({ type: 'get_admin_settings' })
+  }
+
+  const saveAdminSettings = () => {
+    if (wsClient.readyState !== WebSocket.OPEN) return
+    setIsSavingSettings(true)
+    wsClient.send({ type: 'save_admin_settings', settings: adminSettings })
+  }
+
+  const uploadServerIcon = async (serverId: string, file: File) => {
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const iconData = e.target?.result as string
+      wsClient.send({
+        type: 'set_server_icon',
+        server_id: serverId,
+        icon_type: 'image',
+        icon_data: iconData,
+      })
+      pushToast({ kind: 'success', message: 'Server icon updating...' })
+    }
+    reader.onerror = () => {
+      pushToast({ kind: 'error', message: 'Failed to read image file' })
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const setServerIconEmoji = (serverId: string, emoji: string) => {
+    wsClient.send({
+      type: 'set_server_icon',
+      server_id: serverId,
+      icon_type: 'emoji',
+      icon: emoji,
+    })
+    pushToast({ kind: 'success', message: 'Server icon updated' })
+  }
+
+  const uploadServerEmoji = async (serverId: string, name: string, file: File) => {
+    if (!file || !name) return
+
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const imageData = e.target?.result as string
+      wsClient.send({
+        type: 'upload_custom_emoji',
+        server_id: serverId,
+        name: name.trim(),
+        image_data: imageData,
+      })
+      setEmojiFile(null)
+      setEmojiName('')
+      pushToast({ kind: 'success', message: 'Uploading emoji...' })
+    }
+    reader.onerror = () => {
+      pushToast({ kind: 'error', message: 'Failed to read emoji file' })
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const deleteServerEmoji = (emojiId: string) => {
+    wsClient.send({
+      type: 'delete_custom_emoji',
+      emoji_id: emojiId,
+    })
+  }
+
+  const loadServerEmojis = (serverId: string) => {
+    console.log('🎨 loadServerEmojis requested:', { serverId, wsReady: wsClient.readyState === WebSocket.OPEN })
+    if (wsClient.readyState === WebSocket.OPEN) {
+      wsClient.send({
+        type: 'get_server_emojis',
+        server_id: serverId,
+      })
+      console.log('🎨 loadServerEmojis request sent to server')
+    } else {
+      console.warn('🎨 loadServerEmojis skipped: WebSocket not ready', wsClient.readyState)
+    }
+  }
+
+  const insertEmoji = (emoji: string) => {
+    setDraft((prev) => prev + emoji)
+    setIsEmojiPickerOpen(false)
+  }
+
+  // Role management functions
+  const loadServerRoles = (serverId: string) => {
+    wsClient.send({
+      type: 'get_server_roles',
+      server_id: serverId,
+    })
+  }
+
+  const createRole = () => {
+    if (!selectedServerId || !roleName.trim()) return
+    wsClient.send({
+      type: 'create_role',
+      server_id: selectedServerId,
+      name: roleName.trim(),
+      color: roleColor,
+      permissions: rolePermissions,
+      hoist: roleHoist,
+    })
+    setIsCreateRoleOpen(false)
+    setRoleName('')
+    setRoleColor('#3B82F6')
+    setRolePermissions([])
+    setRoleHoist(false)
+  }
+
+  const updateRole = () => {
+    if (!selectedServerId || !selectedRole || !roleName.trim()) return
+    wsClient.send({
+      type: 'update_role',
+      server_id: selectedServerId,
+      role_id: selectedRole,
+      name: roleName.trim(),
+      color: roleColor,
+      permissions: rolePermissions,
+      hoist: roleHoist,
+    })
+    setIsCreateRoleOpen(false)
+    setSelectedRole(null)
+    setRoleName('')
+    setRoleColor('#3B82F6')
+    setRolePermissions([])
+    setRoleHoist(false)
+  }
+
+  const deleteRole = (roleId: string) => {
+    if (!selectedServerId || !confirm('Are you sure you want to delete this role?')) return
+    wsClient.send({
+      type: 'delete_role',
+      server_id: selectedServerId,
+      role_id: roleId,
+    })
+  }
+
+  const openEditRole = (role: any) => {
+    setSelectedRole(role.id)
+    setRoleName(role.name)
+    setRoleColor(role.color || '#3B82F6')
+    // Convert permissions dict {key: true} → string[] for checkbox UI
+    const perms = role.permissions || {}
+    if (Array.isArray(perms)) {
+      setRolePermissions(perms)
+    } else {
+      setRolePermissions(Object.keys(perms).filter((k) => perms[k] === true))
+    }
+    setRoleHoist(role.hoist || false)
+    setIsCreateRoleOpen(true)
+  }
+
+  const togglePermission = (permission: string) => {
+    setRolePermissions((prev) =>
+      prev.includes(permission)
+        ? prev.filter((p) => p !== permission)
+        : [...prev, permission]
+    )
+  }
+
+  const assignRoleToMember = (username: string, roleId: string) => {
+    if (!selectedServerId) return
+    wsClient.send({
+      type: 'assign_role',
+      server_id: selectedServerId,
+      username,
+      role_id: roleId,
+    })
+    // Refresh user roles
+    loadUserRoles(selectedServerId, username)
+  }
+
+  const removeRoleFromMember = (username: string, roleId: string) => {
+    if (!selectedServerId) return
+    wsClient.send({
+      type: 'remove_role_from_user',
+      server_id: selectedServerId,
+      username,
+      role_id: roleId,
+    })
+    // Refresh user roles
+    loadUserRoles(selectedServerId, username)
+  }
+
+  const loadUserRoles = (serverId: string, username: string) => {
+    wsClient.send({
+      type: 'get_user_roles',
+      server_id: serverId,
+      username,
+    })
+  }
+
+  const loadServerMembers = (serverId: string) => {
+    wsClient.send({
+      type: 'get_server_members',
+      server_id: serverId,
+    })
+  }
+
+  // Ban management functions
+  const loadServerBans = (serverId: string) => {
+    wsClient.send({
+      type: 'get_server_bans',
+      server_id: serverId,
+    })
+  }
+
+  const banMember = () => {
+    if (!selectedServerId || !banUsername.trim()) return
+    wsClient.send({
+      type: 'ban_member',
+      server_id: selectedServerId,
+      username: banUsername.trim(),
+      reason: banReason.trim() || undefined,
+    })
+    setBanUsername('')
+    setBanReason('')
+  }
+
+  const unbanMember = (username: string) => {
+    if (!selectedServerId) return
+    wsClient.send({
+      type: 'unban_member',
+      server_id: selectedServerId,
+      username,
+    })
+  }
+
+  // Kick management
+  const kickMember = (targetUsername: string, reason: string = '') => {
+    if (!selectedServerId) return
+    wsClient.send({
+      type: 'kick_member',
+      server_id: selectedServerId,
+      username: targetUsername,
+      reason: reason.trim() || undefined,
+    })
+    setKickTargetUsername(null)
+    setKickReason('')
+  }
+
+  // Mention handling functions
+  const extractMentions = (text: string): string[] => {
+    const mentionRegex = /@(\w+)/g
+    const mentions: string[] = []
+    let match
+    while ((match = mentionRegex.exec(text)) !== null) {
+      mentions.push(match[1])
+    }
+    return mentions
+  }
+
+  const handleDraftChange = (newDraft: string) => {
+    setDraft(newDraft)
+
+    // ── Slash command picker ──────────────────────────────────────────
+    if (newDraft.startsWith('/') && selectedContext.kind === 'server') {
+      setShowSlashPicker(true)
+      setSlashFilter(newDraft.slice(1))
+    } else {
+      setShowSlashPicker(false)
+    }
+
+    // ── Typing indicator ──────────────────────────────────────────────
+    if (wsClient.readyState === WebSocket.OPEN) {
+      let context = 'global'
+      let context_id: string | null = null
+      if (selectedContext.kind === 'server') {
+        context = 'server'
+        context_id = `${selectedContext.serverId}/${selectedContext.channelId}`
+      } else if (selectedContext.kind === 'dm') {
+        context = 'dm'
+        context_id = selectedContext.dmId
+      }
+
+      if (newDraft.trim()) {
+        if (!isTypingRef.current) {
+          isTypingRef.current = true
+          try { wsClient.sendTypingStart({ type: 'typing_start', context, context_id }) } catch { /* ignore */ }
+        }
+        // Reset the stop timer
+        if (typingTimerRef.current) clearTimeout(typingTimerRef.current)
+        typingTimerRef.current = setTimeout(() => {
+          isTypingRef.current = false
+          try { wsClient.sendTypingStop({ type: 'typing_stop', context, context_id }) } catch { /* ignore */ }
+        }, 4000)
+      } else {
+        if (isTypingRef.current) {
+          isTypingRef.current = false
+          if (typingTimerRef.current) clearTimeout(typingTimerRef.current)
+          try { wsClient.sendTypingStop({ type: 'typing_stop', context, context_id }) } catch { /* ignore */ }
+        }
+      }
+    }
+
+    // ── Channel mention autocomplete ('#') ────────────────────────────
+    const cursorPos = newDraft.length
+    const textBeforeCursor = newDraft.slice(0, cursorPos)
+    const hashMatch = textBeforeCursor.match(/#([\w-]*)$/)
+    if (hashMatch && selectedContext.kind === 'server') {
+      setShowChannelMentionAutocomplete(true)
+      setChannelMentionSearch(hashMatch[1])
+      setChannelMentionStartPos(hashMatch.index!)
+      setSelectedChannelMentionIndex(0)
+    } else {
+      setShowChannelMentionAutocomplete(false)
+      setChannelMentionSearch('')
+    }
+
+    // ── User/role mention autocomplete ('@') ──────────────────────────
+    const atMatch = textBeforeCursor.match(/@([\w]*)$/)
+    if (atMatch && selectedContext.kind === 'server') {
+      setShowMentionAutocomplete(true)
+      setMentionSearch(atMatch[1])
+      _setMentionStartPos(atMatch.index!)
+      setSelectedMentionIndex(0)
+    } else {
+      setShowMentionAutocomplete(false)
+      setMentionSearch('')
+    }
+  }
+
+  const insertMention = (username: string) => {
+    const before = draft.slice(0, mentionStartPos)
+    const after = draft.slice(mentionStartPos + mentionSearch.length + 1)
+    setDraft(`${before}@${username} ${after}`)
+    setShowMentionAutocomplete(false)
+    setMentionSearch('')
+  }
+
+  const insertChannelMention = (channelName: string, channelId: string) => {
+    const before = draft.slice(0, channelMentionStartPos)
+    const after = draft.slice(channelMentionStartPos + channelMentionSearch.length + 1)
+    setDraft(`${before}#[${channelName}|${channelId}] ${after}`)
+    setShowChannelMentionAutocomplete(false)
+    setChannelMentionSearch('')
+  }
+
+  const getFilteredChannelMentions = () => {
+    if (selectedContext.kind !== 'server') return []
+    const server = init?.servers?.find((s) => s.id === selectedContext.serverId)
+    if (!server?.channels) return []
+    const textChannels = server.channels.filter((ch) => (ch.type ?? 'text') === 'text')
+    if (!channelMentionSearch) return textChannels.slice(0, 10)
+    return textChannels.filter((ch) => ch.name.toLowerCase().includes(channelMentionSearch.toLowerCase())).slice(0, 10)
+  }
+
+  const getFilteredMentionUsers = () => {
+    if (!selectedContext || selectedContext.kind !== 'server') return []
+    const members = serverMembers[selectedContext.serverId] || []
+    const roles = serverRoles[selectedContext.serverId] || []
+    
+    const matchedMembers = !mentionSearch
+      ? members.slice(0, 8)
+      : members.filter((m: ServerMember) =>
+          m.username.toLowerCase().startsWith(mentionSearch.toLowerCase())
+        ).slice(0, 8)
+    
+    const matchedRoles = !mentionSearch
+      ? roles.slice(0, 5)
+      : roles.filter((r: any) => r.name.toLowerCase().startsWith(mentionSearch.toLowerCase())).slice(0, 5)
+    
+    // Roles tagged with type 'role' for the dropdown to differentiate
+    return [
+      ...matchedRoles.map((r: any) => ({ type: 'role' as const, id: r.id, username: r.name, color: r.color })),
+      ...matchedMembers.map((m: ServerMember) => ({ type: 'user' as const, id: m.username, username: m.username, color: undefined })),
+    ]
+  }
+
+  const insertRoleMention = (roleId: string, roleName: string) => {
+    const before = draft.slice(0, mentionStartPos)
+    const after = draft.slice(mentionStartPos + mentionSearch.length + 1)
+    setDraft(`${before}@${roleName} ${after}`)
+    setShowMentionAutocomplete(false)
+    setMentionSearch('')
+    setPendingRoleMentions((prev) => prev.includes(roleId) ? prev : [...prev, roleId])
+  }
+
+  const renderMessageContent = (content: string, messageContext?: string, messageContextId?: string | null): React.ReactNode => (
+    <MessageRenderer
+      content={content}
+      messageContext={messageContext}
+      messageContextId={messageContextId}
+      serverEmojis={serverEmojis}
+      currentUsername={init?.username}
+      servers={init?.servers}
+      onChannelClick={(sId, chId) => {
+        const ctx: ChatContext = { kind: 'server', serverId: sId, channelId: chId }
+        selectContext(ctx)
+        requestHistoryFor(ctx)
+      }}
+    />
+  )
+
+  const handleMentionKeyDown = (e: React.KeyboardEvent) => {
+    // Handle channel mention autocomplete first
+    if (showChannelMentionAutocomplete) {
+      const filteredChannels = getFilteredChannelMentions()
+      if (filteredChannels.length > 0) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault()
+          setSelectedChannelMentionIndex((prev) => prev < filteredChannels.length - 1 ? prev + 1 : 0)
+          return true
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault()
+          setSelectedChannelMentionIndex((prev) => prev > 0 ? prev - 1 : filteredChannels.length - 1)
+          return true
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          e.preventDefault()
+          const ch = filteredChannels[selectedChannelMentionIndex]
+          insertChannelMention(ch.name, ch.id)
+          return true
+        }
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setShowChannelMentionAutocomplete(false)
+        return true
+      }
+    }
+
+    if (!showMentionAutocomplete) return false
+    
+    const filteredUsers = getFilteredMentionUsers()
+    if (filteredUsers.length === 0) return false
+    
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setSelectedMentionIndex((prev) => 
+        prev < filteredUsers.length - 1 ? prev + 1 : 0
+      )
+      return true
+    }
+    
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setSelectedMentionIndex((prev) => 
+        prev > 0 ? prev - 1 : filteredUsers.length - 1
+      )
+      return true
+    }
+    
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault()
+      const item = filteredUsers[selectedMentionIndex]
+      if (item.type === 'role') {
+        insertRoleMention(item.id, item.username)
+      } else {
+        insertMention(item.username)
+      }
+      return true
+    }
+    
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      setShowMentionAutocomplete(false)
+      return true
+    }
+    
+    return false
+  }
+
+  // Message edit/delete/reaction functions
+  const canEditMessage = (msg: WsChatMessage): boolean => {
+    if (!init) return false
+    // Users can edit their own messages
+    if (msg.username === init.username) return true
+    // Server admins can edit any message in their servers
+    if (selectedServerId) {
+      const server = init.servers?.find(s => s.id === selectedServerId)
+      if (server?.owner === init.username) return true
+      if (server?.permissions?.can_edit_messages) return true
+    }
+    return false
+  }
+
+  const canDeleteMessage = (msg: WsChatMessage): boolean => {
+    if (!init) return false
+    // Users can delete their own messages
+    if (msg.username === init.username) return true
+    // Server admins can delete any message in their servers
+    if (selectedServerId) {
+      const server = init.servers?.find(s => s.id === selectedServerId)
+      if (server?.owner === init.username) return true
+      if (server?.permissions?.can_delete_messages) return true
+    }
+    return false
+  }
+
+  const startEditMessage = (msg: WsChatMessage) => {
+    if (!msg.id || !canEditMessage(msg)) return
+    setEditingMessageId(msg.id)
+    setEditDraft(msg.content)
+  }
+
+  const cancelEditMessage = () => {
+    setEditingMessageId(null)
+    setEditDraft('')
+  }
+
+  const saveEditMessage = () => {
+    if (!editingMessageId || !editDraft.trim()) return
+    wsClient.send({
+      type: 'edit_message',
+      message_id: editingMessageId,
+      content: editDraft.trim(),
+    })
+    setEditingMessageId(null)
+    setEditDraft('')
+  }
+
+  const confirmDeleteMessage = (msg: WsChatMessage) => {
+    if (!msg.id || !canDeleteMessage(msg)) return
+    setDeletingMessageId(msg.id)
+  }
+
+  const cancelDeleteMessage = () => {
+    setDeletingMessageId(null)
+  }
+
+  const deleteMessage = () => {
+    if (!deletingMessageId) return
+    wsClient.send({
+      type: 'delete_message',
+      message_id: deletingMessageId,
+    })
+    setDeletingMessageId(null)
+  }
+
+  const toggleReactionPicker = (msgId: number | undefined) => {
+    if (!msgId) return
+    setReactionPickerMessageId(reactionPickerMessageId === msgId ? null : msgId)
+  }
+
+  const addReaction = (msgId: number | undefined, emoji: string, emojiType: 'standard' | 'custom' = 'standard') => {
+    if (!msgId) return
+    wsClient.send({
+      type: 'add_reaction',
+      message_id: msgId,
+      emoji: emoji,
+      emoji_type: emojiType,
+    })
+    setReactionPickerMessageId(null)
+  }
+
+  const removeReaction = (msgId: number | undefined, emoji: string) => {
+    if (!msgId) return
+    wsClient.send({
+      type: 'remove_reaction',
+      message_id: msgId,
+      emoji: emoji,
+    })
+  }
+
+  // Voice/Video control functions
+  const joinVoiceChannel = async (serverId: string, channelId: string) => {
+    if (!voiceChat) {
+      pushToast({ kind: 'error', message: 'Voice chat not initialized' })
+      return
+    }
+    try {
+      const success = await voiceChat.joinVoiceChannel(serverId, channelId)
+      if (!success) {
+        pushToast({ kind: 'error', message: 'Failed to join voice channel. Please check microphone permissions.' })
+      } else {
+        pushToast({ kind: 'success', message: 'Joining voice channel...' })
+      }
+    } catch (error) {
+      console.error('Error joining voice channel:', error)
+      pushToast({ kind: 'error', message: 'Failed to join voice channel' })
+    }
+  }
+
+  const startDirectCall = async (targetUsername: string) => {
+    if (!voiceChat) {
+      pushToast({ kind: 'error', message: 'Voice chat not initialized' })
+      return
+    }
+    try {
+      const success = await voiceChat.startDirectCall(targetUsername)
+      if (!success) {
+        pushToast({ kind: 'error', message: 'Failed to start call. Please check microphone permissions.' })
+      } else {
+        pushToast({ kind: 'success', message: `Calling ${targetUsername}…` })
+      }
+    } catch (error) {
+      console.error('Error starting direct call:', error)
+      pushToast({ kind: 'error', message: 'Failed to start call' })
+    }
+  }
+
+  const acceptCall = async () => {
+    if (!incomingCall || !voiceChat) return
+    const caller = incomingCall.from
+    setIncomingCall(null)
+    try {
+      const success = await voiceChat.acceptDirectCall(caller)
+      if (!success) {
+        pushToast({ kind: 'error', message: 'Failed to accept call. Please check microphone permissions.' })
+      } else {
+        setIsInVoice(true)
+        pushToast({ kind: 'success', message: `Connected to call with ${caller}` })
+      }
+    } catch (error) {
+      console.error('Error accepting call:', error)
+      pushToast({ kind: 'error', message: 'Failed to accept call' })
+    }
+  }
+
+  const rejectCall = () => {
+    if (!incomingCall) return
+    const caller = incomingCall.from
+    wsClient.send({ type: 'reject_voice_call', from: caller })
+    setIncomingCall(null)
+  }
+
+  const leaveVoice = () => {
+    if (voiceChatSFU) {
+      // SFU mode: disconnect LiveKit + send leave WS message
+      voiceChatSFU.disconnect()
+      wsClient.send({ type: 'leave_voice_channel' })
+      setVoiceChatSFU(null)
+      setIsInVoice(false)
+      setVoiceParticipants([])
+      setRemoteStreams(new Map())
+      return
+    }
+    if (!voiceChat) return
+    voiceChat.leaveVoice()
+  }
+
+  const toggleVoiceMute = () => {
+    const avc = voiceChatSFU ?? voiceChat
+    if (!avc) return
+    avc.toggleMute()
+  }
+
+  const toggleVoiceVideo = () => {
+    const avc = voiceChatSFU ?? voiceChat
+    if (!avc) return
+    avc.toggleVideo()
+  }
+
+  const toggleVoiceScreenShare = () => {
+    const avc = voiceChatSFU ?? voiceChat
+    if (!avc) return
+    avc.toggleScreenShare()
+  }
+  
+  const handlePlaySoundboard = async (soundId: string, soundName: string) => {
+    const avc = voiceChatSFU ?? voiceChat
+    if (!avc) return
+    try {
+      await avc.playSoundboard(soundId)
+      pushToast({ kind: 'info', message: `Playing: ${soundName}` })
+    } catch (error) {
+      pushToast({ kind: 'error', message: 'Failed to play sound' })
+    }
+  }
+
+  /* const updateVoiceDevices = () => {
+    if (!voiceChat) return
+    if (selectedMicrophone) voiceChat.setMicrophone(selectedMicrophone)
+    if (selectedSpeaker) voiceChat.setSpeaker(selectedSpeaker)
+    if (selectedCamera) voiceChat.setCamera(selectedCamera)
+    voiceChat.setScreenShareSettings(screenShareResolution, screenShareFramerate)
+  }
+
+  const loadVoiceDevices = async () => {
+    if (!voiceChat) return
+    const audio = await voiceChat.getAudioDevices()
+    const video = await voiceChat.getVideoDevices()
+    const speakers = await voiceChat.getSpeakerDevices()
+    setAudioDevices(audio)
+    setVideoDevices(video)
+    setSpeakerDevices(speakers)
+  } */
+
+  const testSMTP = () => {
+    if (wsClient.readyState !== WebSocket.OPEN) return
+    if (!testEmailAddress.trim()) {
+      pushToast({ kind: 'error', message: 'Please enter a test email address' })
+      return
+    }
+    setIsTestingSMTP(true)
+    wsClient.send({ type: 'test_smtp', settings: adminSettings, test_email: testEmailAddress.trim() })
+  }
+
+  // Account settings handlers
+  const handleUpdateProfile = () => {
+    wsClient.updateProfile({
+      type: 'update_profile',
+      bio: profileBio,
+      status_message: profileStatus,
+    })
+  }
+
+  const handleChangeStatus = (newStatus: 'online' | 'away' | 'busy' | 'offline') => {
+    setUserStatus(newStatus)
+    // Update init object so the ring changes immediately
+    if (init) {
+      setInit({ ...init, user_status: newStatus })
+    }
+    wsClient.send({
+      type: 'change_user_status',
+      user_status: newStatus,
+    })
+  }
+
+  const handleThemeChange = (theme: 'dark' | 'light' | 'high_contrast') => {
+    // Update local store immediately
+    setThemeMode(theme)
+    // Send to backend for persistence
+    wsClient.send({
+      type: 'update_user_preferences',
+      theme_mode: theme,
+    })
+  }
+
+  const handleStartRebind = (action: keyof Keybinds) => {
+    setRebindingAction(action)
+    setRebindConflict(null)
+  }
+
+  const handleCancelRebind = () => {
+    setRebindingAction(null)
+    setRebindConflict(null)
+  }
+
+  const handleKeybindCapture = (event: React.KeyboardEvent) => {
+    if (!rebindingAction) return
+    
+    event.preventDefault()
+    event.stopPropagation()
+
+    const keyCode = event.code
+
+    // Check for conflicts with other keybinds
+    const conflictingAction = Object.entries(keybinds).find(
+      ([action, key]) => key === keyCode && action !== rebindingAction
+    )?.[0]
+
+    if (conflictingAction) {
+      setRebindConflict(conflictingAction)
+      return
+    }
+
+    // Update the keybind
+    const newKeybinds = { ...keybinds, [rebindingAction]: keyCode }
+    
+    // Update local store
+    useSettingsStore.getState().setKeybind(rebindingAction, keyCode)
+    
+    // Send to backend for persistence
+    wsClient.send({
+      type: 'update_user_preferences',
+      keybinds: newKeybinds,
+    })
+
+    // Close dialog
+    setRebindingAction(null)
+    setRebindConflict(null)
+  }
+
+  const handleChangeEmail = () => {
+    if (!newEmail.trim() || !emailPassword) return
+    setEmailChangeStatus(null)
+    wsClient.changeEmail({
+      type: 'change_email',
+      new_email: newEmail.trim(),
+      password: emailPassword,
+    })
+  }
+
+  const handleChangeUsername = () => {
+    if (!newUsername.trim() || !usernamePassword) return
+    setUsernameChangeStatus(null)
+    wsClient.changeUsername({
+      type: 'change_username',
+      new_username: newUsername.trim(),
+      password: usernamePassword,
+    })
+  }
+
+  const handleAvatarFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    // Validate file type
+    const validTypes = ['image/png', 'image/jpeg', 'image/gif']
+    if (!validTypes.includes(file.type)) {
+      pushToast({ kind: 'error', message: 'Please upload a PNG, JPG, or GIF file' })
+      return
+    }
+
+    // Validate file size (2MB max)
+    if (file.size > 2 * 1024 * 1024) {
+      pushToast({ kind: 'error', message: 'Image too large. Maximum size is 2MB.' })
+      return
+    }
+
+    // Create preview
+    const reader = new FileReader()
+    reader.onloadend = () => {
+      setAvatarPreview(reader.result as string)
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const handleUploadAvatar = () => {
+    if (!avatarPreview) return
+    wsClient.setAvatar({
+      type: 'set_avatar',
+      avatar_type: 'image',
+      avatar_data: avatarPreview,
+    })
+    setAvatarPreview(null)
+  }
+
+  const handleSetEmojiAvatar = (emoji: string) => {
+    wsClient.setAvatar({
+      type: 'set_avatar',
+      avatar_type: 'emoji',
+      avatar: emoji,
+    })
+  }
+
+  const handleSetup2FA = () => {
+    wsClient.setup2FA()
+  }
+
+  const handleVerify2FASetup = () => {
+    if (!twoFACode.trim()) return
+    wsClient.verify2FASetup({
+      type: 'verify_2fa_setup',
+      code: twoFACode,
+    })
+  }
+
+  const handleDisable2FA = () => {
+    if (!disable2FAPassword || !disable2FACode) return
+    wsClient.disable2FA({
+      type: 'disable_2fa',
+      password: disable2FAPassword,
+      code: disable2FACode,
+    })
+  }
+
+  const handleSetNotificationMode = () => {
+    wsClient.setNotificationMode({
+      type: 'set_notification_mode',
+      notification_mode: notificationMode,
+    })
+  }
+
+  const handleRequestPasswordReset = () => {
+    if (!init?.username) {
+      pushToast({ kind: 'error', message: 'User not found' })
+      return
+    }
+    wsClient.requestPasswordReset({
+      type: 'request_password_reset',
+      identifier: init.username,
+    })
+    pushToast({ kind: 'success', message: 'Password reset link sent to your registered email' })
+  }
+
+  // Load admin settings when entering admin mode
+  useEffect(() => {
+    if (isAdminMode && init?.is_admin) {
+      loadAdminSettings()
+    }
+  }, [isAdminMode, init?.is_admin])
+
+  // Get selected server object
+  const selectedServerObj = selectedServerId ? init?.servers?.find((s) => s.id === selectedServerId) : null
+
+  // Check if current channel is a voice channel
+  const isVoiceChannel = selectedContext.kind === 'server' && selectedServerObj
+    ? selectedServerObj.channels?.find((ch) => ch.id === selectedContext.channelId)?.type === 'voice'
+    : false
+
+  const dismissAnnouncement = () => {
+    setAnnouncement(null)
+  }
+
+  return (
+    <div className="h-screen bg-bg-primary flex flex-col">
+      {/* Announcement Banner */}
+      {announcement && announcement.enabled && announcement.message && (
+        <div className="relative border-b border-amber-500/30 bg-gradient-to-r from-amber-500/20 to-orange-500/20 px-4 py-2.5">
+          <div className="flex items-center justify-between gap-4 mx-auto max-w-7xl">
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              <span className="text-xl shrink-0">📢</span>
+              <span className="text-sm text-amber-50 font-medium truncate">{announcement.message}</span>
+            </div>
+            <button
+              type="button"
+              onClick={dismissAnnouncement}
+              className="shrink-0 text-amber-200 hover:text-amber-50 text-lg font-bold leading-none"
+              title="Dismiss"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+      <div className="flex flex-1 min-h-0">
+        {/* Left-side vertical icon bar */}
+        <aside className="w-[72px] shrink-0 flex flex-col border-r border-border-primary bg-bg-secondary">
+          {/* DMs button at top */}
+          <div className="p-3">
+            <button
+              type="button"
+              onClick={() => setIsDmSidebarOpen(!isDmSidebarOpen)}
+              className={`relative flex h-12 w-12 items-center justify-center rounded-2xl text-2xl transition ${
+                isDmSidebarOpen ? 'bg-sky-500 text-white' : 'bg-bg-tertiary text-text-secondary hover:bg-bg-tertiary/60 hover:rounded-xl'
+              }`}
+              title="Direct Messages"
+            >
+              #
+              {/* Unread indicator dot */}
+              {(init?.dms ?? []).some((dm) => (dm.unread_count ?? 0) > 0) && (
+                <span className="absolute -top-1 -right-1 h-3 w-3 rounded-full bg-red-500" />
+              )}
+            </button>
+          </div>
+
+          {/* Separator */}
+          <div className="mx-3 h-[2px] bg-bg-tertiary/60" />
+
+          {/* Server icons */}
+          <div className="flex-1 overflow-auto p-3 space-y-2 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+            {(init?.servers ?? []).map((server) => {
+              const hasUnread = (server.unread_count ?? 0) > 0
+              const hasMention = server.has_mention ?? false
+              
+              return (
+                <button
+                  key={server.id}
+                  type="button"
+                  onClick={() => {
+                    // If the user hasn't accepted rules yet, show the rules modal instead
+                    if (server.rules_pending) {
+                      setRulesModalServerId(server.id)
+                      setRulesModalText(server.rules_text || '')
+                      setRulesModalServerName(server.name)
+                      return
+                    }
+                    if (selectedServerId === server.id) {
+                      setSelectedServerId(null)
+                      selectContext({ kind: 'global' })
+                    } else {
+                      setSelectedServerId(server.id)
+                      setIsDmSidebarOpen(false)
+                      const firstChannel = server.channels?.[0]
+                      if (firstChannel) {
+                        selectContext({ kind: 'server', serverId: server.id, channelId: firstChannel.id })
+                        requestHistoryFor({ kind: 'server', serverId: server.id, channelId: firstChannel.id })
+                      }
+                      // Request server members
+                      wsClient.getServerMembers({ type: 'get_server_members', server_id: server.id })
+                    }
+                  }}
+                  className={`relative flex h-12 w-12 items-center justify-center rounded-2xl text-xl transition overflow-hidden ${
+                    server.rules_pending ? 'bg-amber-500/20 ring-2 ring-amber-500/40' :
+                    selectedServerId === server.id ? 'bg-sky-500 text-white' : 'bg-bg-tertiary text-text-secondary hover:bg-bg-tertiary/60 hover:rounded-xl'
+                  }`}
+                  title={server.rules_pending ? `${server.name} — Rules pending` : server.name}
+                >
+                  {server.icon_type === 'image' && server.icon_data ? (
+                    <img src={server.icon_data} alt={server.name} className="h-full w-full object-cover" />
+                  ) : (
+                    <>{server.icon ?? '🏠'}</>
+                  )}
+                  {/* Unread indicator dot */}
+                  {hasMention ? (
+                    <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-red-500 border-2 border-bg-secondary" />
+                  ) : hasUnread ? (
+                    <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-text-muted border-2 border-bg-secondary" />
+                  ) : null}
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Profile section at bottom */}
+          <div className="border-t border-border-primary bg-bg-secondary p-3">
+            <button
+              type="button"
+              onClick={() => setIsUserMenuOpen(true)}
+              className="rounded-2xl bg-bg-tertiary hover:bg-bg-tertiary/60 hover:rounded-xl transition"
+              title={init?.username ?? 'User'}
+            >
+              <AvatarWithStatus
+                avatar={init?.avatar}
+                avatar_type={init?.avatar_type}
+                avatar_data={init?.avatar_data}
+                user_status={init?.user_status}
+                size="lg"
+              />
+            </button>
+          </div>
+        </aside>
+
+        {/* DM Sidebar - opens when DM button is clicked */}
+        {isDmSidebarOpen && (
+          <aside className="w-[240px] shrink-0 border-r border-border-primary bg-bg-secondary/30">
+            <div className="flex h-full flex-col">
+              <div className="border-b border-border-primary px-4 py-4">
+                <div className="text-sm font-semibold text-white">Direct Messages</div>
+              </div>
+              
+              <div className="flex-1 overflow-auto p-2 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                {(init?.dms ?? []).length === 0 ? (
+                  <div className="px-3 py-2 text-sm text-text-muted">No DMs yet</div>
+                ) : (
+                  <div className="space-y-1">
+                    {(init?.dms ?? []).map((dm) => {
+                      const isSelected = selectedContext.kind === 'dm' && selectedContext.dmId === dm.id
+                      const hasUnread = (dm.unread_count ?? 0) > 0
+                      const hasMention = dm.has_mention ?? false
+                      
+                      return (
+                        <button
+                          key={dm.id}
+                          type="button"
+                          onClick={() => {
+                            const next: ChatContext = { kind: 'dm', dmId: dm.id, username: dm.username }
+                            selectContext(next)
+                            requestHistoryFor(next)
+                            setSelectedServerId(null)
+                            
+                            // Clear unread count immediately in UI
+                            clearUnreadForContext(next)
+                            
+                            // Mark messages as read on server
+                            if (wsClient.readyState === WebSocket.OPEN) {
+                              wsClient.send({
+                                type: 'mark_as_read',
+                                context_type: 'dm',
+                                context_id: dm.id
+                              })
+                            }
+                          }}
+                          className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition ${
+                            isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-text-secondary hover:bg-white/5'
+                          }`}
+                        >
+                          <AvatarWithStatus
+                            avatar={dm.avatar}
+                            avatar_type={dm.avatar_type}
+                            avatar_data={dm.avatar_data}
+                            user_status={dm.user_status}
+                            size="md"
+                          />
+                          <span 
+                            className={`text-sm truncate ${
+                              hasMention 
+                                ? 'font-bold italic text-red-400' 
+                                : hasUnread 
+                                  ? 'font-bold italic' 
+                                  : 'font-medium'
+                            }`}
+                          >
+                            {dm.username}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="border-t border-border-primary px-4 py-4">
+                <div className="text-xs font-medium text-text-muted mb-2">Start DM</div>
+                <div className="flex gap-2">
+                  <input
+                    value={dmUsername}
+                    onChange={(e) => setDmUsername(e.target.value)}
+                    placeholder="Username"
+                    className="flex-1 rounded-lg border border-border-primary bg-bg-primary/40 px-2 py-1.5 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                  />
+                  <button
+                    type="button"
+                    onClick={startDm}
+                    disabled={!dmUsername.trim() || wsClient.readyState !== WebSocket.OPEN}
+                    className="shrink-0 rounded-lg bg-sky-500 px-3 py-1.5 text-sm font-semibold text-bg-primary hover:bg-sky-400 disabled:opacity-60"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+            </div>
+          </aside>
+        )}
+
+        {/* Server Sidebar - opens when a server icon is clicked */}
+        {selectedServerId && selectedServerObj && (
+          <aside className="w-[240px] shrink-0 border-r border-border-primary bg-bg-secondary/30">
+            <div className="flex h-full flex-col">
+              {/* Server header */}
+              <div className="border-b border-border-primary px-4 py-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                    <span className="text-lg">{selectedServerObj.icon ?? '🏠'}</span>
+                    <span className="text-sm font-semibold text-white truncate">{selectedServerObj.name}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsServerSettingsOpen(true)}
+                    className="shrink-0 text-text-muted hover:text-text-secondary text-lg"
+                    title="Server Settings"
+                  >
+                    ⚙️
+                  </button>
+                </div>
+              </div>
+
+              {/* Channels list */}
+              <div className="flex-1 overflow-auto p-2">
+                {/* Render categories with their channels */}
+                {(selectedServerObj.categories ?? [])
+                  .sort((a, b) => a.position - b.position)
+                  .map((category) => {
+                    const categoryChannels = (selectedServerObj.channels ?? [])
+                      .filter((ch) => ch.category_id === category.id)
+                      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+
+                    return (
+                      <div key={category.id} className="mb-3">
+                        <div className="px-2 text-xs font-medium text-text-muted uppercase mb-1">{category.name}</div>
+                        <div className="space-y-1">
+                          {categoryChannels.map((ch) => {
+                            const isSelected =
+                              selectedContext.kind === 'server' &&
+                              selectedContext.serverId === selectedServerId &&
+                              selectedContext.channelId === ch.id
+                            const channelUnread = selectedServerObj.channel_unreads?.[ch.id]
+                            const hasUnread = (channelUnread?.unread_count ?? 0) > 0
+                            const hasMention = channelUnread?.has_mention ?? false
+                            
+                            return (
+                              <React.Fragment key={ch.id}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const next: ChatContext = { kind: 'server', serverId: selectedServerId, channelId: ch.id }
+                                  if (ch.type === 'voice') {
+                                    // Join voice channel instead of loading chat
+                                    selectContext(next)
+                                    joinVoiceChannel(selectedServerId, ch.id)
+                                  } else {
+                                    selectContext(next)
+                                    requestHistoryFor(next)
+                                    
+                                    // Clear unread count immediately in UI
+                                    clearUnreadForContext(next)
+                                    
+                                    // Mark messages as read on server
+                                    if (wsClient.readyState === WebSocket.OPEN) {
+                                      wsClient.send({
+                                        type: 'mark_as_read',
+                                        context_type: 'server',
+                                        context_id: `${selectedServerId}/${ch.id}`
+                                      })
+                                    }
+                                  }
+                                }}
+                                className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
+                                  isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-text-secondary hover:bg-white/5'
+                                }`}
+                              >
+                                <span className="text-text-muted">{ch.type === 'voice' ? '🔊' : '#'}</span>
+                                <span className={`text-sm ${
+                                  hasMention 
+                                    ? 'font-bold italic text-red-400' 
+                                    : hasUnread 
+                                      ? 'font-bold italic' 
+                                      : 'font-medium'
+                                }`}>{ch.name}</span>
+                              </button>
+                              {/* Thread sub-channels below this channel */}
+                              {(threadsByServer[selectedServerId!] ?? [])
+                                .filter(t => t.channel_id === ch.id)
+                                .map(thread => {
+                                  const isThreadSelected = selectedContext.kind === 'thread' && selectedContext.threadId === thread.thread_id
+                                  return (
+                                    <button
+                                      key={thread.thread_id}
+                                      type="button"
+                                      onClick={() => {
+                                        const next: ChatContext = {
+                                          kind: 'thread',
+                                          serverId: selectedServerId!,
+                                          channelId: ch.id,
+                                          threadId: thread.thread_id,
+                                          threadName: thread.name,
+                                        }
+                                        selectContext(next)
+                                        requestHistoryFor(next)
+                                      }}
+                                      className={`flex w-full items-center gap-1.5 rounded-lg pl-5 pr-2 py-1 text-left transition ${
+                                        isThreadSelected ? 'bg-sky-500/10 text-sky-200' : 'text-text-muted hover:bg-white/5 hover:text-text-secondary'
+                                      }`}
+                                    >
+                                      <span className="text-xs shrink-0 opacity-40">└</span>
+                                      <span className="text-xs font-medium truncate">{thread.name}</span>
+                                      {thread.is_private && <span className="text-[10px] shrink-0 opacity-50">🔒</span>}
+                                    </button>
+                                  )
+                                })}
+                              </React.Fragment>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )
+                  })}
+
+                {/* Render channels without a category */}
+                {(() => {
+                  const uncategorizedChannels = (selectedServerObj.channels ?? [])
+                    .filter((ch) => !ch.category_id)
+                    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+
+                  if (uncategorizedChannels.length === 0) return null
+
+                  return (
+                    <div className="mb-3">
+                      <div className="px-2 text-xs font-medium text-text-muted uppercase mb-1">Uncategorized</div>
+                      <div className="space-y-1">
+                        {uncategorizedChannels.map((ch) => {
+                          const isSelected =
+                            selectedContext.kind === 'server' &&
+                            selectedContext.serverId === selectedServerId &&
+                            selectedContext.channelId === ch.id
+                          const channelUnread = selectedServerObj.channel_unreads?.[ch.id]
+                          const hasUnread = (channelUnread?.unread_count ?? 0) > 0
+                          const hasMention = channelUnread?.has_mention ?? false
+                          
+                          return (
+                            <React.Fragment key={ch.id}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const next: ChatContext = { kind: 'server', serverId: selectedServerId, channelId: ch.id }
+                                if (ch.type === 'voice') {
+                                  selectContext(next)
+                                  joinVoiceChannel(selectedServerId, ch.id)
+                                } else {
+                                  selectContext(next)
+                                  requestHistoryFor(next)
+                                  
+                                  // Clear unread count immediately in UI
+                                  clearUnreadForContext(next)
+                                  
+                                  // Mark messages as read on server
+                                  if (wsClient.readyState === WebSocket.OPEN) {
+                                    wsClient.send({
+                                      type: 'mark_as_read',
+                                      context_type: 'server',
+                                      context_id: `${selectedServerId}/${ch.id}`
+                                    })
+                                  }
+                                }
+                              }}
+                              className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
+                                isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-text-secondary hover:bg-white/5'
+                              }`}
+                            >
+                              <span className="text-text-muted">{ch.type === 'voice' ? '🔊' : '#'}</span>
+                              <span className={`text-sm ${
+                                hasMention 
+                                  ? 'font-bold italic text-red-400' 
+                                  : hasUnread 
+                                    ? 'font-bold italic' 
+                                    : 'font-medium'
+                              }`}>{ch.name}</span>
+                            </button>
+                            {/* Thread sub-channels below this channel */}
+                            {(threadsByServer[selectedServerId!] ?? [])
+                              .filter(t => t.channel_id === ch.id)
+                              .map(thread => {
+                                const isThreadSelected = selectedContext.kind === 'thread' && selectedContext.threadId === thread.thread_id
+                                return (
+                                  <button
+                                    key={thread.thread_id}
+                                    type="button"
+                                    onClick={() => {
+                                      const next: ChatContext = {
+                                        kind: 'thread',
+                                        serverId: selectedServerId!,
+                                        channelId: ch.id,
+                                        threadId: thread.thread_id,
+                                        threadName: thread.name,
+                                      }
+                                      selectContext(next)
+                                      requestHistoryFor(next)
+                                    }}
+                                    className={`flex w-full items-center gap-1.5 rounded-lg pl-5 pr-2 py-1 text-left transition ${
+                                      isThreadSelected ? 'bg-sky-500/10 text-sky-200' : 'text-text-muted hover:bg-white/5 hover:text-text-secondary'
+                                    }`}
+                                  >
+                                    <span className="text-xs shrink-0 opacity-40">└</span>
+                                    <span className="text-xs font-medium truncate">{thread.name}</span>
+                                    {thread.is_private && <span className="text-[10px] shrink-0 opacity-50">🔒</span>}
+                                  </button>
+                                )
+                              })}
+                            </React.Fragment>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })()}
+              </div>
+            </div>
+          </aside>
+        )}
+
+        {/* Main chat area */}
+        <main className="flex min-w-0 flex-1 flex-col">
+          <header className="border-b border-border-primary bg-bg-primary/60 px-6 py-4">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-4 min-w-0 flex-1">
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-text-muted">
+                    {selectedContext.kind === 'global'
+                      ? 'Global Chat'
+                      : selectedContext.kind === 'dm'
+                        ? 'Direct Message'
+                        : isVoiceChannel
+                          ? 'Voice Channel'
+                          : 'Channel'}
+                  </div>
+                  <div className="mt-1 text-lg font-semibold text-white truncate">{selectedTitle}</div>
+                </div>
+                <div className="hidden md:block">
+                  <SearchBar 
+                    currentUsername={init?.username ?? null} 
+                    onResultClick={handleSearchResultClick}
+                    servers={init?.servers}
+                    dms={init?.dms}
+                    friends={init?.friends}
+                  />
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                {/* Thread navigation */}
+                {selectedContext.kind === 'thread' && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Go back to the parent server channel
+                        const thread = activeThread ?? threadsByServer[selectedContext.serverId]?.find((t) => t.thread_id === selectedContext.threadId)
+                        const server = init?.servers?.find((s) => s.id === selectedContext.serverId)
+                        const firstCh = server?.channels?.find((ch) => (ch.type ?? 'text') === 'text')
+                        if (firstCh) {
+                          const ctx: ChatContext = { kind: 'server', serverId: selectedContext.serverId, channelId: firstCh.id }
+                          selectContext(ctx)
+                          requestHistoryFor(ctx)
+                        }
+                        void thread
+                      }}
+                      className="rounded-xl border border-border-primary bg-bg-primary/30 px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-secondary/50 transition"
+                    >
+                      ← Back
+                    </button>
+                    {(activeThread?.created_by === init?.username || init?.is_admin) && !activeThread?.is_closed && (
+                      <button
+                        type="button"
+                        onClick={() => wsClient.closeThread({ type: 'close_thread', thread_id: selectedContext.threadId })}
+                        className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-300 hover:bg-rose-500/20 transition"
+                      >
+                        Close Thread
+                      </button>
+                    )}
+                  </>
+                )}
+                {/* DM voice call button */}
+                {selectedContext.kind === 'dm' && !isInVoice && (
+                  <button
+                    type="button"
+                    onClick={() => startDirectCall(selectedContext.kind === 'dm' ? (selectedContext.username ?? '') : '')}
+                    className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-300 hover:bg-emerald-500/20 transition"
+                    title={`Call ${selectedTitle}`}
+                  >
+                    📞 Call
+                  </button>
+                )}
+                {selectedContext.kind === 'dm' && isInVoice && (
+                  <button
+                    type="button"
+                    onClick={leaveVoice}
+                    className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-300 hover:bg-rose-500/20 transition"
+                    title="End call"
+                  >
+                    📵 End Call
+                  </button>
+                )}
+                {selectedServerId && !isVoiceChannel && selectedContext.kind !== 'thread' && (
+                  <button
+                    type="button"
+                    onClick={() => setIsMembersSidebarOpen(!isMembersSidebarOpen)}
+                    className="rounded-xl border border-border-primary bg-bg-primary/30 px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-secondary/50 transition"
+                    title={isMembersSidebarOpen ? 'Hide Members' : 'Show Members'}
+                  >
+                    {isMembersSidebarOpen ? '👥 Hide' : '👥 Show'}
+                  </button>
+                )}
+                {(selectedContext.kind === 'server' || selectedContext.kind === 'dm') && !isVoiceChannel && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowPinsPanel((prev) => !prev)
+                      if (!showPinsPanel) {
+                        // Load pinned messages for current context
+                        const ctxType = selectedContext.kind === 'dm' ? 'dm' : 'server'
+                        const ctxId = selectedContext.kind === 'dm'
+                          ? selectedContext.dmId
+                          : `${selectedContext.serverId}/${selectedContext.channelId}`
+                        wsClient.getPinnedMessages({ type: 'get_pinned_messages', context_type: ctxType, context_id: ctxId })
+                      }
+                    }}
+                    className={`rounded-xl border border-border-primary px-3 py-1.5 text-xs transition ${showPinsPanel ? 'bg-yellow-500/20 border-yellow-500/40 text-yellow-300' : 'bg-bg-primary/30 text-text-secondary hover:bg-bg-secondary/50'}`}
+                    title="Pinned messages"
+                  >
+                    📌 Pins
+                  </button>
+                )}
+                <div className="rounded-xl border border-border-primary bg-bg-primary/30 px-2 py-1 text-[11px] text-text-secondary">
+                  {connectionStatus}
+                </div>
+                <img
+                  src={adminSettings.server_logo || '/decentra-blurple.png'}
+                  alt="Server Logo"
+                  className="h-12 w-12 object-contain"
+                  onError={(e) => {
+                    const target = e.target as HTMLImageElement
+                    target.src = '/decentra-blurple.png'
+                  }}
+                />
+              </div>
+            </div>
+          </header>
+
+          {/* Voice Channel UI */}
+          {isVoiceChannel ? (
+            <section className="flex-1 flex flex-col overflow-hidden">
+              {/* Voice controls panel */}
+              {isInVoice && (
+                <div className="border-b border-border-primary bg-bg-primary/60 px-6 py-3">
+                  <div className="flex items-center justify-center gap-3">
+                    <button
+                      type="button"
+                      onClick={toggleVoiceMute}
+                      className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                        isVoiceMuted
+                          ? 'bg-rose-500/20 border border-rose-500/40 text-rose-300 hover:bg-rose-500/30'
+                          : 'bg-bg-tertiary border border-border-primary text-text-secondary hover:bg-bg-tertiary/60'
+                      }`}
+                      title={isVoiceMuted ? 'Unmute' : 'Mute'}
+                    >
+                      {isVoiceMuted ? '🔇' : '🎤'} {isVoiceMuted ? 'Muted' : 'Unmute'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={toggleVoiceVideo}
+                      className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                        isVideoEnabled
+                          ? 'bg-sky-500/20 border border-sky-500/40 text-sky-300 hover:bg-sky-500/30'
+                          : 'bg-bg-tertiary border border-border-primary text-text-secondary hover:bg-bg-tertiary/60'
+                      }`}
+                      title={isVideoEnabled ? 'Stop Video' : 'Start Video'}
+                    >
+                      📹 {isVideoEnabled ? 'Stop Video' : 'Video'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={toggleVoiceScreenShare}
+                      className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                        isScreenSharing
+                          ? 'bg-purple-500/20 border border-purple-500/40 text-purple-300 hover:bg-purple-500/30'
+                          : 'bg-bg-tertiary border border-border-primary text-text-secondary hover:bg-bg-tertiary/60'
+                      }`}
+                      title={isScreenSharing ? 'Stop Sharing' : 'Share Screen'}
+                    >
+                      🖥️ {isScreenSharing ? 'Stop Share' : 'Screen Share'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsSoundboardOpen(true)}
+                      className="rounded-xl bg-bg-tertiary border border-border-primary px-4 py-2 text-sm font-semibold text-text-secondary hover:bg-bg-tertiary/60 transition"
+                      title="Open Soundboard"
+                    >
+                      🔊 Soundboard
+                    </button>
+                    <button
+                      type="button"
+                      onClick={leaveVoice}
+                      className="rounded-xl bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-600 transition"
+                      title="Leave Voice"
+                    >
+                      ❌ Leave
+                    </button>
+                    {isE2EEActive && (
+                      <span
+                        className="flex items-center gap-1 rounded-xl bg-emerald-500/15 border border-emerald-500/30 px-3 py-2 text-xs font-semibold text-emerald-400"
+                        title="End-to-end encrypted — media is encrypted client-side and cannot be read by the server"
+                      >
+                        🔒 E2EE
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Participant grid */}
+              <div className="flex-1 overflow-auto p-6">
+                <div className="mx-auto max-w-7xl h-full">
+                  {!isInVoice ? (
+                    <div className="flex h-full items-center justify-center">
+                      <div className="text-center">
+                        <div className="text-6xl mb-4">🔊</div>
+                        <h2 className="text-2xl font-semibold text-white mb-2">{selectedTitle}</h2>
+                        <p className="text-text-muted mb-6">
+                          {isVoiceConnecting ? 'Connecting to voice channel...' : 'Click join to enter this voice channel'}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (selectedContext.kind === 'server' && selectedServerId) {
+                              joinVoiceChannel(selectedServerId, selectedContext.channelId)
+                            }
+                          }}
+                          disabled={isVoiceConnecting}
+                          className={`rounded-xl px-6 py-3 text-lg font-semibold text-white transition ${
+                            isVoiceConnecting 
+                              ? 'bg-slate-600 cursor-not-allowed' 
+                              : 'bg-emerald-500 hover:bg-emerald-600'
+                          }`}
+                        >
+                          {isVoiceConnecting ? 'Connecting...' : 'Join Voice Channel'}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className={`grid gap-4 h-full ${
+                      voiceParticipants.length === 1 ? 'grid-cols-1' :
+                      voiceParticipants.length === 2 ? 'grid-cols-2' :
+                      voiceParticipants.length <= 4 ? 'grid-cols-2' :
+                      voiceParticipants.length <= 6 ? 'grid-cols-3' :
+                      'grid-cols-4'
+                    }`}>
+                      {voiceParticipants.map((participantUsername) => {
+                        const stream = remoteStreams.get(participantUsername)
+                        const participant = serverMembers[selectedServerId ?? '']?.find(
+                          (m) => m.username === participantUsername
+                        )
+                        const isCurrentUser = participantUsername === init?.username
+
+                        return (
+                          <div
+                            key={participantUsername}
+                            className="relative rounded-2xl border border-border-primary bg-bg-secondary/40 overflow-hidden flex items-center justify-center min-h-[200px]"
+                          >
+                            {stream && (
+                              <>
+                                {/* Audio element for remote audio stream - always rendered when stream exists */}
+                                <audio
+                                  ref={(audio) => {
+                                    if (audio && stream && !isCurrentUser) {
+                                      audio.srcObject = stream
+                                      audio.play().catch(console.error)
+                                    }
+                                  }}
+                                  autoPlay
+                                  playsInline
+                                />
+                                {/* Video element for remote video/screen share */}
+                                {stream.getVideoTracks().length > 0 ? (
+                                  <video
+                                    ref={(video) => {
+                                      if (video && stream) {
+                                        video.srcObject = stream
+                                        video.play().catch(console.error)
+                                      }
+                                    }}
+                                    autoPlay
+                                    playsInline
+                                    muted={isCurrentUser}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : null}
+                              </>
+                            )}
+                            {/* Show avatar when no stream or no video track */}
+                            {(!stream || stream.getVideoTracks().length === 0) && (
+                              <div className="flex flex-col items-center justify-center p-8">
+                                <AvatarWithStatus
+                                  avatar={participant?.avatar ?? init?.avatar}
+                                  avatar_type={participant?.avatar_type ?? init?.avatar_type}
+                                  avatar_data={participant?.avatar_data ?? init?.avatar_data}
+                                  user_status={participant?.user_status}
+                                  size="xl"
+                                />
+                                <div className="text-xl font-semibold text-white mt-4">{participantUsername}</div>
+                              </div>
+                            )}
+                            {/* Participant name overlay */}
+                            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-3">
+                              <div className="flex items-center justify-between">
+                                <span className="text-white font-semibold text-sm">
+                                  {participantUsername} {isCurrentUser && '(You)'}
+                                </span>
+                                <div className="flex items-center gap-1">
+                                  {isCurrentUser && isVoiceMuted && <span className="text-rose-400">🔇</span>}
+                                  {isCurrentUser && isVideoEnabled && <span className="text-sky-400">📹</span>}
+                                  {isCurrentUser && isScreenSharing && <span className="text-purple-400">🖥️</span>}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
+          ) : (
+            <>
+              {/* Regular chat UI */}
+              <section className="flex-1 overflow-auto px-6 py-5">
+            <div className="mx-auto max-w-5xl">
+              <div className="rounded-2xl border border-border-primary bg-bg-secondary/20 p-4">
+                {messages.length === 0 ? (
+                  <div className="text-sm text-text-muted">No messages yet.</div>
+                ) : (
+                  <div className="flex flex-col gap-3">
+                    {messages.map((m: WsChatMessage, idx: number) => (
+                      <div key={(m.id ?? idx).toString()} id={m.id ? `message-${m.id}` : undefined} className="group flex gap-3 transition rounded-lg px-2 py-1">
+                        <div className="mt-0.5 shrink-0">
+                          <AvatarWithStatus
+                            avatar={m.avatar}
+                            avatar_type={m.avatar_type}
+                            avatar_data={m.avatar_data}
+                            user_status={m.user_status}
+                            size="md"
+                          />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-baseline gap-x-2">
+                            <div 
+                              className="font-semibold text-text-primary" 
+                              style={getUsernameStyle(m)}
+                            >
+                              {m.username}
+                            </div>
+                            {m.is_bot && <span className="rounded bg-indigo-500/30 px-1 py-0.5 text-[10px] font-bold text-indigo-300">BOT</span>}
+                            <div className="text-xs text-text-muted">
+                              {new Date(m.timestamp).toLocaleString()}
+                              {m.edited_at && <span className="ml-1.5 text-text-muted">(edited)</span>}
+                            </div>
+                            {/* Action buttons - show on hover */}
+                            <div className="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                              {m.id && (
+                                <>
+                                  {/* Reply button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => setReplyingTo(m)}
+                                    className="text-text-muted hover:text-sky-400 text-sm px-1.5 py-0.5 rounded"
+                                    title="Reply"
+                                  >
+                                    ↩️
+                                  </button>
+                                  {/* Reaction button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleReactionPicker(m.id)}
+                                    className="text-text-muted hover:text-text-secondary text-sm px-1.5 py-0.5 rounded"
+                                    title="Add reaction"
+                                  >
+                                    😊
+                                  </button>
+                                  {/* Edit button */}
+                                  {canEditMessage(m) && (
+                                    <button
+                                      type="button"
+                                      onClick={() => startEditMessage(m)}
+                                      className="text-text-muted hover:text-sky-400 text-xs px-1.5 py-0.5 rounded"
+                                      title="Edit message"
+                                    >
+                                      ✏️
+                                    </button>
+                                  )}
+                                  {/* Delete button */}
+                                  {canDeleteMessage(m) && (
+                                    <button
+                                      type="button"
+                                      onClick={() => confirmDeleteMessage(m)}
+                                      className="text-text-muted hover:text-rose-400 text-xs px-1.5 py-0.5 rounded"
+                                      title="Delete message"
+                                    >
+                                      🗑️
+                                    </button>
+                                  )}
+                                  {/* Pin/Unpin button */}
+                                  {(selectedContext.kind === 'server' || selectedContext.kind === 'dm') && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (!m.id) return
+                                        if (m.pinned) {
+                                          wsClient.unpinMessage({ type: 'unpin_message', message_id: m.id })
+                                        } else {
+                                          wsClient.pinMessage({ type: 'pin_message', message_id: m.id })
+                                        }
+                                      }}
+                                      className={`text-xs px-1.5 py-0.5 rounded ${m.pinned ? 'text-yellow-400 hover:text-yellow-300' : 'text-text-muted hover:text-yellow-400'}`}
+                                      title={m.pinned ? 'Unpin message' : 'Pin message'}
+                                    >
+                                      📌
+                                    </button>
+                                  )}
+                                  {/* Start Thread button - only in server text channels */}
+                                  {selectedContext.kind === 'server' && m.id && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setCreateThreadParentMsg(m)
+                                        setCreateThreadName('')
+                                        setCreateThreadPrivate(false)
+                                        setCreateThreadInvited([])
+                                        setShowCreateThreadModal(true)
+                                      }}
+                                      className="text-text-muted hover:text-emerald-400 text-xs px-1.5 py-0.5 rounded"
+                                      title="Start thread"
+                                    >
+                                      🧵
+                                    </button>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          </div>
+                          
+                          {/* Reply reference - show if this message is a reply */}
+                          {m.reply_data && (
+                            <div className="mt-1 mb-1 pl-3 border-l-2 border-border-secondary text-xs text-text-muted">
+                              <div className="flex items-center gap-1">
+                                <span>↩️</span>
+                                <span className="font-medium text-text-secondary">{m.reply_data.username}</span>
+                                <span>•</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    // Jump to message functionality
+                                    if (!m.reply_data) return
+                                    const element = document.getElementById(`message-${m.reply_data.id}`)
+                                    if (element) {
+                                      element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                                      element.classList.add('bg-sky-500/10')
+                                      setTimeout(() => element.classList.remove('bg-sky-500/10'), 2000)
+                                    }
+                                  }}
+                                  className="hover:underline truncate max-w-[400px]"
+                                >
+                                  {m.reply_data.deleted ? '[Message deleted]' : renderMessageContent(m.reply_data.content, m.context, m.context_id)}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                          
+                          {/* Edit mode */}
+                          {editingMessageId === m.id ? (
+                            <div className="mt-2">
+                              <textarea
+                                value={editDraft}
+                                onChange={(e) => setEditDraft(e.target.value)}
+                                className="w-full rounded-lg border border-border-primary bg-bg-primary/40 px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-sky-500/40 resize-none"
+                                rows={3}
+                                autoFocus
+                              />
+                              <div className="mt-2 flex gap-2">
+                                <button
+                                  type="button"
+                                  onClick={saveEditMessage}
+                                  disabled={!editDraft.trim()}
+                                  className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={cancelEditMessage}
+                                  className="rounded-lg bg-bg-tertiary px-3 py-1.5 text-xs font-semibold text-text-secondary hover:bg-bg-tertiary/60"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              {/* Normal message display */}
+                              {m.content && (
+                                <>
+                                  <div className="mt-1 whitespace-pre-wrap text-sm text-text-secondary">{linkifyText(m.content, (content) => renderMessageContent(content, m.context, m.context_id))}</div>
+                                  <MessageEmbeds content={m.content} />
+                                </>
+                              )}
+                              {/* Delivery state indicator */}
+                              {m.id === deliveredMessageId && m.username === init?.username && (
+                                <div className="mt-0.5 text-[10px] text-text-muted text-right">✓ Delivered</div>
+                              )}
+                              {/* Pinned indicator */}
+                              {m.pinned && (
+                                <div className="mt-0.5 text-[10px] text-yellow-400/70 flex items-center gap-1">
+                                  <span>📌</span>
+                                  <span>Pinned by {m.pinned_by}</span>
+                                </div>
+                              )}
+                            </>
+                          )}
+                          
+                          {m.attachments && m.attachments.length > 0 && (
+                            <div className="mt-2 flex flex-col gap-1.5">
+                              {m.attachments.map((att: Attachment) => (
+                                <a
+                                  key={att.attachment_id}
+                                  href={`/api/download-attachment/${att.attachment_id}`}
+                                  download={att.filename}
+                                  className="inline-flex items-center gap-2 rounded-lg border border-border-primary bg-bg-secondary/40 px-3 py-2 text-sm text-text-secondary hover:bg-bg-tertiary/40 hover:text-white transition w-fit"
+                                >
+                                  <span>📎</span>
+                                  <span className="font-medium">{att.filename}</span>
+                                  <span className="text-xs text-text-muted">({(att.file_size / 1024).toFixed(1)}KB)</span>
+                                </a>
+                              ))}
+                            </div>
+                          )}
+                          
+                          {/* Reactions display */}
+                          {m.reactions && Array.isArray(m.reactions) && m.reactions.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-1.5">
+                              {(() => {
+                                // Group reactions by emoji
+                                const reactionGroups = m.reactions.reduce((acc: any, reaction: Reaction) => {
+                                  if (!acc[reaction.emoji]) {
+                                    acc[reaction.emoji] = {
+                                      emoji: reaction.emoji,
+                                      emoji_type: reaction.emoji_type,
+                                      usernames: []
+                                    }
+                                  }
+                                  acc[reaction.emoji].usernames.push(reaction.username)
+                                  return acc
+                                }, {})
+                                
+                                return Object.values(reactionGroups).map((group: any, rIdx: number) => {
+                                  const userReacted = init?.username && group.usernames.includes(init.username)
+                                  return (
+                                    <button
+                                      key={rIdx}
+                                      type="button"
+                                      onClick={() => userReacted ? removeReaction(m.id, group.emoji) : addReaction(m.id, group.emoji, group.emoji_type)}
+                                      className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs border transition ${
+                                        userReacted
+                                          ? 'bg-sky-500/20 border-sky-500/40 text-sky-300'
+                                          : 'bg-bg-secondary/40 border-border-primary text-text-secondary hover:bg-bg-tertiary/40'
+                                      }`}
+                                      title={group.usernames.join(', ')}
+                                    >
+                                      <span>{group.emoji}</span>
+                                      <span className="font-semibold">{group.usernames.length}</span>
+                                    </button>
+                                  )
+                                })
+                              })()}
+                            </div>
+                          )}
+                          
+                          {/* Reaction picker popup */}
+                          {reactionPickerMessageId === m.id && (
+                            <ReactionPicker
+                              onSelect={(emoji) => addReaction(m.id, emoji)}
+                              onClose={() => setReactionPickerMessageId(null)}
+                            />
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+
+          <div className="border-t border-border-primary bg-bg-primary/60 px-6 py-4">
+            <div className="mx-auto max-w-5xl">
+              {/* Selected files preview */}
+              {selectedFiles.length > 0 && (
+                <div className="mb-3 flex flex-wrap gap-2">
+                  {selectedFiles.map((file, index) => (
+                    <div
+                      key={index}
+                      className="flex items-center gap-2 rounded-lg border border-white/10 bg-slate-900/40 px-3 py-2 text-sm"
+                    >
+                      <span className="text-slate-300 truncate max-w-[200px]">{file.name}</span>
+                      <span className="text-xs text-slate-500">({(file.size / 1024).toFixed(1)}KB)</span>
+                      <button
+                        type="button"
+                        onClick={() => removeFile(index)}
+                        className="ml-1 text-slate-400 hover:text-rose-400"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Mention autocomplete */}
+              {showMentionAutocomplete && selectedContext.kind === 'server' && (
+                <div className="mb-2 rounded-xl border border-border-primary bg-bg-secondary p-2 shadow-xl max-h-48 overflow-y-auto">
+                  <div className="text-xs font-semibold text-text-muted mb-1 px-2">Mention User or Role</div>
+                  {getFilteredMentionUsers().length > 0 ? (
+                    getFilteredMentionUsers().map((item, index) => (
+                      <button
+                        key={`${item.type}-${item.id}`}
+                        type="button"
+                        onClick={() => {
+                          if (item.type === 'role') {
+                            insertRoleMention(item.id, item.username)
+                          } else {
+                            insertMention(item.username)
+                          }
+                        }}
+                        className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition ${
+                          index === selectedMentionIndex ? 'bg-sky-500/20' : 'hover:bg-white/5'
+                        }`}
+                      >
+                        {item.type === 'role' ? (
+                          <>
+                            <div className="h-4 w-4 rounded-full flex-shrink-0" style={{ backgroundColor: item.color || '#3B82F6' }} />
+                            <span className="text-sm font-semibold" style={{ color: item.color || '#3B82F6' }}>@{item.username}</span>
+                            <span className="text-xs text-slate-500 ml-1">Role</span>
+                          </>
+                        ) : (
+                          <>
+                            <AvatarWithStatus
+                              avatar={(item as any).avatar}
+                              avatar_type={(item as any).avatar_type}
+                              avatar_data={(item as any).avatar_data}
+                              user_status={(item as any).user_status}
+                              size="sm"
+                            />
+                            <span className="text-sm text-text-secondary">{item.username}</span>
+                          </>
+                        )}
+                      </button>
+                    ))
+                  ) : (
+                    <div className="text-xs text-text-muted px-2 py-1">No matching users or roles</div>
+                  )}
+                </div>
+              )}
+
+              {/* Channel mention autocomplete (#) */}
+              {showChannelMentionAutocomplete && selectedContext.kind === 'server' && (
+                <div className="mb-2 rounded-xl border border-border-primary bg-bg-secondary p-2 shadow-xl max-h-48 overflow-y-auto">
+                  <div className="text-xs font-semibold text-text-muted mb-1 px-2">Jump to Channel</div>
+                  {getFilteredChannelMentions().length > 0 ? (
+                    getFilteredChannelMentions().map((channel, index) => (
+                      <button
+                        key={channel.id}
+                        type="button"
+                        onClick={() => insertChannelMention(channel.name, channel.id)}
+                        className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition ${
+                          index === selectedChannelMentionIndex ? 'bg-sky-500/20' : 'hover:bg-white/5'
+                        }`}
+                      >
+                        <span className="text-sky-400 font-medium">#</span>
+                        <span className="text-sm text-text-secondary">{channel.name}</span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="text-xs text-text-muted px-2 py-1">No matching channels</div>
+                  )}
+                </div>
+              )}
+
+              {/* Typing indicator */}
+              {(() => {
+                const ctxTypers = typingUsers[selectedKey] ?? []
+                if (ctxTypers.length === 0) return null
+                const names = ctxTypers.map((u) => u.username)
+                const label = names.length === 1
+                  ? `${names[0]} is typing…`
+                  : names.length === 2
+                    ? `${names[0]} and ${names[1]} are typing…`
+                    : `${names.slice(0, 2).join(', ')} and ${names.length - 2} others are typing…`
+                return (
+                  <div className="mb-1 flex items-center gap-2 px-1">
+                    {ctxTypers.slice(0, 3).map((u) => (
+                      <AvatarWithStatus
+                        key={u.username}
+                        avatar={u.avatar}
+                        avatar_type={u.avatar_type}
+                        avatar_data={u.avatar_data}
+                        size="sm"
+                      />
+                    ))}
+                    <span className="text-xs text-text-muted italic">{label}</span>
+                    <span className="flex gap-0.5">
+                      {[0, 1, 2].map((i) => (
+                        <span
+                          key={i}
+                          className="inline-block w-1 h-1 rounded-full bg-text-muted animate-bounce"
+                          style={{ animationDelay: `${i * 0.15}s` }}
+                        />
+                      ))}
+                    </span>
+                  </div>
+                )
+              })()}
+              
+              {/* Replying to indicator */}
+              {replyingTo && (
+                <div className="mb-2 rounded-xl border border-border-primary bg-bg-secondary/40 p-3 flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="text-xs font-semibold text-text-muted mb-1">Replying to {replyingTo.username}</div>
+                    <div className="text-sm text-text-secondary truncate">{renderMessageContent(replyingTo.content, replyingTo.context, replyingTo.context_id)}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setReplyingTo(null)}
+                    className="ml-2 text-text-muted hover:text-text-secondary text-lg"
+                    title="Cancel reply"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  if (canSend && !isUploading) send()
+                }}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                className={`flex gap-3 rounded-2xl transition relative ${isDragging ? 'ring-2 ring-sky-500/40 bg-sky-500/10' : ''}`}
+              >
+                {/* Slash command picker */}
+                {selectedContext.kind === 'server' && selectedContext.serverId && (
+                  <SlashCommandPicker
+                    serverId={selectedContext.serverId}
+                    visible={showSlashPicker}
+                    filter={slashFilter}
+                    onSelect={(cmd) => {
+                      setDraft(`/${cmd.name} `)
+                      setShowSlashPicker(false)
+                    }}
+                    onClose={() => setShowSlashPicker(false)}
+                  />
+                )}
+                <input
+                  value={draft}
+                  onChange={(e) => handleDraftChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (handleMentionKeyDown(e)) return
+                  }}
+                  placeholder={isDragging ? "Drop files here..." : selectedFiles.length > 0 ? "Add a message (optional)…" : "Type a message…"}
+                  disabled={isUploading}
+                  className="w-full rounded-2xl border border-border-primary bg-bg-primary/40 px-4 py-3 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-sky-500/40 disabled:opacity-50"
+                />
+                
+                {/* Emoji picker button */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
+                    disabled={isUploading}
+                    className="shrink-0 rounded-2xl border border-border-primary bg-bg-secondary/40 px-4 py-3 text-sm font-semibold text-text-secondary hover:bg-bg-tertiary/40 disabled:cursor-not-allowed disabled:opacity-50"
+                    title="Insert emoji"
+                  >
+                    😊
+                  </button>
+                  
+                  {isEmojiPickerOpen && (
+                    <div className="absolute bottom-full right-0 mb-2 w-64 rounded-xl border border-border-primary bg-bg-secondary p-3 shadow-xl">
+                      <div className="text-xs font-semibold text-text-secondary mb-2">Basic Emojis</div>
+                      <div className="grid grid-cols-8 gap-1 max-h-48 overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                        {['😀', '😃', '😄', '😁', '😅', '😂', '🤣', '😊', '😇', '🙂', '😉', '😌', '😍', '🥰', '😘', '😗', 
+                          '😙', '😚', '😋', '😛', '😝', '😜', '🤪', '🤨', '🧐', '🤓', '😎', '🥸', '🤩', '🥳', '😏', '😒',
+                          '👍', '👎', '👌', '✌️', '🤞', '🤟', '🤘', '🤙', '👈', '👉', '👆', '👇', '☝️', '👏', '🙌', '👐',
+                          '❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '🤎', '💔', '❣️', '💕', '💞', '💓', '💗', '💖',
+                          '🎉', '🎊', '🎈', '🎁', '🏆', '🥇', '🥈', '🥉', '⭐', '🌟', '✨', '💫', '🔥', '💥', '⚡', '💯'].map((emoji) => (
+                          <button
+                            key={emoji}
+                            type="button"
+                            onClick={() => insertEmoji(emoji)}
+                            className="text-xl hover:bg-white/10 rounded p-1 transition"
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
+                      {selectedContext.kind === 'server' && serverEmojis[selectedContext.serverId]?.length > 0 && (
+                        <>
+                          <div className="text-xs font-semibold text-text-secondary mt-3 mb-2">Server Emojis</div>
+                          <div className="grid grid-cols-6 gap-2 max-h-32 overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                            {serverEmojis[selectedContext.serverId].map((emoji: any) => (
+                              <button
+                                key={emoji.emoji_id}
+                                type="button"
+                                onClick={() => insertEmoji(`:${emoji.name}:`)}
+                                className="hover:bg-white/10 rounded p-1 transition"
+                                title={emoji.name}
+                              >
+                                <img src={emoji.image_data} alt={emoji.name} className="w-6 h-6 object-contain" />
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+                
+                {/* File upload button */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  onChange={(e) => handleFileSelect(e.target.files)}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isUploading || adminSettings.allow_file_attachments === false}
+                  className="shrink-0 rounded-2xl border border-border-primary bg-bg-secondary/40 px-4 py-3 text-sm font-semibold text-text-secondary hover:bg-bg-tertiary/40 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="Attach file"
+                >
+                  📎
+                </button>
+                
+                <button
+                  type="submit"
+                  disabled={!canSend || isUploading}
+                  className="shrink-0 rounded-2xl bg-sky-500 px-5 py-3 text-sm font-semibold text-bg-primary shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isUploading ? 'Uploading...' : 'Send'}
+                </button>
+              </form>
+            </div>
+          </div>
+          </>
+          )}
+        </main>
+
+        {/* Members Sidebar - shows when in a server */}
+        {selectedServerId && isMembersSidebarOpen && (
+          <aside className="w-[240px] shrink-0 border-l border-border-primary bg-bg-secondary/30">
+            <div className="flex h-full flex-col">
+              <div className="border-b border-border-primary px-4 py-3">
+                <div className="text-sm font-semibold text-white">Members</div>
+                <div className="text-xs text-text-muted mt-0.5">
+                  {serverMembers[selectedServerId]?.length ?? 0} online
+                </div>
+              </div>
+              
+              <div className="flex-1 overflow-auto p-2">
+                {(!serverMembers[selectedServerId] || serverMembers[selectedServerId].length === 0) ? (
+                  <div className="px-3 py-2 text-sm text-text-muted">No members</div>
+                ) : (
+                  <div className="space-y-1">
+                    {/* Organize members by role */}
+                    {organizeMembersByRole(selectedServerId, serverMembers[selectedServerId]).map((roleGroup, idx) => (
+                      <div key={roleGroup.roleName}>
+                        {/* Role section header */}
+                        {idx > 0 && <div className="h-2"></div>}
+                        <div 
+                          className="px-2 py-1 text-xs font-semibold uppercase tracking-wide"
+                          style={{ color: roleGroup.role?.color || '#99AAB5' }}
+                        >
+                          {roleGroup.roleName} — {roleGroup.members.length}
+                        </div>
+                        
+                        {/* Members in this role */}
+                        {roleGroup.members.map((member) => (
+                          <div
+                            key={member.username}
+                            className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/5 transition"
+                          >
+                            <AvatarWithStatus
+                              avatar={member.avatar}
+                              avatar_type={member.avatar_type}
+                              avatar_data={member.avatar_data}
+                              user_status={member.user_status}
+                              size="md"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span 
+                                  className="text-sm font-medium truncate"
+                                  style={{ color: getMemberRoleColor(selectedServerId, member.username) || '#e2e8f0' }}
+                                >
+                                  {member.username}
+                                </span>
+                                {member.is_owner && <span className="text-xs" title="Server Owner">👑</span>}
+                                {member.is_bot && <span className="rounded bg-indigo-500/30 px-1 py-0.5 text-[10px] font-bold text-indigo-300 ml-1">BOT</span>}
+                              </div>
+                              {member.status_message && (
+                                <div className="text-xs text-slate-400 truncate">{member.status_message}</div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </aside>
+        )}
+
+        {/* Pinned Messages Panel */}
+        {showPinsPanel && (selectedContext.kind === 'server' || selectedContext.kind === 'dm') && (
+          <aside className="w-[300px] shrink-0 border-l border-border-primary bg-bg-secondary/30 flex flex-col">
+            <div className="flex items-center justify-between border-b border-border-primary px-4 py-3">
+              <div className="text-sm font-semibold text-white">📌 Pinned Messages</div>
+              <button
+                type="button"
+                onClick={() => setShowPinsPanel(false)}
+                className="text-text-muted hover:text-white text-lg leading-none"
+              >
+                ×
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-3 space-y-2">
+              {(pinnedByContext[selectedKey] ?? []).length === 0 ? (
+                <div className="text-sm text-text-muted text-center py-8">No pinned messages</div>
+              ) : (
+                (pinnedByContext[selectedKey] ?? []).map((pm) => (
+                  <div
+                    key={pm.id}
+                    className="rounded-xl border border-border-primary bg-bg-primary/30 p-3 text-sm hover:bg-bg-secondary/40 transition cursor-pointer"
+                    onClick={() => {
+                      // Jump to the message
+                      if (pm.id) {
+                        const el = document.getElementById(`message-${pm.id}`)
+                        if (el) {
+                          el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                          el.classList.add('bg-yellow-500/10')
+                          setTimeout(() => el.classList.remove('bg-yellow-500/10'), 2000)
+                        }
+                      }
+                    }}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-semibold text-white text-xs">{pm.username}</span>
+                      <span className="text-text-muted text-xs">{new Date(pm.timestamp).toLocaleDateString()}</span>
+                      <button
+                        type="button"
+                        className="ml-auto text-text-muted hover:text-rose-400 text-xs"
+                        title="Unpin"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (pm.id) wsClient.unpinMessage({ type: 'unpin_message', message_id: pm.id })
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <div className="text-text-secondary text-xs line-clamp-3">{pm.content}</div>
+                    {pm.pinned_by && (
+                      <div className="text-text-muted text-[10px] mt-1">Pinned by {pm.pinned_by}</div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </aside>
+        )}
+
+        {/* Thread Creation Modal */}
+        {showCreateThreadModal && (
+          <div
+            className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60"
+            onClick={(e) => e.target === e.currentTarget && setShowCreateThreadModal(false)}
+          >
+            <div className="w-full max-w-md rounded-2xl border border-border-primary bg-bg-secondary p-6 shadow-2xl">
+              <div className="flex items-center justify-between mb-4">
+                <div className="text-lg font-semibold text-white">🧵 Create Thread</div>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateThreadModal(false)}
+                  className="text-text-muted hover:text-white text-xl"
+                >
+                  ×
+                </button>
+              </div>
+              {createThreadParentMsg && (
+                <div className="mb-3 rounded-lg border border-border-primary bg-bg-primary/30 p-2 text-xs text-text-muted">
+                  <span className="font-semibold text-text-secondary">{createThreadParentMsg.username}:</span>{' '}
+                  <span className="line-clamp-2">{createThreadParentMsg.content}</span>
+                </div>
+              )}
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs font-medium text-text-muted block mb-1">Thread Name</label>
+                  <input
+                    type="text"
+                    value={createThreadName}
+                    onChange={(e) => setCreateThreadName(e.target.value)}
+                    placeholder="Thread name..."
+                    className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    autoFocus
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="thread-private"
+                    checked={createThreadPrivate}
+                    onChange={(e) => setCreateThreadPrivate(e.target.checked)}
+                    className="rounded"
+                  />
+                  <label htmlFor="thread-private" className="text-sm text-text-secondary cursor-pointer">
+                    Private thread (invite-only)
+                  </label>
+                </div>
+                {createThreadPrivate && (
+                  <div>
+                    <label className="text-xs font-medium text-text-muted block mb-1">Invite Users (comma-separated)</label>
+                    <input
+                      type="text"
+                      placeholder="username1, username2..."
+                      onChange={(e) => setCreateThreadInvited(e.target.value.split(',').map((u) => u.trim()).filter(Boolean))}
+                      className="w-full rounded-xl border border-border-primary bg-bg-primary/40 px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    />
+                  </div>
+                )}
+                <div className="flex gap-2 mt-4">
+                  <button
+                    type="button"
+                    disabled={!createThreadName.trim() || selectedContext.kind !== 'server'}
+                    onClick={() => {
+                      if (selectedContext.kind !== 'server' || !createThreadName.trim()) return
+                      wsClient.createThread({
+                        type: 'create_thread',
+                        server_id: selectedContext.serverId,
+                        parent_message_id: createThreadParentMsg?.id ?? null,
+                        name: createThreadName.trim(),
+                        is_private: createThreadPrivate,
+                        invited_users: createThreadPrivate ? createThreadInvited : [],
+                      })
+                      setShowCreateThreadModal(false)
+                      setCreateThreadName('')
+                      setCreateThreadParentMsg(null)
+                    }}
+                    className="flex-1 rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Create Thread
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowCreateThreadModal(false)}
+                    className="rounded-xl bg-bg-tertiary px-4 py-2 text-sm text-text-secondary hover:bg-bg-tertiary/60"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* User menu modal - centered overlay */}
+        {isUserMenuOpen && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={(e) => e.target === e.currentTarget && setIsUserMenuOpen(false)}>
+            <div className="relative w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex shrink-0 items-center justify-between border-b border-border-primary px-6 py-4">
+                <div className="flex items-center gap-3">
+                  {init?.is_admin && !isAdminMode && (
+                    <button
+                      type="button"
+                      onClick={() => setIsAdminMode(true)}
+                      className="rounded-lg bg-rose-500/20 px-3 py-1.5 text-sm font-semibold text-rose-300 hover:bg-rose-500/30"
+                    >
+                      👑 Admin Mode
+                    </button>
+                  )}
+                  {isAdminMode && (
+                    <button
+                      type="button"
+                      onClick={() => setIsAdminMode(false)}
+                      className="rounded-lg bg-sky-500/20 px-3 py-1.5 text-sm font-semibold text-sky-300 hover:bg-sky-500/30"
+                    >
+                      ← Back to User Menu
+                    </button>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsUserMenuOpen(false)
+                    setIsAdminMode(false)
+                  }}
+                  className="text-2xl text-text-muted hover:text-text-secondary"
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="overflow-y-auto p-6">
+                {!isAdminMode ? (
+                  <div className="space-y-6">
+                    <div className="text-center">
+                      <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-bg-tertiary text-4xl overflow-hidden">
+                        {init?.avatar_type === 'image' && init?.avatar_data ? (
+                          <img src={init.avatar_data} alt="Avatar" className="h-full w-full object-cover" />
+                        ) : (
+                          <>{init?.avatar ?? '👤'}</>
+                        )}
+                      </div>
+                      <div className="mt-3 text-xl font-semibold text-white">{init?.username ?? 'User'}</div>
+                      {init?.bio && <div className="mt-1 text-sm text-text-muted">{init.bio}</div>}
+                      {init?.status_message && (
+                        <div className="mt-2 text-sm text-text-secondary">{init.status_message}</div>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsUserMenuOpen(false)
+                          selectContext({ kind: 'global' })
+                        }}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-3 text-left text-sm text-slate-200 hover:bg-white/5"
+                      >
+                        🌐 Global Chat
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsUserMenuOpen(false)
+                          setIsAccountSettingsOpen(true)
+                        }}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-3 text-left text-sm text-slate-200 hover:bg-white/5"
+                      >
+                        👤 Account Settings
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => wsClient.requestSync()}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-3 text-left text-sm text-slate-200 hover:bg-white/5"
+                      >
+                        🔄 Refresh Data
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          clearStoredAuth()
+                          useAppStore.getState().clearAuth()
+                          setIsUserMenuOpen(false)
+                        }}
+                        className="w-full rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-left text-sm text-rose-300 hover:bg-rose-500/20"
+                      >
+                        🚪 Logout
+                      </button>
+                    </div>
+
+                    <div className="border-t border-border-primary pt-4">
+                      <div className="text-xs font-medium text-text-muted mb-3">Create Server</div>
+                      <div className="flex gap-2">
+                        <input
+                          value={serverName}
+                          onChange={(e) => setServerName(e.target.value)}
+                          placeholder="New server name"
+                          className="flex-1 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            createServer()
+                            setIsUserMenuOpen(false)
+                          }}
+                          disabled={!serverName.trim() || wsClient.readyState !== WebSocket.OPEN}
+                          className="shrink-0 rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                        >
+                          Create
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-col max-h-[calc(100vh-200px)]">
+                    <div className="flex shrink-0 items-center justify-between px-6 py-4 border-b border-white/10">
+                      <div className="text-lg font-semibold text-white">Admin Configuration</div>
+                      <button
+                        type="button"
+                        onClick={saveAdminSettings}
+                        disabled={isSavingSettings || wsClient.readyState !== WebSocket.OPEN}
+                        className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
+                      >
+                        {isSavingSettings ? 'Saving...' : 'Save Settings'}
+                      </button>
+                    </div>
+
+                    {/* Tabs */}
+                    <div className="border-b border-white/10 px-6 flex flex-wrap gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('general')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'general'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        General
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('email')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'email'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Email & SMTP
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('announcements')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'announcements'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Announcements
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('license')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'license'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        License
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('webhooks')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'webhooks'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Webhooks
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('users')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'users'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Users
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('sso')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'sso'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Sign-in Options
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminSettingsTab('bots')}
+                        className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                          adminSettingsTab === 'bots'
+                            ? 'border-sky-500 text-sky-400'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Bots
+                      </button>
+                    </div>
+
+                    <div className="overflow-y-auto flex-1 p-6 space-y-4">
+                      {/* General Tab */}
+                      {adminSettingsTab === 'general' && (
+                        <>
+                    {/* General Settings */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">General</h3>
+                      <div className="space-y-4">
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Server Name</div>
+                          <input
+                            type="text"
+                            value={adminSettings.server_name || ''}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, server_name: e.target.value })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="Decentra"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Server Logo URL</div>
+                          <div className="text-xs text-slate-400 mb-2">URL to an image or use data:image/png;base64,... for uploaded images</div>
+                          <input
+                            type="text"
+                            value={adminSettings.server_logo || ''}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, server_logo: e.target.value })}
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="/decentra-blurple.png"
+                          />
+                          {adminSettings.server_logo && (
+                            <div className="mt-2">
+                              <div className="text-xs text-slate-400 mb-1">Preview:</div>
+                              <img
+                                src={sanitizeLogoUrl(adminSettings.server_logo) ?? '/decentra-blurple.png'}
+                                alt="Logo preview"
+                                className="h-16 w-16 rounded-lg border border-white/10 bg-slate-950/30 object-contain p-2"
+                                onError={(e) => {
+                                  const target = e.target as HTMLImageElement
+                                  target.src = '/decentra-blurple.png'
+                                }}
+                              />
+                            </div>
+                          )}
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Maximum Message Length</div>
+                          <input
+                            type="number"
+                            min="100"
+                            max="10000"
+                            value={adminSettings.max_message_length || 2000}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, max_message_length: parseInt(e.target.value) || 2000 })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                        </label>
+
+                        <label className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={adminSettings.allow_registration !== false}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, allow_registration: e.target.checked })}
+                            className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
+                          />
+                          <div className="text-sm text-slate-200">Allow New Registrations</div>
+                        </label>
+
+                        <label className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={adminSettings.require_invite === true}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, require_invite: e.target.checked })}
+                            className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
+                          />
+                          <div className="text-sm text-slate-200">Require Invite Code for Registration</div>
+                        </label>
+
+                        <label className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={adminSettings.notify_admin_on_signup !== false}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, notify_admin_on_signup: e.target.checked })}
+                            className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
+                          />
+                          <div className="text-sm text-slate-200">Notify Admin on New Signups</div>
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Maximum File Upload Size (MB)</div>
+                          <input
+                            type="number"
+                            min="1"
+                            max="100"
+                            value={adminSettings.max_attachment_size_mb || 10}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, max_attachment_size_mb: parseInt(e.target.value) || 10 })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                        </label>
+                        
+                        {/* Invite Management */}
+                        <div className="mt-6 pt-6 border-t border-white/10">
+                          <h4 className="mb-3 text-sm font-semibold text-white">Instance Invite Management</h4>
+                          
+                          {lastInviteCode && (
+                            <div className="mb-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3">
+                              <div className="text-xs font-medium text-emerald-200 mb-1">Invite Link</div>
+                              <div className="font-mono text-xs text-emerald-100 break-all mb-2">
+                                {`${window.location.origin}/signup?invite=${lastInviteCode}`}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(`${window.location.origin}/signup?invite=${lastInviteCode}`)
+                                  pushToast({ kind: 'success', message: 'Invite link copied!' })
+                                }}
+                                className="w-full rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+                              >
+                                Copy Link
+                              </button>
+                            </div>
+                          )}
+                          
+                          <label className="block mb-3">
+                            <div className="mb-1 text-xs text-slate-300">Max Uses (leave empty for unlimited)</div>
+                            <input
+                              type="number"
+                              min="1"
+                              placeholder="Unlimited"
+                              value={instanceInviteMaxUses ?? ''}
+                              onChange={(e) => setInstanceInviteMaxUses(e.target.value ? parseInt(e.target.value) : null)}
+                              className="w-full max-w-md rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+                            />
+                          </label>
+                          
+                          <button
+                            type="button"
+                            onClick={() => {
+                              wsClient.generateInvite({ 
+                                type: 'generate_invite',
+                                max_uses: instanceInviteMaxUses
+                              })
+                            }}
+                            disabled={wsClient.readyState !== WebSocket.OPEN}
+                            className="w-full mb-3 rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                          >
+                            Generate Instance Invite Link
+                          </button>
+                          
+                          <button
+                            type="button"
+                            onClick={() => {
+                              wsClient.listInstanceInvites()
+                              setShowInstanceInvitesList(true)
+                            }}
+                            disabled={wsClient.readyState !== WebSocket.OPEN}
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5 disabled:opacity-60"
+                          >
+                            View All Invites
+                          </button>
+                          
+                          {showInstanceInvitesList && instanceInvitesList && (
+                            <div className="mt-3 rounded-xl border border-white/10 bg-slate-950/40 p-3 max-h-64 overflow-auto">
+                              <div className="flex items-center justify-between mb-2">
+                                <div className="text-xs font-medium text-slate-400">Active Invites</div>
+                                <button
+                                  type="button"
+                                  onClick={() => setShowInstanceInvitesList(false)}
+                                  className="text-slate-400 hover:text-slate-200"
+                                >
+                                  ×
+                                </button>
+                              </div>
+                              {instanceInvitesList.length === 0 ? (
+                                <div className="text-xs text-slate-500">No invites generated yet</div>
+                              ) : (
+                                <div className="space-y-2">
+                                  {instanceInvitesList.map((invite) => (
+                                    <div key={invite.code} className="text-xs border border-white/5 rounded-lg p-2 bg-slate-950/40">
+                                      <div className="flex items-center justify-between mb-1">
+                                        <div className="font-mono text-slate-200">{invite.code}</div>
+                                        <div className={`px-2 py-0.5 rounded text-xs ${
+                                          invite.is_active ? 'bg-green-500/20 text-green-300' : 'bg-red-500/20 text-red-300'
+                                        }`}>
+                                          {invite.is_active ? 'Active' : 'Inactive'}
+                                        </div>
+                                      </div>
+                                      <div className="text-slate-400">
+                                        Uses: {invite.current_uses} / {invite.max_uses ?? '∞'}
+                                      </div>
+                                      <div className="text-slate-500 text-[10px]">
+                                        Created: {new Date(invite.created_at).toLocaleString()}
+                                      </div>
+                                      {invite.is_active && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            wsClient.revokeInvite({ type: 'revoke_instance_invite', code: invite.code })
+                                            // Refresh list after a delay
+                                            setTimeout(() => wsClient.listInstanceInvites(), 500)
+                                          }}
+                                          className="mt-1 w-full rounded bg-red-500/20 px-2 py-1 text-xs text-red-300 hover:bg-red-500/30"
+                                        >
+                                          Revoke
+                                        </button>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        
+                        {/* Soundboard Settings */}
+                        <div className="mt-6 pt-6 border-t border-white/10">
+                          <h4 className="mb-3 text-sm font-semibold text-white">Soundboard Settings</h4>
+                          
+                          <label className="flex items-center gap-3 mb-4">
+                            <input
+                              type="checkbox"
+                              checked={adminSettings.allow_soundboard === true}
+                              onChange={(e) => setAdminSettings({ ...adminSettings, allow_soundboard: e.target.checked })}
+                              className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
+                            />
+                            <div className="text-sm text-slate-200">Enable Soundboard</div>
+                          </label>
+                          
+                          <label className="block mb-3">
+                            <div className="mb-1 text-sm text-slate-200">Max Personal Sounds Per User</div>
+                            <input
+                              type="number"
+                              min="1"
+                              max="100"
+                              value={adminSettings.max_sounds_per_user || 10}
+                              onChange={(e) => setAdminSettings({ ...adminSettings, max_sounds_per_user: parseInt(e.target.value) || 10 })}
+                              className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                              disabled={!adminSettings.allow_soundboard}
+                            />
+                          </label>
+                          
+                          <label className="block mb-3">
+                            <div className="mb-1 text-sm text-slate-200">Max Server Sounds</div>
+                            <input
+                              type="number"
+                              min="1"
+                              max="200"
+                              value={adminSettings.max_server_sounds || 25}
+                              onChange={(e) => setAdminSettings({ ...adminSettings, max_server_sounds: parseInt(e.target.value) || 25 })}
+                              className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                              disabled={!adminSettings.allow_soundboard}
+                            />
+                          </label>
+                          
+                          <label className="block">
+                            <div className="mb-1 text-sm text-slate-200">Max Sound Duration (seconds)</div>
+                            <input
+                              type="number"
+                              min="1"
+                              max="30"
+                              value={adminSettings.max_sound_duration_seconds || 10}
+                              onChange={(e) => setAdminSettings({ ...adminSettings, max_sound_duration_seconds: parseInt(e.target.value) || 10 })}
+                              className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                              disabled={!adminSettings.allow_soundboard}
+                            />
+                          </label>
+                        </div>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Max Servers Per User <span className="text-xs text-slate-400">(0 = unlimited)</span></div>
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            value={adminSettings.max_servers_per_user || 0}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, max_servers_per_user: parseInt(e.target.value) || 0 })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Max Channels Per Server <span className="text-xs text-slate-400">(0 = unlimited)</span></div>
+                          <input
+                            type="number"
+                            min="0"
+                            max="500"
+                            value={adminSettings.max_channels_per_server || 0}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, max_channels_per_server: parseInt(e.target.value) || 0 })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                        </label>
+                      </div>
+                    </section>
+                      </>
+                    )}
+
+                    {/* Email Tab */}
+                    {adminSettingsTab === 'email' && (
+                      <>
+                    {/* Email/SMTP Settings */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Email & SMTP Settings</h3>
+                      <div className="space-y-4">
+                        <label className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={adminSettings.require_email_verification === true}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, require_email_verification: e.target.checked })}
+                            className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
+                          />
+                          <div className="text-sm text-slate-200">Require Email Verification</div>
+                        </label>
+
+                        <label className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={adminSettings.smtp_enabled === true}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, smtp_enabled: e.target.checked })}
+                            className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
+                          />
+                          <div className="text-sm text-slate-200">Enable Email Notifications</div>
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">SMTP Host</div>
+                          <input
+                            type="text"
+                            value={adminSettings.smtp_host || ''}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, smtp_host: e.target.value })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="smtp.example.com"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">SMTP Port</div>
+                          <input
+                            type="number"
+                            min="1"
+                            max="65535"
+                            value={adminSettings.smtp_port || 587}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, smtp_port: parseInt(e.target.value) || 587 })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">SMTP Username</div>
+                          <input
+                            type="text"
+                            value={adminSettings.smtp_username || ''}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, smtp_username: e.target.value })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="user@example.com"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">SMTP Password</div>
+                          <input
+                            type="password"
+                            value={adminSettings.smtp_password || ''}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, smtp_password: e.target.value })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="••••••••"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">From Email Address</div>
+                          <input
+                            type="email"
+                            value={adminSettings.smtp_from_email || ''}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, smtp_from_email: e.target.value })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="noreply@example.com"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">From Name</div>
+                          <input
+                            type="text"
+                            value={adminSettings.smtp_from_name || ''}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, smtp_from_name: e.target.value })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="Decentra"
+                          />
+                        </label>
+
+                        <label className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={adminSettings.smtp_use_tls !== false}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, smtp_use_tls: e.target.checked })}
+                            className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
+                          />
+                          <div className="text-sm text-slate-200">Use TLS/STARTTLS</div>
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Test Email Address</div>
+                          <input
+                            type="email"
+                            value={testEmailAddress}
+                            onChange={(e) => setTestEmailAddress(e.target.value)}
+                            placeholder="test@example.com"
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                          <div className="mt-1 text-xs text-slate-400">Enter an email address to send a test email to</div>
+                        </label>
+
+                        <div>
+                          <button
+                            type="button"
+                            onClick={testSMTP}
+                            disabled={isTestingSMTP || wsClient.readyState !== WebSocket.OPEN}
+                            className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                          >
+                            {isTestingSMTP ? 'Testing...' : 'Test SMTP Connection'}
+                          </button>
+                        </div>
+                      </div>
+                    </section>
+                      </>
+                    )}
+
+                    {/* Announcements Tab */}
+                    {adminSettingsTab === 'announcements' && (
+                      <>
+                    {/* Announcements */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Announcements</h3>
+                      <div className="space-y-4">
+                        <label className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={adminSettings.announcement_enabled === true}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, announcement_enabled: e.target.checked })}
+                            className="h-5 w-5 rounded border-white/10 bg-slate-950/40"
+                          />
+                          <div className="text-sm text-slate-200">Enable Announcement Banner</div>
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Announcement Message</div>
+                          <input
+                            type="text"
+                            maxLength={500}
+                            value={adminSettings.announcement_message || ''}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, announcement_message: e.target.value })}
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="Enter announcement message"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Display Duration (minutes)</div>
+                          <input
+                            type="number"
+                            min="1"
+                            max="10080"
+                            value={adminSettings.announcement_duration_minutes || 60}
+                            onChange={(e) => setAdminSettings({ ...adminSettings, announcement_duration_minutes: parseInt(e.target.value) || 60 })}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                        </label>
+                      </div>
+                    </section>
+                      </>
+                    )}
+
+                    {/* License Tab */}
+                    {adminSettingsTab === 'license' && (
+                      <>
+                    {/* License Management */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">License Management</h3>
+                      <LicensePanel />
+                    </section>
+                      </>
+                    )}
+
+                    {/* Webhooks Tab */}
+                    {adminSettingsTab === 'webhooks' && (
+                      <>
+                    {/* Instance Webhooks */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Instance Webhooks</h3>
+                      <WebhookPanel isAdmin={true} />
+                    </section>
+                      </>
+                    )}
+
+                    {/* Users Tab */}
+                    {adminSettingsTab === 'users' && (
+                      <>
+                    {/* Registered Users */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">👥 Registered Users</h3>
+                      <UsersPanel />
+                    </section>
+                      </>
+                    )}
+
+                    {/* SSO / Sign-in Options Tab */}
+                    {adminSettingsTab === 'sso' && (
+                      <SsoPanel />
+                    )}
+
+                    {/* Bots Tab */}
+                    {adminSettingsTab === 'bots' && (
+                      <>
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">🤖 Bot Management</h3>
+                      <BotPanel />
+                    </section>
+                      </>
+                    )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Account Settings Modal */}
+        {isAccountSettingsOpen && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={(e) => e.target === e.currentTarget && setIsAccountSettingsOpen(false)}>
+            <div className="relative w-full max-w-3xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-white/10 px-6 py-4 flex-shrink-0">
+                <h2 className="text-xl font-semibold text-white">Account Settings</h2>
+                <button
+                  type="button"
+                  onClick={() => setIsAccountSettingsOpen(false)}
+                  className="text-2xl text-slate-400 hover:text-slate-200"
+                >
+                  ×
+                </button>
+              </div>
+
+              {/* Tabs */}
+              <div className="border-b border-white/10 px-6 flex flex-wrap gap-2 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setAccountSettingsTab('profile')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    accountSettingsTab === 'profile'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Profile
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAccountSettingsTab('security')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    accountSettingsTab === 'security'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Security
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAccountSettingsTab('notifications')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    accountSettingsTab === 'notifications'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Notifications
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAccountSettingsTab('keybinds')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    accountSettingsTab === 'keybinds'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Keybinds
+                </button>
+              </div>
+
+              {/* Tab Content */}
+              <div className="overflow-y-auto flex-1 p-6 space-y-4">
+                {accountSettingsTab === 'profile' && (
+                  <>
+                    {/* Profile Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Profile</h3>
+                      <div className="space-y-4">
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Bio</div>
+                          <textarea
+                            value={profileBio}
+                            onChange={(e) => setProfileBio(e.target.value)}
+                            maxLength={500}
+                            rows={3}
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="Tell others about yourself..."
+                          />
+                          <div className="mt-1 text-xs text-slate-400">{profileBio.length}/500 characters</div>
+                        </label>
+
+                        <label className="block">
+                          <div className="mb-1 text-sm text-slate-200">Status Message</div>
+                          <input
+                            type="text"
+                            value={profileStatus}
+                            onChange={(e) => setProfileStatus(e.target.value)}
+                            maxLength={100}
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            placeholder="What's your status?"
+                          />
+                          <div className="mt-1 text-xs text-slate-400">{profileStatus.length}/100 characters</div>
+                        </label>
+
+                        <div>
+                          <div className="mb-2 text-sm text-slate-200">User Status</div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleChangeStatus('online')}
+                              className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                                userStatus === 'online'
+                                  ? 'border-green-500/50 bg-green-500/20 text-green-300'
+                                  : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                              }`}
+                            >
+                              <span className="h-2.5 w-2.5 rounded-full bg-green-500" />
+                              Online
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleChangeStatus('away')}
+                              className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                                userStatus === 'away'
+                                  ? 'border-yellow-500/50 bg-yellow-500/20 text-yellow-300'
+                                  : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                              }`}
+                            >
+                              <span className="h-2.5 w-2.5 rounded-full bg-yellow-500" />
+                              Away
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleChangeStatus('busy')}
+                              className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                                userStatus === 'busy'
+                                  ? 'border-red-500/50 bg-red-500/20 text-red-300'
+                                  : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                              }`}
+                            >
+                              <span className="h-2.5 w-2.5 rounded-full bg-red-500" />
+                              Busy
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleChangeStatus('offline')}
+                              className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                                userStatus === 'offline'
+                                  ? 'border-gray-500/50 bg-gray-500/20 text-gray-300'
+                                  : 'border-white/10 bg-slate-950/40 text-slate-300 hover:bg-white/5'
+                              }`}
+                            >
+                              <span className="h-2.5 w-2.5 rounded-full bg-gray-500" />
+                              Offline
+                            </button>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleUpdateProfile}
+                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                        >
+                          Update Profile
+                        </button>
+                      </div>
+                    </section>
+
+                    {/* Avatar Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Avatar</h3>
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-4">
+                          <AvatarWithStatus
+                            avatar={init?.avatar}
+                            avatar_type={init?.avatar_type}
+                            avatar_data={init?.avatar_data}
+                            user_status={init?.user_status}
+                            size="xl"
+                          />
+                          <div className="flex-1">
+                            <div className="text-sm text-slate-200 mb-2">Current Avatar</div>
+                            <div className="text-xs text-slate-400">
+                              Type: {init?.avatar_type || 'emoji'}
+                            </div>
+                            <div className="text-xs text-slate-400">
+                              Status: {init?.user_status}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="mb-2 text-sm text-slate-200">Upload Image (PNG, JPG, or GIF, max 2MB)</div>
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/gif"
+                            onChange={handleAvatarFileChange}
+                            className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 file:mr-4 file:rounded-lg file:border-0 file:bg-sky-500/20 file:px-3 file:py-1 file:text-sm file:text-sky-200 hover:file:bg-sky-500/30"
+                          />
+                          {avatarPreview && (
+                            <div className="mt-3 flex items-center gap-4">
+                              <img src={avatarPreview} alt="Preview" className="h-20 w-20 rounded-full object-cover border border-white/10" />
+                              <button
+                                type="button"
+                                onClick={handleUploadAvatar}
+                                className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                              >
+                                Upload Avatar
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        <div>
+                          <div className="mb-2 text-sm text-slate-200">Or choose an emoji</div>
+                          <div className="flex flex-wrap gap-2">
+                            {['👤', '😀', '😎', '🤖', '👾', '🐱', '🐶', '🦊', '🐼', '🦁', '🐯', '🐻'].map((emoji) => (
+                              <button
+                                key={emoji}
+                                type="button"
+                                onClick={() => handleSetEmojiAvatar(emoji)}
+                                className="flex h-12 w-12 items-center justify-center rounded-xl border border-white/10 bg-slate-950/40 text-2xl hover:bg-white/5"
+                              >
+                                {emoji}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+
+                    {/* Theme Section - NEW */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Theme</h3>
+                      <div className="space-y-4">
+                        <div className="text-sm text-slate-200 mb-3">Choose your preferred theme</div>
+                        <div className="space-y-2">
+                          <label className="flex items-center gap-3 p-3 rounded-xl border border-white/10 bg-slate-950/40 cursor-pointer hover:bg-white/5 transition">
+                            <input 
+                              type="radio" 
+                              name="theme" 
+                              value="dark"
+                              checked={themeMode === 'dark'}
+                              onChange={() => handleThemeChange('dark')}
+                              className="text-sky-500 focus:ring-sky-500" 
+                            />
+                            <div>
+                              <div className="text-sm font-medium text-slate-200">Dark</div>
+                              <div className="text-xs text-slate-400">Default dark theme</div>
+                            </div>
+                          </label>
+                          <label className="flex items-center gap-3 p-3 rounded-xl border border-white/10 bg-slate-950/40 cursor-pointer hover:bg-white/5 transition">
+                            <input 
+                              type="radio" 
+                              name="theme" 
+                              value="light"
+                              checked={themeMode === 'light'}
+                              onChange={() => handleThemeChange('light')}
+                              className="text-sky-500 focus:ring-sky-500" 
+                            />
+                            <div>
+                              <div className="text-sm font-medium text-slate-200">Light</div>
+                              <div className="text-xs text-slate-400">Light mode for daytime use</div>
+                            </div>
+                          </label>
+                          <label className="flex items-center gap-3 p-3 rounded-xl border border-white/10 bg-slate-950/40 cursor-pointer hover:bg-white/5 transition">
+                            <input 
+                              type="radio" 
+                              name="theme" 
+                              value="high_contrast"
+                              checked={themeMode === 'high_contrast'}
+                              onChange={() => handleThemeChange('high_contrast')}
+                              className="text-sky-500 focus:ring-sky-500" 
+                            />
+                            <div>
+                              <div className="text-sm font-medium text-slate-200">High Contrast</div>
+                              <div className="text-xs text-slate-400">Maximum contrast for accessibility</div>
+                            </div>
+                          </label>
+                        </div>
+                      </div>
+                    </section>
+                  </>
+                )}
+
+                {accountSettingsTab === 'security' && (
+                  <>
+                    {/* Account Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Account</h3>
+                      <div className="space-y-4">
+                        {/* Current Username */}
+                        <div>
+                          <div className="mb-1 text-sm text-slate-200">Username</div>
+                          <div className="text-sm text-slate-400 mb-2">{init?.username}</div>
+                          <div className="space-y-2">
+                            <input
+                              type="text"
+                              value={newUsername}
+                              onChange={(e) => setNewUsername(e.target.value)}
+                              placeholder="New username"
+                              className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                            <input
+                              type="password"
+                              value={usernamePassword}
+                              onChange={(e) => setUsernamePassword(e.target.value)}
+                              placeholder="Confirm with password"
+                              className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                            <button
+                              type="button"
+                              onClick={handleChangeUsername}
+                              disabled={!newUsername.trim() || !usernamePassword}
+                              className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Change Username
+                            </button>
+                            {usernameChangeStatus && (
+                              <div className={`text-sm ${usernameChangeStatus.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+                                {usernameChangeStatus.message}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Divider */}
+                        <div className="border-t border-white/5" />
+
+                        {/* Current Email */}
+                        <div>
+                          <div className="mb-1 text-sm text-slate-200">Email</div>
+                          <div className="text-sm text-slate-400 mb-2">{init?.email || 'No email set'}</div>
+                          <div className="space-y-2">
+                            <input
+                              type="email"
+                              value={newEmail}
+                              onChange={(e) => setNewEmail(e.target.value)}
+                              placeholder="New email address"
+                              className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                            <input
+                              type="password"
+                              value={emailPassword}
+                              onChange={(e) => setEmailPassword(e.target.value)}
+                              placeholder="Confirm with password"
+                              className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                            <button
+                              type="button"
+                              onClick={handleChangeEmail}
+                              disabled={!newEmail.trim() || !emailPassword}
+                              className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Change Email
+                            </button>
+                            {emailChangeStatus && (
+                              <div className={`text-sm ${emailChangeStatus.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+                                {emailChangeStatus.message}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+
+                    {/* 2FA Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Two-Factor Authentication</h3>
+                      {!twoFASetup ? (
+                        <div className="space-y-4">
+                          <div className="text-sm text-slate-200">
+                            Add an extra layer of security to your account.
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={handleSetup2FA}
+                              className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400"
+                            >
+                              Enable 2FA
+                            </button>
+                          </div>
+                          
+                          {/* Disable 2FA Section */}
+                          <div className="border-t border-white/10 pt-4 mt-4">
+                            <div className="text-sm text-slate-200 mb-3">
+                              If you already have 2FA enabled and want to disable it:
+                            </div>
+                            <div className="space-y-3">
+                              <label className="block">
+                                <div className="mb-1 text-sm text-slate-200">Password</div>
+                                <input
+                                  type="password"
+                                  value={disable2FAPassword}
+                                  onChange={(e) => setDisable2FAPassword(e.target.value)}
+                                  placeholder="Your password"
+                                  className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                                />
+                              </label>
+                              <label className="block">
+                                <div className="mb-1 text-sm text-slate-200">2FA Code or Backup Code</div>
+                                <input
+                                  type="text"
+                                  value={disable2FACode}
+                                  onChange={(e) => setDisable2FACode(e.target.value)}
+                                  placeholder="000000"
+                                  className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                                />
+                              </label>
+                              <button
+                                type="button"
+                                onClick={handleDisable2FA}
+                                disabled={!disable2FAPassword || !disable2FACode}
+                                className="rounded-xl bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-400 disabled:opacity-60"
+                              >
+                                Disable 2FA
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          <div className="text-sm text-slate-200">Scan this QR code with your authenticator app:</div>
+                          <div className="flex justify-center">
+                            <img src={twoFASetup.qr_code} alt="2FA QR Code" className="rounded-xl border border-white/10 bg-white p-2" />
+                          </div>
+                          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
+                            <div className="text-xs font-medium text-amber-200 mb-2">Backup Codes (save these safely!):</div>
+                            <div className="font-mono text-xs text-amber-100 space-y-1">
+                              {twoFASetup.backup_codes.map((code, idx) => (
+                                <div key={idx}>{code}</div>
+                              ))}
+                            </div>
+                          </div>
+                          <label className="block">
+                            <div className="mb-1 text-sm text-slate-200">Enter code from authenticator app to verify:</div>
+                            <input
+                              type="text"
+                              value={twoFACode}
+                              onChange={(e) => setTwoFACode(e.target.value)}
+                              placeholder="000000"
+                              maxLength={6}
+                              className="w-full max-w-xs rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                          </label>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={handleVerify2FASetup}
+                              disabled={!twoFACode.trim()}
+                              className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
+                            >
+                              Verify & Enable
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setTwoFASetup(null)}
+                              className="rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </section>
+
+                    {/* Password Reset Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Password Reset</h3>
+                      <div className="space-y-4">
+                        <div className="text-sm text-slate-200">
+                          Request a password reset link to be sent to your registered email address.
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleRequestPasswordReset}
+                          className="rounded-xl bg-orange-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-orange-400"
+                        >
+                          Request Password Reset
+                        </button>
+                      </div>
+                    </section>
+                  </>
+                )}
+
+                {accountSettingsTab === 'notifications' && (
+                  <>
+                    {/* Notifications Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Notifications</h3>
+                      <div className="space-y-4">
+                        {/* Browser Notifications Permission */}
+                        <div className="rounded-xl border border-white/10 bg-slate-950/20 p-3">
+                          <label className="block mb-2">
+                            <div className="text-sm font-medium text-slate-200">Browser Notifications</div>
+                            <div className="text-xs text-slate-400 mt-1">
+                              {notificationManager.isSupported() 
+                                ? 'Get desktop notifications for mentions, replies, and messages'
+                                : 'Browser notifications are not supported in your browser'}
+                            </div>
+                          </label>
+                          {notificationManager.isSupported() && (
+                            <div className="flex items-center gap-3">
+                              <div className="text-xs text-slate-300">
+                                Status: <span className={`font-semibold ${
+                                  notificationPermission === 'granted' ? 'text-emerald-400' :
+                                  notificationPermission === 'denied' ? 'text-red-400' :
+                                  'text-amber-400'
+                                }`}>
+                                  {notificationPermission === 'granted' ? 'Enabled' :
+                                   notificationPermission === 'denied' ? 'Blocked' :
+                                   'Not requested'}
+                                </span>
+                              </div>
+                              {notificationPermission !== 'granted' && notificationPermission !== 'denied' && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    const permission = await notificationManager.requestPermission()
+                                    setNotificationPermission(permission)
+                                    if (permission === 'granted') {
+                                      pushToast({ kind: 'success', message: 'Browser notifications enabled' })
+                                      // Show test notification immediately
+                                      setTimeout(() => {
+                                        notificationManager.showNotification('Notifications Enabled!', {
+                                          body: 'You will now receive desktop notifications for messages, mentions, and replies.',
+                                          icon: '/favicon.ico',
+                                        })
+                                      }, 500)
+                                    } else {
+                                      pushToast({ kind: 'error', message: 'Browser notifications permission denied' })
+                                    }
+                                  }}
+                                  className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
+                                >
+                                  Enable Notifications
+                                </button>
+                              )}
+                              {notificationPermission === 'granted' && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    notificationManager.showNotification('Test Notification', {
+                                      body: 'This is a test notification. If you see this, notifications are working!',
+                                      icon: '/favicon.ico',
+                                    })
+                                    pushToast({ kind: 'info', message: 'Test notification sent - check your system tray!' })
+                                  }}
+                                  className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+                                >
+                                  Test Notification
+                                </button>
+                              )}
+                              {notificationPermission === 'denied' && (
+                                <div className="text-xs text-red-400">
+                                  Please enable notifications in your browser settings
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        
+                        {/* Notification Mode */}
+                        <label className="block">
+                          <div className="mb-2 text-sm text-slate-200">Notification Mode</div>
+                          <div className="text-xs text-slate-400 mb-2">
+                            Controls when you receive notifications (only works when browser notifications are enabled)
+                          </div>
+                          <select
+                            value={notificationMode}
+                            onChange={(e) => setNotificationMode(e.target.value as 'all' | 'mentions' | 'none')}
+                            className="w-full max-w-md rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          >
+                            <option value="all">All messages</option>
+                            <option value="mentions">Only mentions and replies</option>
+                            <option value="none">None</option>
+                          </select>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={handleSetNotificationMode}
+                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                        >
+                          Save Notification Settings
+                        </button>
+                      </div>
+                    </section>
+                  </>
+                )}
+
+                {accountSettingsTab === 'keybinds' && (
+                  <>
+                    {/* Keybinds Section */}
+                    <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Voice Chat Keybinds</h3>
+                      <div className="space-y-3">
+                        <div className="text-sm text-slate-400 mb-4">
+                          Configure keyboard shortcuts for Voice Chat and Calls
+                        </div>
+                        
+                        {/* Push to Talk */}
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-slate-900/60 hover:bg-slate-900/80 transition">
+                          <div>
+                            <div className="text-sm font-medium text-slate-200">Push to Talk</div>
+                            <div className="text-xs text-slate-400">Hold to unmute while speaking</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <kbd className="px-3 py-1.5 text-sm font-mono font-semibold rounded bg-slate-800 text-sky-400 border border-sky-500/30">
+                              {keybinds.push_to_talk ? keybinds.push_to_talk.replace('Key', '') : 'V'}
+                            </kbd>
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 text-xs font-semibold rounded bg-sky-600 hover:bg-sky-500 text-white transition"
+                              onClick={() => handleStartRebind('push_to_talk')}
+                            >
+                              Change
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Toggle Mute */}
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-slate-900/60 hover:bg-slate-900/80 transition">
+                          <div>
+                            <div className="text-sm font-medium text-slate-200">Toggle Mute</div>
+                            <div className="text-xs text-slate-400">Mute/unmute microphone</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <kbd className="px-3 py-1.5 text-sm font-mono font-semibold rounded bg-slate-800 text-sky-400 border border-sky-500/30">
+                              {keybinds.toggle_mute ? keybinds.toggle_mute.replace('Key', '') : 'M'}
+                            </kbd>
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 text-xs font-semibold rounded bg-sky-600 hover:bg-sky-500 text-white transition"
+                              onClick={() => handleStartRebind('toggle_mute')}
+                            >
+                              Change
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Toggle Deafen */}
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-slate-900/60 hover:bg-slate-900/80 transition">
+                          <div>
+                            <div className="text-sm font-medium text-slate-200">Toggle Deafen</div>
+                            <div className="text-xs text-slate-400">Mute microphone and disable incoming audio</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <kbd className="px-3 py-1.5 text-sm font-mono font-semibold rounded bg-slate-800 text-sky-400 border border-sky-500/30">
+                              {keybinds.toggle_deafen ? keybinds.toggle_deafen.replace('Key', '') : 'D'}
+                            </kbd>
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 text-xs font-semibold rounded bg-sky-600 hover:bg-sky-500 text-white transition"
+                              onClick={() => handleStartRebind('toggle_deafen')}
+                            >
+                              Change
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Toggle Video */}
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-slate-900/60 hover:bg-slate-900/80 transition">
+                          <div>
+                            <div className="text-sm font-medium text-slate-200">Toggle Video</div>
+                            <div className="text-xs text-slate-400">Enable/disable camera</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <kbd className="px-3 py-1.5 text-sm font-mono font-semibold rounded bg-slate-800 text-sky-400 border border-sky-500/30">
+                              {keybinds.toggle_video ? keybinds.toggle_video.replace('Key', '') : 'C'}
+                            </kbd>
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 text-xs font-semibold rounded bg-sky-600 hover:bg-sky-500 text-white transition"
+                              onClick={() => handleStartRebind('toggle_video')}
+                            >
+                              Change
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Toggle Screen Share */}
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-slate-900/60 hover:bg-slate-900/80 transition">
+                          <div>
+                            <div className="text-sm font-medium text-slate-200">Toggle Screen Share</div>
+                            <div className="text-xs text-slate-400">Start/stop screen sharing</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <kbd className="px-3 py-1.5 text-sm font-mono font-semibold rounded bg-slate-800 text-sky-400 border border-sky-500/30">
+                              {keybinds.toggle_screen_share ? keybinds.toggle_screen_share.replace('Key', '') : 'S'}
+                            </kbd>
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 text-xs font-semibold rounded bg-sky-600 hover:bg-sky-500 text-white transition"
+                              onClick={() => handleStartRebind('toggle_screen_share')}
+                            >
+                              Change
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Answer/End Call */}
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-slate-900/60 hover:bg-slate-900/80 transition">
+                          <div>
+                            <div className="text-sm font-medium text-slate-200">Answer/End Call</div>
+                            <div className="text-xs text-slate-400">Answer incoming calls or end current call</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <kbd className="px-3 py-1.5 text-sm font-mono font-semibold rounded bg-slate-800 text-sky-400 border border-sky-500/30">
+                              {keybinds.answer_end_call ? keybinds.answer_end_call.replace('Key', '') : 'A'}
+                            </kbd>
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 text-xs font-semibold rounded bg-sky-600 hover:bg-sky-500 text-white transition"
+                              onClick={() => handleStartRebind('answer_end_call')}
+                            >
+                              Change
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 p-3 rounded-xl bg-sky-500/10 border border-sky-500/30">
+                          <div className="text-xs text-sky-300">
+                            💡 <span className="font-semibold">Tip:</span> Keybinds will not trigger while typing in text fields
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Keybind Rebind Dialog */}
+        {rebindingAction && (
+          <div 
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4"
+            onClick={(e) => e.target === e.currentTarget && handleCancelRebind()}
+          >
+            <div 
+              className="relative w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 shadow-2xl p-6"
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={handleKeybindCapture}
+              tabIndex={0}
+            >
+              <h3 className="text-xl font-semibold text-white mb-4">
+                Rebind {rebindingAction.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+              </h3>
+              
+              <div className="mb-6">
+                <div className="text-sm text-slate-300 mb-3">
+                  Press any key to set as the new keybind
+                </div>
+                
+                {rebindConflict && (
+                  <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 mb-3">
+                    <div className="text-sm text-red-300">
+                      ⚠️ This key is already bound to <span className="font-semibold">{rebindConflict.replace(/_/g, ' ')}</span>
+                    </div>
+                  </div>
+                )}
+                
+                <div className="p-4 rounded-xl bg-slate-800/60 border-2 border-dashed border-sky-500/50 text-center">
+                  <div className="text-3xl font-mono font-bold text-sky-400 mb-2">
+                    {keybinds[rebindingAction] ? keybinds[rebindingAction].replace('Key', '') : '?'}
+                  </div>
+                  <div className="text-xs text-slate-400">
+                    Current binding
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={handleCancelRebind}
+                  className="flex-1 px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-semibold transition"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Server Settings Modal */}
+        {isServerSettingsOpen && selectedServerObj && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={(e) => e.target === e.currentTarget && setIsServerSettingsOpen(false)}>
+            <div className="relative w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-white/10 px-6 py-4 flex-shrink-0">
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">{selectedServerObj.icon ?? '🏠'}</span>
+                  <h2 className="text-xl font-semibold text-white">{selectedServerObj.name} Settings</h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsServerSettingsOpen(false)}
+                  className="text-2xl text-slate-400 hover:text-slate-200"
+                >
+                  ×
+                </button>
+              </div>
+
+              {/* Tabs */}
+              <div className="border-b border-white/10 px-6 flex flex-wrap gap-2 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setServerSettingsTab('overview')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'overview'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Overview
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setServerSettingsTab('channels')
+                    // Load channel permission overrides for all server channels
+                    if (selectedServerId && selectedServerObj) {
+                      ;(selectedServerObj.channels ?? []).forEach((ch: any) => {
+                        wsClient.send({ type: 'get_channel_permissions', server_id: selectedServerId, channel_id: ch.id })
+                      })
+                    }
+                  }}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'channels'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Channels
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setServerSettingsTab('roles')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'roles'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Roles & Permissions
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setServerSettingsTab('customization')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'customization'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Customization
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setServerSettingsTab('automations')
+                    // Load automation settings when opening the tab
+                    if (selectedServerId) {
+                      wsClient.getServerAutomationSettings({ type: 'get_server_automation_settings', server_id: selectedServerId })
+                    }
+                  }}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'automations'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Automations
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setServerSettingsTab('members')
+                    if (selectedServerId) wsClient.send({ type: 'get_server_members', server_id: selectedServerId })
+                  }}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'members'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Members
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setServerSettingsTab('audit')
+                    if (selectedServerId) wsClient.send({ type: 'get_server_audit_log', server_id: selectedServerId })
+                  }}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'audit'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Audit Log
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setServerSettingsTab('bots')}
+                  className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                    serverSettingsTab === 'bots'
+                      ? 'border-sky-500 text-sky-400'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Bots
+                </button>
+              </div>
+
+              <div className="p-6 overflow-y-auto flex-1 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                <div className="space-y-6">
+                  {/* Overview Tab */}
+                  {serverSettingsTab === 'overview' && (
+                    <>
+                  {/* Server Icon Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Server Icon</h3>
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-4">
+                        <div className="flex h-16 w-16 items-center justify-center rounded-xl border border-white/10 bg-slate-950/40 text-3xl overflow-hidden">
+                          {selectedServerObj.icon_type === 'image' && selectedServerObj.icon_data ? (
+                            <img src={selectedServerObj.icon_data} alt="Server icon" className="h-full w-full object-cover" />
+                          ) : (
+                            <>{selectedServerObj.icon ?? '🏠'}</>
+                          )}
+                        </div>
+                        <div className="flex-1">
+                          <label className="block">
+                            <div className="mb-1 text-sm text-slate-200">Upload Image (.png, .jpg, .gif)</div>
+                            <input
+                              type="file"
+                              accept=".png,.jpg,.jpeg,.gif"
+                              onChange={(e) => {
+                                const file = e.target.files?.[0]
+                                if (file && selectedServerId) {
+                                  uploadServerIcon(selectedServerId, file)
+                                  e.target.value = ''
+                                }
+                              }}
+                              className="w-full text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-sky-500 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-slate-950 hover:file:bg-sky-400"
+                            />
+                          </label>
+                        </div>
+                        <div className="text-xs text-slate-400">
+                          Status: {init?.user_status}
+                        </div>
+                      </div>
+                      <div className="text-sm text-slate-400">
+                        Or pick an emoji:
+                      </div>
+                      <div className="grid grid-cols-10 gap-2">
+                        {['🏠', '🎮', '💬', '🎨', '🎵', '📚', '⚔️', '🌟', '🔥', '💎'].map((emoji) => (
+                          <button
+                            key={emoji}
+                            type="button"
+                            onClick={() => selectedServerId && setServerIconEmoji(selectedServerId, emoji)}
+                            className="text-2xl hover:bg-white/10 rounded-lg p-2 transition"
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </section>
+
+                  {/* Server Invite Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Server Invite</h3>
+                    <div className="space-y-3">
+                      {lastInviteCode && (
+                        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3">
+                          <div className="text-xs font-medium text-emerald-200 mb-1">Invite Link</div>
+                          <div className="font-mono text-xs text-emerald-100 break-all mb-2">
+                            {`${window.location.origin}/chat?server_invite=${lastInviteCode}`}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(`${window.location.origin}/chat?server_invite=${lastInviteCode}`)
+                              pushToast({ kind: 'success', message: 'Invite link copied!' })
+                            }}
+                            className="w-full rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+                          >
+                            Copy Link
+                          </button>
+                        </div>
+                      )}
+                      
+                      <div>
+                        <label className="block text-xs text-slate-300 mb-1">
+                          Max Uses (leave empty for unlimited)
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          placeholder="Unlimited"
+                          value={serverInviteMaxUses ?? ''}
+                          onChange={(e) => setServerInviteMaxUses(e.target.value ? parseInt(e.target.value) : null)}
+                          className="w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+                        />
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            wsClient.generateServerInvite({ 
+                              type: 'generate_server_invite', 
+                              server_id: selectedServerId,
+                              max_uses: serverInviteMaxUses
+                            })
+                          }
+                        }}
+                        disabled={wsClient.readyState !== WebSocket.OPEN}
+                        className="w-full rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                      >
+                        Generate New Invite Link
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            loadInviteUsage(selectedServerId)
+                          }
+                        }}
+                        disabled={isLoadingInviteUsage || wsClient.readyState !== WebSocket.OPEN}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5 disabled:opacity-60"
+                      >
+                        {isLoadingInviteUsage ? 'Loading...' : 'View Invite Usage'}
+                      </button>
+
+                      {inviteUsageLogs && inviteUsageServerId === selectedServerId && (
+                        <div className="mt-3 rounded-xl border border-white/10 bg-slate-950/40 p-3 max-h-48 overflow-auto">
+                          <div className="text-xs font-medium text-slate-400 mb-2">Invite Usage History</div>
+                          {inviteUsageLogs.length === 0 ? (
+                            <div className="text-xs text-slate-500">No invites used yet</div>
+                          ) : (
+                            <div className="space-y-2">
+                              {inviteUsageLogs.map((log, idx) => (
+                                <div key={idx} className="text-xs border-b border-white/5 pb-2 last:border-0">
+                                  <div className="text-slate-200 font-medium">{log.invite_code}</div>
+                                  <div className="text-slate-400">Used {log.use_count} time(s)</div>
+                                  {log.last_used && (
+                                    <div className="text-slate-500">Last: {new Date(log.last_used).toLocaleString()}</div>
+                                  )}
+                                  {log.users && log.users.length > 0 && (
+                                    <div className="text-slate-400">
+                                      Users: {log.users.slice(0, 6).join(', ')}{log.users.length > 6 ? ` +${log.users.length - 6} more` : ''}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                    </>
+                  )}
+
+                  {/* Channels Tab */}
+                  {serverSettingsTab === 'channels' && (
+                    <>
+                  {/* Category Management Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Categories</h3>
+                    <div className="space-y-3">
+                      {/* Create Category */}
+                      <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                        <div className="mb-2 text-sm font-medium text-slate-200">Create Category</div>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={categoryName}
+                            onChange={(e) => setCategoryName(e.target.value)}
+                            placeholder="Category name (e.g., 📚 Resources)"
+                            className="flex-1 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (categoryName.trim() && selectedServerId) {
+                                wsClient.send({ type: 'create_category', server_id: selectedServerId, name: categoryName.trim() })
+                                setCategoryName('')
+                              }
+                            }}
+                            disabled={!categoryName.trim() || wsClient.readyState !== WebSocket.OPEN}
+                            className="rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                          >
+                            Create
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* List Categories */}
+                      <div className="space-y-2">
+                        <div className="text-xs font-medium text-slate-400 mb-2">Manage Categories</div>
+                        {(() => {
+                          const sortedCategories = (selectedServerObj.categories ?? []).sort((a, b) => a.position - b.position)
+                          
+                          const moveCategoryUp = (categoryId: string, currentPosition: number) => {
+                            if (currentPosition === 0) return
+                            const newPositions = sortedCategories.map((cat, idx) => {
+                              if (cat.id === categoryId) {
+                                return { category_id: cat.id, position: currentPosition - 1 }
+                              }
+                              if (idx === currentPosition - 1) {
+                                return { category_id: cat.id, position: currentPosition }
+                              }
+                              return { category_id: cat.id, position: idx }
+                            })
+                            wsClient.send({ type: 'update_category_positions', server_id: selectedServerId, positions: newPositions })
+                          }
+                          
+                          const moveCategoryDown = (categoryId: string, currentPosition: number) => {
+                            if (currentPosition === sortedCategories.length - 1) return
+                            const newPositions = sortedCategories.map((cat, idx) => {
+                              if (cat.id === categoryId) {
+                                return { category_id: cat.id, position: currentPosition + 1 }
+                              }
+                              if (idx === currentPosition + 1) {
+                                return { category_id: cat.id, position: currentPosition }
+                              }
+                              return { category_id: cat.id, position: idx }
+                            })
+                            wsClient.send({ type: 'update_category_positions', server_id: selectedServerId, positions: newPositions })
+                          }
+                          
+                          return sortedCategories.map((category, index) => (
+                            <div key={category.id} className="rounded-lg border border-white/10 bg-slate-950/40 p-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2 flex-1 min-w-0">
+                                  {/* Reorder buttons */}
+                                  <div className="flex flex-col gap-0.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => moveCategoryUp(category.id, index)}
+                                      disabled={index === 0}
+                                      className="rounded bg-slate-700 px-1.5 py-0.5 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                      title="Move up"
+                                    >
+                                      ▲
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => moveCategoryDown(category.id, index)}
+                                      disabled={index === sortedCategories.length - 1}
+                                      className="rounded bg-slate-700 px-1.5 py-0.5 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                      title="Move down"
+                                    >
+                                      ▼
+                                    </button>
+                                  </div>
+                                  
+                                  {/* Category name */}
+                                  <div className="flex-1 min-w-0">
+                                    {editingCategoryId === category.id ? (
+                                      <input
+                                        type="text"
+                                        value={editingCategoryName}
+                                        onChange={(e) => setEditingCategoryName(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') {
+                                            if (editingCategoryName.trim()) {
+                                              wsClient.send({
+                                                type: 'update_category',
+                                                category_id: category.id,
+                                                name: editingCategoryName.trim()
+                                              })
+                                            }
+                                            setEditingCategoryId(null)
+                                            setEditingCategoryName('')
+                                          } else if (e.key === 'Escape') {
+                                            setEditingCategoryId(null)
+                                            setEditingCategoryName('')
+                                          }
+                                        }}
+                                        className="w-full rounded border border-sky-500/40 bg-slate-900 px-2 py-1 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                                        autoFocus
+                                      />
+                                    ) : (
+                                      <div className="text-sm font-medium text-slate-200 truncate">{category.name}</div>
+                                    )}
+                                  </div>
+                                </div>
+                                
+                                {/* Action buttons */}
+                                <div className="flex items-center gap-1 flex-shrink-0">
+                                  {editingCategoryId === category.id ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (editingCategoryName.trim()) {
+                                            wsClient.send({
+                                              type: 'update_category',
+                                              category_id: category.id,
+                                              name: editingCategoryName.trim()
+                                            })
+                                          }
+                                          setEditingCategoryId(null)
+                                          setEditingCategoryName('')
+                                        }}
+                                        className="rounded bg-green-600 px-2 py-1 text-xs font-semibold text-white hover:bg-green-500"
+                                      >
+                                        ✓
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEditingCategoryId(null)
+                                          setEditingCategoryName('')
+                                        }}
+                                        className="rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-500"
+                                      >
+                                        ✕
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEditingCategoryId(category.id)
+                                          setEditingCategoryName(category.name)
+                                        }}
+                                        className="rounded bg-slate-700 px-2 py-1 text-xs font-semibold text-slate-200 hover:bg-slate-600"
+                                      >
+                                        Edit
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (confirm(`Delete category "${category.name}"? Channels will not be deleted.`)) {
+                                            wsClient.send({ type: 'delete_category', category_id: category.id })
+                                          }
+                                        }}
+                                        className="rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-500"
+                                      >
+                                        Delete
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        })()}
+                        {(selectedServerObj.categories ?? []).length === 0 && (
+                          <div className="text-xs text-slate-500 text-center py-4">No categories yet. Create one above!</div>
+                        )}
+                      </div>
+                    </div>
+                  </section>
+
+                  {/* Create Channel Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Create Channel</h3>
+                    <div className="space-y-3">
+                      <label className="block">
+                        <div className="mb-1 text-sm text-slate-200">Channel Name</div>
+                        <input
+                          type="text"
+                          value={channelName}
+                          onChange={(e) => setChannelName(e.target.value)}
+                          placeholder="Enter channel name"
+                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                      </label>
+
+                      <label className="block">
+                        <div className="mb-1 text-sm text-slate-200">Channel Type</div>
+                        <select
+                          value={channelType}
+                          onChange={(e) => setChannelType(e.target.value as 'text' | 'voice')}
+                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        >
+                          <option value="text">Text Channel</option>
+                          <option value="voice">Voice Channel</option>
+                        </select>
+                      </label>
+
+                      <label className="block">
+                        <div className="mb-1 text-sm text-slate-200">Category (Optional)</div>
+                        <select
+                          value={selectedCategoryId}
+                          onChange={(e) => setSelectedCategoryId(e.target.value)}
+                          className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        >
+                          <option value="">No Category</option>
+                          {(selectedServerObj.categories ?? [])
+                            .sort((a, b) => a.position - b.position)
+                            .map((cat) => (
+                              <option key={cat.id} value={cat.id}>
+                                {cat.name}
+                              </option>
+                            ))}
+                        </select>
+                      </label>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          createChannel()
+                          setChannelName('')
+                          setSelectedCategoryId('')
+                        }}
+                        disabled={!channelName.trim() || wsClient.readyState !== WebSocket.OPEN}
+                        className="w-full rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                      >
+                        Create Channel
+                      </button>
+                    </div>
+                  </section>
+
+                  {/* Manage Channels Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Manage Channels</h3>
+                    <div className="space-y-3">
+                      <div className="text-xs font-medium text-slate-400 mb-2">Existing Channels</div>
+                      {(() => {
+                        const sortedChannels = (selectedServerObj.channels ?? []).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+                        
+                        const moveChannelUp = (currentIndex: number) => {
+                          if (currentIndex === 0) return
+                          const currentChannel = sortedChannels[currentIndex]
+                          // Find the previous channel in the same category
+                          let targetIndex = -1
+                          for (let i = currentIndex - 1; i >= 0; i--) {
+                            if (sortedChannels[i].category_id === currentChannel.category_id) {
+                              targetIndex = i
+                              break
+                            }
+                          }
+                          if (targetIndex === -1) return
+                          
+                          const newPositions = sortedChannels.map((ch, idx) => {
+                            if (idx === currentIndex) {
+                              return { channel_id: ch.id, position: targetIndex, category_id: ch.category_id }
+                            }
+                            if (idx === targetIndex) {
+                              return { channel_id: ch.id, position: currentIndex, category_id: ch.category_id }
+                            }
+                            return { channel_id: ch.id, position: idx, category_id: ch.category_id }
+                          })
+                          wsClient.send({ type: 'update_channel_positions', server_id: selectedServerId, positions: newPositions })
+                        }
+                        
+                        const moveChannelDown = (currentIndex: number) => {
+                          if (currentIndex === sortedChannels.length - 1) return
+                          const currentChannel = sortedChannels[currentIndex]
+                          // Find the next channel in the same category
+                          let targetIndex = -1
+                          for (let i = currentIndex + 1; i < sortedChannels.length; i++) {
+                            if (sortedChannels[i].category_id === currentChannel.category_id) {
+                              targetIndex = i
+                              break
+                            }
+                          }
+                          if (targetIndex === -1) return
+                          
+                          const newPositions = sortedChannels.map((ch, idx) => {
+                            if (idx === currentIndex) {
+                              return { channel_id: ch.id, position: targetIndex, category_id: ch.category_id }
+                            }
+                            if (idx === targetIndex) {
+                              return { channel_id: ch.id, position: currentIndex, category_id: ch.category_id }
+                            }
+                            return { channel_id: ch.id, position: idx, category_id: ch.category_id }
+                          })
+                          wsClient.send({ type: 'update_channel_positions', server_id: selectedServerId, positions: newPositions })
+                        }
+                        
+                        const canMoveUp = (currentIndex: number) => {
+                          if (currentIndex === 0) return false
+                          const currentChannel = sortedChannels[currentIndex]
+                          for (let i = currentIndex - 1; i >= 0; i--) {
+                            if (sortedChannels[i].category_id === currentChannel.category_id) {
+                              return true
+                            }
+                          }
+                          return false
+                        }
+                        
+                        const canMoveDown = (currentIndex: number) => {
+                          if (currentIndex === sortedChannels.length - 1) return false
+                          const currentChannel = sortedChannels[currentIndex]
+                          for (let i = currentIndex + 1; i < sortedChannels.length; i++) {
+                            if (sortedChannels[i].category_id === currentChannel.category_id) {
+                              return true
+                            }
+                          }
+                          return false
+                        }
+                        
+                        return sortedChannels.map((channel, index) => (
+                          <div key={channel.id} className="rounded-lg border border-white/10 bg-slate-950/40 p-3">
+                            <div className="flex items-center justify-between gap-2 mb-2">
+                              <div className="flex items-center gap-2 min-w-0 flex-1">
+                                {/* Reorder buttons */}
+                                <div className="flex flex-col gap-0.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => moveChannelUp(index)}
+                                    disabled={!canMoveUp(index)}
+                                    className="rounded bg-slate-700 px-1.5 py-0.5 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                    title="Move up"
+                                  >
+                                    ▲
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => moveChannelDown(index)}
+                                    disabled={!canMoveDown(index)}
+                                    className="rounded bg-slate-700 px-1.5 py-0.5 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                    title="Move down"
+                                  >
+                                    ▼
+                                  </button>
+                                </div>
+                                
+                                <span className="text-slate-400">{channel.type === 'voice' ? '🔊' : '#'}</span>
+                                <div className="text-sm font-medium text-slate-200 truncate">{channel.name}</div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (confirm(`Delete channel "${channel.name}"? This cannot be undone.`)) {
+                                    wsClient.send({ type: 'delete_channel', channel_id: channel.id })
+                                  }
+                                }}
+                                className="rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-500 flex-shrink-0"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                            <label className="block">
+                              <div className="mb-1 text-xs text-slate-400">Move to Category</div>
+                              <select
+                                value={channel.category_id || ''}
+                                onChange={(e) => {
+                                  const newCategoryId = e.target.value || null
+                                  wsClient.send({
+                                    type: 'update_channel_category',
+                                    channel_id: channel.id,
+                                    category_id: newCategoryId
+                                  })
+                                }}
+                                className="w-full rounded border border-white/10 bg-slate-900 px-2 py-1 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                              >
+                                <option value="">No Category</option>
+                                {(selectedServerObj.categories ?? [])
+                                  .sort((a, b) => a.position - b.position)
+                                  .map((cat) => (
+                                    <option key={cat.id} value={cat.id}>
+                                      {cat.name}
+                                    </option>
+                                  ))}
+                              </select>
+                            </label>
+
+                            {/* Per-channel role permission overrides */}
+                            {selectedServerId && serverRoles[selectedServerId]?.length > 0 && (
+                              <div className="mt-2">
+                                <div className="text-xs text-slate-400 mb-1">Channel Role Permissions</div>
+                                <div className="space-y-1">
+                                  {(serverRoles[selectedServerId] || []).map((role: any) => {
+                                    const key = channel.id
+                                    const overrides = channelOverrides[key] || []
+                                    const roleOverride = overrides.find((o: any) => o.role_id === role.id) || {}
+                                    const overridePerms: Record<string, boolean | null> = roleOverride.permissions || {}
+                                    return (
+                                      <details key={role.id} className="rounded border border-white/10 bg-slate-950/40">
+                                        <summary className="flex items-center gap-2 px-2 py-1 cursor-pointer text-xs text-slate-300">
+                                          <div className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: role.color || '#3B82F6' }} />
+                                          {role.name}
+                                        </summary>
+                                        <div className="px-3 pb-2 pt-1 space-y-1">
+                                          {(['view_channel', 'send_messages', 'attach_files', 'embed_links', 'mention_everyone', 'read_message_history'] as const).map((perm) => {
+                                            const val = overridePerms[perm]
+                                            return (
+                                              <div key={perm} className="flex items-center justify-between">
+                                                <span className="text-xs text-slate-300">{perm.replace(/_/g, ' ')}</span>
+                                                <div className="flex gap-1">
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                      const newPerms = { ...overridePerms, [perm]: true }
+                                                      wsClient.send({ type: 'set_channel_role_permissions', server_id: selectedServerId, channel_id: channel.id, role_id: role.id, permissions: newPerms })
+                                                      setChannelOverrides(prev => {
+                                                        const existing = (prev[channel.id] || []).filter((o: any) => o.role_id !== role.id)
+                                                        return { ...prev, [channel.id]: [...existing, { ...roleOverride, role_id: role.id, permissions: newPerms }] }
+                                                      })
+                                                    }}
+                                                    className={`rounded px-1.5 py-0.5 text-xs ${val === true ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
+                                                  >✓</button>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                      const newPerms = { ...overridePerms, [perm]: false }
+                                                      wsClient.send({ type: 'set_channel_role_permissions', server_id: selectedServerId, channel_id: channel.id, role_id: role.id, permissions: newPerms })
+                                                      setChannelOverrides(prev => {
+                                                        const existing = (prev[channel.id] || []).filter((o: any) => o.role_id !== role.id)
+                                                        return { ...prev, [channel.id]: [...existing, { ...roleOverride, role_id: role.id, permissions: newPerms }] }
+                                                      })
+                                                    }}
+                                                    className={`rounded px-1.5 py-0.5 text-xs ${val === false ? 'bg-rose-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
+                                                  >✗</button>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                                                      const { [perm]: _, ...rest } = overridePerms
+                                                      if (Object.keys(rest).length === 0) {
+                                                        wsClient.send({ type: 'delete_channel_role_permissions', server_id: selectedServerId, channel_id: channel.id, role_id: role.id })
+                                                        setChannelOverrides(prev => ({ ...prev, [channel.id]: (prev[channel.id] || []).filter((o: any) => o.role_id !== role.id) }))
+                                                      } else {
+                                                        wsClient.send({ type: 'set_channel_role_permissions', server_id: selectedServerId, channel_id: channel.id, role_id: role.id, permissions: rest })
+                                                        setChannelOverrides(prev => {
+                                                          const existing = (prev[channel.id] || []).filter((o: any) => o.role_id !== role.id)
+                                                          return { ...prev, [channel.id]: [...existing, { ...roleOverride, role_id: role.id, permissions: rest }] }
+                                                        })
+                                                      }
+                                                    }}
+                                                    className="rounded px-1.5 py-0.5 text-xs bg-slate-700 text-slate-400 hover:bg-slate-600"
+                                                    title="Reset to default"
+                                                  >–</button>
+                                                </div>
+                                              </div>
+                                            )
+                                          })}
+                                        </div>
+                                      </details>
+                                    )
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ))
+                      })()}
+                      {(selectedServerObj.channels ?? []).length === 0 && (
+                        <div className="text-xs text-slate-500 text-center py-4">No channels yet. Create one above!</div>
+                      )}
+                    </div>
+                  </section>
+                    </>
+                  )}
+
+                  {/* Roles Tab */}
+                  {serverSettingsTab === 'roles' && (
+                    <>
+                  {/* Roles & Permissions Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Roles & Permissions</h3>
+                    <div className="space-y-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            loadServerRoles(selectedServerId)
+                          }
+                          setSelectedRole(null)
+                          setRoleName('')
+                          setRoleColor('#3B82F6')
+                          setRolePermissions([])
+                          setRoleHoist(false)
+                          setIsCreateRoleOpen(true)
+                        }}
+                        className="w-full rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                      >
+                        Create New Role
+                      </button>
+
+                      {selectedServerId && serverRoles[selectedServerId]?.length > 0 && (
+                        <div className="space-y-2 max-h-64 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                          {serverRoles[selectedServerId].map((role: any) => (
+                            <div
+                              key={role.id}
+                              className="flex items-center justify-between rounded-lg border border-white/10 bg-slate-900/60 p-3"
+                            >
+                              <div className="flex items-center gap-3">
+                                <div
+                                  className="h-4 w-4 rounded"
+                                  style={{ backgroundColor: role.color || '#3B82F6' }}
+                                />
+                                <div>
+                                  <div className="text-sm font-semibold text-white">{role.name}</div>
+                                  <div className="text-xs text-slate-400">
+                                    {Object.keys(role.permissions || {}).filter(k => (role.permissions || {})[k]).length} permission(s)
+                                    {role.hoist && <span className="ml-1 text-sky-400">[hoisted]</span>}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="flex gap-1">
+                                <button
+                                  type="button"
+                                  title="Move up"
+                                  onClick={() => {
+                                    if (selectedServerId) {
+                                      wsClient.send({ type: 'reorder_roles', server_id: selectedServerId, role_id: role.id, direction: 'up' })
+                                    }
+                                  }}
+                                  className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-400 hover:text-white hover:bg-slate-600"
+                                >↑</button>
+                                <button
+                                  type="button"
+                                  title="Move down"
+                                  onClick={() => {
+                                    if (selectedServerId) {
+                                      wsClient.send({ type: 'reorder_roles', server_id: selectedServerId, role_id: role.id, direction: 'down' })
+                                    }
+                                  }}
+                                  className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-400 hover:text-white hover:bg-slate-600"
+                                >↓</button>
+                                <button
+                                  type="button"
+                                  onClick={() => openEditRole(role)}
+                                  className="rounded-lg bg-slate-700 px-3 py-1 text-xs font-semibold text-slate-200 hover:bg-slate-600"
+                                >
+                                  Edit
+                                </button>
+                                {role.name !== 'Admin' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteRole(role.id)}
+                                    className="rounded-lg bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-500"
+                                  >
+                                    Delete
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+
+                  {/* Member Roles Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Member Roles</h3>
+                    <div className="space-y-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            loadServerMembers(selectedServerId)
+                            // Load roles for all members
+                            if (serverMembers[selectedServerId]) {
+                              serverMembers[selectedServerId].forEach((member: any) => {
+                                loadUserRoles(selectedServerId, member.username)
+                              })
+                            }
+                          }
+                          setIsViewingMemberRoles(!isViewingMemberRoles)
+                        }}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                      >
+                        {isViewingMemberRoles ? 'Hide Member Roles' : 'View Member Roles'}
+                      </button>
+
+                      {isViewingMemberRoles && selectedServerId && serverMembers[selectedServerId] && (
+                        <div className="space-y-2 max-h-96 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                          {serverMembers[selectedServerId].map((member: any) => {
+                            const memberKey = `${selectedServerId}:${member.username}`
+                            const userRoles = memberRoles[memberKey] || []
+                            const availableRoles = serverRoles[selectedServerId] || []
+                            
+                            return (
+                              <div
+                                key={member.username}
+                                className="rounded-lg border border-white/10 bg-slate-900/60 p-3"
+                              >
+                                <div className="flex items-center justify-between mb-2">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-semibold text-white">
+                                      {member.username}
+                                    </span>
+                                    {member.is_owner && (
+                                      <span className="text-xs bg-sky-500/20 text-sky-300 px-2 py-0.5 rounded">
+                                        Owner
+                                      </span>
+                                    )}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedMemberForRole(
+                                      selectedMemberForRole === member.username ? null : member.username
+                                    )}
+                                    className="text-xs rounded-lg bg-slate-700 px-3 py-1 text-slate-200 hover:bg-slate-600"
+                                  >
+                                    {selectedMemberForRole === member.username ? 'Close' : 'Manage Roles'}
+                                  </button>
+                                </div>
+
+                                {/* Current roles */}
+                                {userRoles.length > 0 && (
+                                  <div className="flex flex-wrap gap-1.5 mb-2">
+                                    {userRoles.map((role: any) => (
+                                      <div
+                                        key={role.id}
+                                        className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-slate-800/60 px-2 py-1"
+                                      >
+                                        <div
+                                          className="h-3 w-3 rounded"
+                                          style={{ backgroundColor: role.color || '#3B82F6' }}
+                                        />
+                                        <span className="text-xs text-slate-200">{role.name}</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => removeRoleFromMember(member.username, role.id)}
+                                          className="text-slate-400 hover:text-rose-400 text-xs"
+                                          title="Remove role"
+                                        >
+                                          ×
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {/* Role assignment dropdown */}
+                                {selectedMemberForRole === member.username && (
+                                  <div className="mt-2 space-y-1.5">
+                                    <div className="text-xs text-slate-400 mb-1">Assign Role:</div>
+                                    {availableRoles
+                                      .filter((role: any) => !userRoles.some((ur: any) => ur.id === role.id))
+                                      .map((role: any) => (
+                                        <button
+                                          key={role.id}
+                                          type="button"
+                                          onClick={() => {
+                                            assignRoleToMember(member.username, role.id)
+                                            setSelectedMemberForRole(null)
+                                          }}
+                                          className="w-full flex items-center gap-2 rounded-lg border border-white/10 bg-slate-800/40 px-3 py-2 text-left hover:bg-slate-700/40"
+                                        >
+                                          <div
+                                            className="h-3 w-3 rounded"
+                                            style={{ backgroundColor: role.color || '#3B82F6' }}
+                                          />
+                                          <span className="text-xs text-slate-200">{role.name}</span>
+                                        </button>
+                                      ))}
+                                    {availableRoles.filter((role: any) => !userRoles.some((ur: any) => ur.id === role.id)).length === 0 && (
+                                      <div className="text-xs text-slate-500 text-center py-2">
+                                        All roles assigned
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+
+                  {/* Banned Members Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Banned Members</h3>
+                    <div className="space-y-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            loadServerBans(selectedServerId)
+                          }
+                          setIsViewingBans(!isViewingBans)
+                        }}
+                        className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                      >
+                        {isViewingBans ? 'Hide Banned Members' : 'View Banned Members'}
+                      </button>
+
+                      {isViewingBans && (
+                        <>
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              value={banUsername}
+                              onChange={(e) => setBanUsername(e.target.value)}
+                              placeholder="Username to ban"
+                              className="flex-1 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                            <input
+                              type="text"
+                              value={banReason}
+                              onChange={(e) => setBanReason(e.target.value)}
+                              placeholder="Reason (optional)"
+                              className="flex-1 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                            />
+                            <button
+                              type="button"
+                              onClick={banMember}
+                              disabled={!banUsername.trim()}
+                              className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
+                            >
+                              Ban
+                            </button>
+                          </div>
+
+                          {selectedServerId && serverBans[selectedServerId]?.length > 0 ? (
+                            <div className="space-y-2 max-h-48 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                              {serverBans[selectedServerId].map((ban: any, idx: number) => (
+                                <div
+                                  key={idx}
+                                  className="flex items-center justify-between rounded-lg border border-white/10 bg-slate-900/60 p-3"
+                                >
+                                  <div>
+                                    <div className="text-sm font-semibold text-white">{ban.username}</div>
+                                    {ban.reason && (
+                                      <div className="text-xs text-slate-400">Reason: {ban.reason}</div>
+                                    )}
+                                    <div className="text-xs text-slate-500">
+                                      Banned: {new Date(ban.banned_at).toLocaleDateString()}
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => unbanMember(ban.username)}
+                                    className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
+                                  >
+                                    Unban
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            selectedServerId && serverBans[selectedServerId] && (
+                              <div className="text-sm text-slate-400 text-center py-4">
+                                No banned members
+                              </div>
+                            )
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </section>
+                    </>
+                  )}
+
+                  {/* Customization Tab */}
+                  {serverSettingsTab === 'customization' && (
+                    <>
+                  {/* Server Emojis Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">Server Emojis</h3>
+                    <div className="space-y-3">
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={emojiName}
+                          onChange={(e) => setEmojiName(e.target.value)}
+                          placeholder="Emoji name (e.g., coolcat)"
+                          className="flex-1 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                        <input
+                          type="file"
+                          accept=".png,.jpg,.jpeg,.gif,.webp"
+                          onChange={(e) => setEmojiFile(e.target.files?.[0] || null)}
+                          className="hidden"
+                          id="emoji-upload"
+                        />
+                        <label
+                          htmlFor="emoji-upload"
+                          className="cursor-pointer rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                        >
+                          {emojiFile ? emojiFile.name : 'Choose File'}
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (emojiName && emojiFile && selectedServerId) {
+                              uploadServerEmoji(selectedServerId, emojiName, emojiFile)
+                            }
+                          }}
+                          disabled={!emojiName || !emojiFile}
+                          className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                        >
+                          Upload
+                        </button>
+                      </div>
+                      {selectedServerId && serverEmojis[selectedServerId]?.length > 0 && (
+                        <div className="grid grid-cols-8 gap-2 max-h-48 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                          {serverEmojis[selectedServerId].map((emoji: any) => (
+                            <div key={emoji.emoji_id} className="group relative">
+                              <img src={emoji.image_data} alt={emoji.name} className="w-8 h-8 object-contain" title={emoji.name} />
+                              <button
+                                type="button"
+                                onClick={() => deleteServerEmoji(emoji.emoji_id)}
+                                className="absolute -top-1 -right-1 hidden group-hover:block text-xs bg-rose-500 text-white rounded-full w-4 h-4 leading-none"
+                                title="Delete"
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                    </>
+                  )}
+
+                  {/* Automations Tab */}
+                  {serverSettingsTab === 'automations' && (
+                    <>
+                  {/* Scheduled Messages Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">📅 Scheduled Messages</h3>
+                    <div className="space-y-3">
+                      <select
+                        value={scheduleChannel}
+                        onChange={(e) => setScheduleChannel(e.target.value)}
+                        className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      >
+                        <option value="">Select Channel</option>
+                        {(selectedServerObj?.channels ?? []).filter((ch: any) => ch.type === 'text').map((ch: any) => (
+                          <option key={ch.id} value={ch.id}>
+                            # {ch.name}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="datetime-local"
+                        value={scheduleDateTime}
+                        onChange={(e) => setScheduleDateTime(e.target.value)}
+                        className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      />
+                      <textarea
+                        value={scheduleContent}
+                        onChange={(e) => setScheduleContent(e.target.value)}
+                        placeholder="Message to send later..."
+                        rows={3}
+                        className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40 resize-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId && scheduleChannel && scheduleDateTime && scheduleContent.trim()) {
+                            wsClient.send({
+                              type: 'create_scheduled_message',
+                              server_id: selectedServerId,
+                              channel_id: scheduleChannel,
+                              content: scheduleContent,
+                              scheduled_for: new Date(scheduleDateTime).toISOString()
+                            })
+                            setScheduleContent('')
+                            setScheduleDateTime('')
+                            pushToast({ kind: 'success', message: 'Message scheduled!' })
+                          }
+                        }}
+                        disabled={!scheduleChannel || !scheduleDateTime || !scheduleContent.trim()}
+                        className="w-full rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                      >
+                        Schedule Message
+                      </button>
+                      {scheduledMessages.length > 0 && (
+                        <div className="mt-3 space-y-2 max-h-48 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                          <div className="text-xs font-medium text-slate-400 mb-2">Scheduled Messages</div>
+                          {scheduledMessages.map((msg: any) => (
+                            <div key={msg.id} className="flex items-start justify-between text-xs bg-slate-900/60 rounded-lg p-2">
+                              <div className="flex-1 min-w-0">
+                                <div className="text-slate-300 truncate">{msg.content}</div>
+                                <div className="text-slate-500 text-[10px] mt-1">
+                                  {new Date(msg.scheduled_for).toLocaleString()}
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  wsClient.send({ type: 'delete_scheduled_message', message_id: msg.id })
+                                  setScheduledMessages(prev => prev.filter(m => m.id !== msg.id))
+                                }}
+                                className="text-rose-400 hover:text-rose-300 ml-2 text-sm"
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+
+                  {/* Create Poll Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">📊 Create Poll</h3>
+                    <div className="space-y-3">
+                      <input
+                        type="text"
+                        value={pollQuestion}
+                        onChange={(e) => setPollQuestion(e.target.value)}
+                        placeholder="Poll question..."
+                        className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      />
+                      {pollOptions.map((opt, idx) => (
+                        <div key={idx} className="flex gap-2">
+                          <input
+                            type="text"
+                            value={opt}
+                            onChange={(e) => {
+                              const newOpts = [...pollOptions]
+                              newOpts[idx] = e.target.value
+                              setPollOptions(newOpts)
+                            }}
+                            placeholder={`Option ${idx + 1}`}
+                            className="flex-1 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                          {pollOptions.length > 2 && (
+                            <button
+                              type="button"
+                              onClick={() => setPollOptions(prev => prev.filter((_, i) => i !== idx))}
+                              className="text-rose-400 hover:text-rose-300 px-2"
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => setPollOptions([...pollOptions, ''])}
+                        className="text-sm text-sky-400 hover:text-sky-300"
+                      >
+                        + Add Option
+                      </button>
+                      <div className="flex items-center gap-2">
+                        <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-300">
+                          <input
+                            type="checkbox"
+                            checked={pollAllowMultiple}
+                            onChange={(e) => setPollAllowMultiple(e.target.checked)}
+                            className="rounded border-white/10 text-sky-500 focus:ring-sky-500/40"
+                          />
+                          Allow multiple choices
+                        </label>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="text-sm text-slate-400">Expires in (hours):</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="168"
+                          value={pollExpiresHours || ''}
+                          onChange={(e) => setPollExpiresHours(e.target.value ? parseInt(e.target.value) : null)}
+                          placeholder="Never"
+                          className="w-24 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const validOptions = pollOptions.filter(o => o.trim())
+                          if (selectedServerId && selectedContext?.kind === 'server' && pollQuestion.trim() && validOptions.length >= 2) {
+                            wsClient.send({
+                              type: 'create_poll',
+                              server_id: selectedServerId,
+                              channel_id: selectedContext.channelId,
+                              question: pollQuestion,
+                              options: validOptions,
+                              allow_multiple: pollAllowMultiple,
+                              expires_hours: pollExpiresHours
+                            })
+                            setPollQuestion('')
+                            setPollOptions(['', ''])
+                            setPollAllowMultiple(false)
+                            setPollExpiresHours(null)
+                            pushToast({ kind: 'success', message: 'Poll created!' })
+                          }
+                        }}
+                        disabled={!pollQuestion.trim() || pollOptions.filter(o => o.trim()).length < 2 || selectedContext?.kind !== 'server'}
+                        className="w-full rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                      >
+                        Post Poll to Current Channel
+                      </button>
+                    </div>
+                  </section>
+
+                  {/* Welcome Message Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">👋 Welcome Message</h3>
+                    <div className="space-y-3">
+                      <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={welcomeEnabled}
+                          onChange={(e) => setWelcomeEnabled(e.target.checked)}
+                          className="rounded border-white/10 text-sky-500 focus:ring-sky-500/40"
+                        />
+                        Send welcome message to new members
+                      </label>
+                      {welcomeEnabled && (
+                        <div className="space-y-3">
+                          <select
+                            value={welcomeChannel}
+                            onChange={(e) => setWelcomeChannel(e.target.value)}
+                            className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          >
+                            <option value="">First channel (default)</option>
+                            {(selectedServerObj?.channels ?? []).filter((ch: any) => ch.type === 'text').map((ch: any) => (
+                              <option key={ch.id} value={ch.id}>
+                                # {ch.name}
+                              </option>
+                            ))}
+                          </select>
+                          <textarea
+                            value={welcomeMessage}
+                            onChange={(e) => setWelcomeMessage(e.target.value)}
+                            placeholder="Welcome message (use {user} for username)"
+                            rows={3}
+                            className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40 resize-none"
+                          />
+                          <div className="text-xs text-slate-500">Use {'{user}'} to mention the new member</div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (selectedServerId && welcomeMessage.trim()) {
+                                wsClient.send({
+                                  type: 'set_welcome_message',
+                                  server_id: selectedServerId,
+                                  enabled: welcomeEnabled,
+                                  message: welcomeMessage,
+                                  channel_id: welcomeChannel || null
+                                })
+                                pushToast({ kind: 'success', message: 'Welcome message saved!' })
+                              }
+                            }}
+                            disabled={!welcomeMessage.trim()}
+                            className="w-full rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                          >
+                            Save Welcome Message
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </section>
+
+                  {/* Auto-Role on Join Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">🎭 Auto-Role on Join</h3>
+                    <div className="space-y-3">
+                      <p className="text-xs text-slate-400">
+                        Automatically assign a role to every new member when they join the server.
+                      </p>
+                      <select
+                        value={autoRoleId || ''}
+                        onChange={(e) => setAutoRoleId(e.target.value || null)}
+                        className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                      >
+                        <option value="">None (no auto-role)</option>
+                        {automationRoles.map((role) => (
+                          <option key={role.role_id} value={role.role_id}>
+                            {role.name}
+                          </option>
+                        ))}
+                      </select>
+                      {autoRoleId && automationRoles.find(r => r.role_id === autoRoleId) && (
+                        <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2">
+                          <div
+                            className="h-3 w-3 rounded-full"
+                            style={{ backgroundColor: automationRoles.find(r => r.role_id === autoRoleId)?.color || '#3B82F6' }}
+                          />
+                          <span className="text-sm text-slate-200">
+                            New members will receive: <strong>{automationRoles.find(r => r.role_id === autoRoleId)?.name}</strong>
+                          </span>
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            wsClient.updateServerAutomationSettings({
+                              type: 'update_server_automation_settings',
+                              server_id: selectedServerId,
+                              auto_role_id: autoRoleId,
+                              rules_enabled: rulesEnabled,
+                              rules_text: rulesText
+                            })
+                          }
+                        }}
+                        className="w-full rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                      >
+                        Save Auto-Role Setting
+                      </button>
+                    </div>
+                  </section>
+
+                  {/* Rules Screening Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">📜 Rules Screening</h3>
+                    <div className="space-y-3">
+                      <p className="text-xs text-slate-400">
+                        Require new members to accept your server rules before they can access channels or send messages.
+                      </p>
+                      <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={rulesEnabled}
+                          onChange={(e) => setRulesEnabled(e.target.checked)}
+                          className="rounded border-white/10 text-sky-500 focus:ring-sky-500/40"
+                        />
+                        Enable rules screening for new members
+                      </label>
+                      {rulesEnabled && (
+                        <div className="space-y-3">
+                          <textarea
+                            value={rulesText}
+                            onChange={(e) => setRulesText(e.target.value)}
+                            placeholder="Enter your server rules...&#10;&#10;1. Be respectful to all members&#10;2. No spam or self-promotion&#10;3. Use appropriate channels&#10;..."
+                            rows={8}
+                            className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40 resize-none"
+                          />
+                          <div className="text-xs text-slate-500">
+                            New members will see these rules in a modal and must click &quot;I have read and agree to the rules&quot; before they can interact with the server.
+                          </div>
+                          {rulesText.trim() && (
+                            <details className="rounded-lg border border-white/10 bg-slate-950/40">
+                              <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-slate-400 hover:text-slate-200">
+                                Preview rules modal
+                              </summary>
+                              <div className="border-t border-white/10 px-4 py-3 text-sm text-slate-200 whitespace-pre-wrap leading-relaxed">
+                                {rulesText}
+                              </div>
+                            </details>
+                          )}
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedServerId) {
+                            wsClient.updateServerAutomationSettings({
+                              type: 'update_server_automation_settings',
+                              server_id: selectedServerId,
+                              auto_role_id: autoRoleId,
+                              rules_enabled: rulesEnabled,
+                              rules_text: rulesText
+                            })
+                          }
+                        }}
+                        disabled={rulesEnabled && !rulesText.trim()}
+                        className="w-full rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                      >
+                        Save Rules Settings
+                      </button>
+                    </div>
+                  </section>
+
+                  {/* Webhooks Section */}
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">🔗 Webhooks</h3>
+                    <WebhookPanel serverId={selectedServerId || undefined} />
+                  </section>
+                    </>
+                  )}
+
+                  {/* Members Tab */}
+                  {serverSettingsTab === 'members' && (
+                    <>
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">👥 Server Members</h3>
+                    <div className="space-y-2 max-h-[50vh] overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                      {(serverMembers[selectedServerId ?? ''] ?? []).length === 0 && (
+                        <p className="text-sm text-slate-500 text-center py-4">No members found</p>
+                      )}
+                      {(serverMembers[selectedServerId ?? ''] ?? []).map((member) => {
+                        const isOwner = member.username === selectedServerObj?.owner
+                        const isSelf = member.username === getStoredAuth()?.username
+                        return (
+                          <div key={member.username} className="flex items-center justify-between rounded-xl border border-white/5 bg-slate-950/30 px-4 py-3 hover:bg-slate-950/50 transition">
+                            <div className="flex items-center gap-3">
+                              <AvatarWithStatus
+                                avatar={member.avatar}
+                                avatar_type={member.avatar_type}
+                                avatar_data={member.avatar_data}
+                                size="sm"
+                              />
+                              <div>
+                                <span className="text-sm font-medium text-slate-100">{member.username}</span>
+                                {isOwner && <span className="ml-2 text-xs text-amber-400 font-semibold">Owner</span>}
+                                {member.status_message && (
+                                  <p className="text-xs text-slate-500 truncate max-w-[200px]">{member.status_message}</p>
+                                )}
+                              </div>
+                            </div>
+                            {!isOwner && !isSelf && (
+                              <div className="flex items-center gap-2">
+                                {kickTargetUsername === member.username ? (
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="text"
+                                      value={kickReason}
+                                      onChange={(e) => setKickReason(e.target.value)}
+                                      placeholder="Reason (optional)"
+                                      className="w-36 rounded-lg border border-white/10 bg-slate-900 px-2 py-1 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-orange-500/40"
+                                      onKeyDown={(e) => { if (e.key === 'Enter') kickMember(member.username, kickReason) }}
+                                      autoFocus
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => kickMember(member.username, kickReason)}
+                                      className="rounded-lg bg-orange-500 px-2 py-1 text-xs font-semibold text-white hover:bg-orange-400"
+                                    >
+                                      Confirm
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => { setKickTargetUsername(null); setKickReason('') }}
+                                      className="rounded-lg bg-slate-700 px-2 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-600"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => setKickTargetUsername(member.username)}
+                                      title="Kick member"
+                                      className="rounded-lg border border-orange-500/30 px-3 py-1 text-xs font-semibold text-orange-400 hover:bg-orange-500/10 transition"
+                                    >
+                                      Kick
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setBanUsername(member.username)
+                                        setBanReason('')
+                                        setServerSettingsTab('overview')
+                                        setIsViewingBans(true)
+                                      }}
+                                      title="Ban member"
+                                      className="rounded-lg border border-red-500/30 px-3 py-1 text-xs font-semibold text-red-400 hover:bg-red-500/10 transition"
+                                    >
+                                      Ban
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </section>
+                    </>
+                  )}
+
+                  {/* Audit Log Tab */}
+                  {serverSettingsTab === 'audit' && (
+                    <>
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <div className="flex items-center justify-between mb-4 border-b border-sky-500/30 pb-2">
+                      <h3 className="text-base font-semibold text-white">📋 Audit Log</h3>
+                      <button
+                        type="button"
+                        onClick={() => { if (selectedServerId) wsClient.send({ type: 'get_server_audit_log', server_id: selectedServerId }) }}
+                        className="rounded-lg border border-white/10 px-3 py-1 text-xs font-semibold text-slate-300 hover:bg-white/5 transition"
+                      >
+                        Refresh
+                      </button>
+                    </div>
+                    <div className="space-y-2 max-h-[55vh] overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                      {(serverAuditLog[selectedServerId ?? ''] ?? []).length === 0 && (
+                        <p className="text-sm text-slate-500 text-center py-8">No audit log entries yet</p>
+                      )}
+                      {(serverAuditLog[selectedServerId ?? ''] ?? []).map((entry) => {
+                        const actionMeta: Record<string, { label: string; color: string; icon: string }> = {
+                          member_join: { label: 'Member Joined', color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20', icon: '→' },
+                          member_kick: { label: 'Member Kicked', color: 'text-orange-400 bg-orange-500/10 border-orange-500/20', icon: '⚡' },
+                          member_ban: { label: 'Member Banned', color: 'text-red-400 bg-red-500/10 border-red-500/20', icon: '🚫' },
+                          member_unban: { label: 'Member Unbanned', color: 'text-green-400 bg-green-500/10 border-green-500/20', icon: '✓' },
+                          role_assign: { label: 'Role Assigned', color: 'text-purple-400 bg-purple-500/10 border-purple-500/20', icon: '+' },
+                          role_remove: { label: 'Role Removed', color: 'text-purple-400 bg-purple-500/10 border-purple-500/20', icon: '−' },
+                          server_rename: { label: 'Server Renamed', color: 'text-sky-400 bg-sky-500/10 border-sky-500/20', icon: '✏' },
+                        }
+                        const meta = actionMeta[entry.action] ?? { label: entry.action, color: 'text-slate-400 bg-slate-500/10 border-slate-500/20', icon: '•' }
+                        const ts = entry.created_at ? new Date(entry.created_at) : null
+                        const relative = ts ? (() => {
+                          const diff = Date.now() - ts.getTime()
+                          if (diff < 60_000) return 'just now'
+                          if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
+                          if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
+                          return `${Math.floor(diff / 86_400_000)}d ago`
+                        })() : ''
+
+                        let detail = ''
+                        const d = entry.detail ?? {}
+                        if (entry.action === 'server_rename') detail = `"${d.old_name}" → "${d.new_name}"`
+                        else if (entry.action === 'role_assign') detail = d.role_name ? `Role: ${d.role_name}` : ''
+                        else if (entry.action === 'role_remove') detail = d.role_id ? `Role ID: ${d.role_id}` : ''
+                        else if (d.reason) detail = `Reason: ${d.reason}`
+                        else if (d.invite_code) detail = `Invite: ${d.invite_code}`
+
+                        return (
+                          <div key={entry.id} className="flex items-start gap-3 rounded-xl border border-white/5 bg-slate-950/30 px-4 py-3">
+                            <span className={`mt-0.5 inline-flex h-7 w-7 items-center justify-center rounded-lg border text-xs font-bold ${meta.color}`}>
+                              {meta.icon}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className={`inline-block rounded-md border px-2 py-0.5 text-xs font-semibold ${meta.color}`}>{meta.label}</span>
+                                {entry.actor && <span className="text-xs text-slate-300">by <span className="font-medium text-white">{entry.actor}</span></span>}
+                                {entry.target && entry.target !== entry.actor && (
+                                  <span className="text-xs text-slate-400">on <span className="font-medium text-slate-200">{entry.target}</span></span>
+                                )}
+                              </div>
+                              {detail && <p className="text-xs text-slate-500 mt-1 truncate">{detail}</p>}
+                            </div>
+                            <span className="shrink-0 text-xs text-slate-600" title={ts?.toLocaleString() ?? ''}>{relative}</span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </section>
+                    </>
+                  )}
+
+                  {/* Bots Tab */}
+                  {serverSettingsTab === 'bots' && selectedServerId && (
+                    <>
+                  <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                    <h3 className="mb-4 text-base font-semibold text-white border-b border-sky-500/30 pb-2">🤖 Server Bots</h3>
+                    <ServerBotPanel serverId={selectedServerId} />
+                  </section>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Create/Edit Role Modal */}
+        {isCreateRoleOpen && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={(e) => e.target === e.currentTarget && setIsCreateRoleOpen(false)}>
+            <div className="relative w-full max-w-md max-h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-white/10 px-6 py-4 flex-shrink-0">
+                <h2 className="text-xl font-semibold text-white">{selectedRole ? 'Edit Role' : 'Create Role'}</h2>
+                <button
+                  type="button"
+                  onClick={() => setIsCreateRoleOpen(false)}
+                  className="text-2xl text-slate-400 hover:text-slate-200"
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="p-6 overflow-y-auto flex-1">
+                <div className="space-y-4">
+                  <label className="block">
+                    <div className="mb-1 text-sm text-slate-200">Role Name</div>
+                    <input
+                      type="text"
+                      value={roleName}
+                      onChange={(e) => setRoleName(e.target.value)}
+                      placeholder="Enter role name"
+                      className="w-full rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                    />
+                  </label>
+
+                  <label className="block">
+                    <div className="mb-1 text-sm text-slate-200">Role Color</div>
+                    <input
+                      type="color"
+                      value={roleColor}
+                      onChange={(e) => setRoleColor(e.target.value)}
+                      className="w-full h-10 rounded-xl border border-white/10 bg-slate-950/40 cursor-pointer"
+                    />
+                  </label>
+
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={roleHoist}
+                      onChange={(e) => setRoleHoist(e.target.checked)}
+                      className="rounded border-white/10 bg-slate-950/40 text-sky-500 focus:ring-sky-500/40"
+                    />
+                    <div>
+                      <div className="text-sm text-slate-200">Hoist role</div>
+                      <div className="text-xs text-slate-500">Display this role's members separately in the member list</div>
+                    </div>
+                  </label>
+
+                  <div>
+                    <div className="mb-2 text-sm text-slate-200">Permissions</div>
+                    <div className="space-y-2 max-h-64 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                      {[
+                        { key: 'administrator', label: 'Administrator (All Permissions)' },
+                        { key: 'manage_server', label: 'Manage Server' },
+                        { key: 'manage_channels', label: 'Manage Channels' },
+                        { key: 'ban_members', label: 'Ban Members' },
+                        { key: 'delete_messages', label: 'Delete Messages' },
+                        { key: 'manage_emojis', label: 'Manage Emojis' },
+                        { key: 'send_messages', label: 'Send Messages' },
+                        { key: 'read_messages', label: 'Read Messages' },
+                      ].map((perm) => (
+                        <label key={perm.key} className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={rolePermissions.includes(perm.key)}
+                            onChange={() => togglePermission(perm.key)}
+                            className="rounded border-white/10 bg-slate-950/40 text-sky-500 focus:ring-sky-500/40"
+                          />
+                          <span className="text-sm text-slate-200">{perm.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex gap-3 justify-end pt-4">
+                    <button
+                      type="button"
+                      onClick={() => setIsCreateRoleOpen(false)}
+                      className="rounded-xl border border-white/10 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/5"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={selectedRole ? updateRole : createRole}
+                      disabled={!roleName.trim()}
+                      className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                    >
+                      {selectedRole ? 'Update Role' : 'Create Role'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Delete Message Confirmation Modal */}
+        {deletingMessageId && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={(e) => e.target === e.currentTarget && cancelDeleteMessage()}>
+            <div className="relative rounded-2xl border border-white/10 bg-slate-900 p-6 shadow-xl max-w-md" onClick={(e) => e.stopPropagation()}>
+              <div className="text-lg font-semibold text-white mb-3">Delete Message</div>
+              <div className="text-sm text-slate-300 mb-4">Are you sure you want to delete this message? This action cannot be undone.</div>
+              <div className="flex gap-3 justify-end">
+                <button
+                  type="button"
+                  onClick={cancelDeleteMessage}
+                  className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-600"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={deleteMessage}
+                  className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-500"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {/* Soundboard Panel */}
+        {isInVoice && (
+          <SoundboardPanel
+            isOpen={isSoundboardOpen}
+            onClose={() => setIsSoundboardOpen(false)}
+            serverId={selectedServerId}
+            isServerAdmin={
+              selectedServerId
+                ? init?.servers?.some(s => s.id === selectedServerId && s.owner === init.username) ?? false
+                : false
+            }
+            onPlaySound={handlePlaySoundboard}
+            sendWebSocketMessage={(msg) => wsClient.send(msg)}
+          />
+        )}
+
+        {/* Server Invite Confirmation Modal */}
+        {showServerInviteModal && serverInviteInfo && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4" onClick={() => setShowServerInviteModal(false)}>
+            <div className="relative w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 shadow-2xl p-6" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                onClick={() => setShowServerInviteModal(false)}
+                className="absolute right-4 top-4 text-2xl text-slate-400 hover:text-slate-200"
+              >
+                ×
+              </button>
+              
+              <h2 className="text-2xl font-bold text-white mb-4">Join Server?</h2>
+              
+              <div className="flex items-center gap-4 mb-4">
+                {serverInviteInfo.server.icon_type === 'image' && serverInviteInfo.server.icon_data ? (
+                  <img 
+                    src={serverInviteInfo.server.icon_data} 
+                    alt={serverInviteInfo.server.name}
+                    className="h-16 w-16 rounded-xl object-cover"
+                  />
+                ) : (
+                  <div className="flex h-16 w-16 items-center justify-center rounded-xl bg-slate-800 text-3xl">
+                    {serverInviteInfo.server.icon || '🏠'}
+                  </div>
+                )}
+                
+                <div className="flex-1">
+                  <h3 className="text-xl font-semibold text-white">{serverInviteInfo.server.name}</h3>
+                  <p className="text-sm text-slate-400">{serverInviteInfo.server.member_count} members</p>
+                </div>
+              </div>
+              
+              {serverInviteInfo.server.description && (
+                <p className="text-sm text-slate-300 mb-4">{serverInviteInfo.server.description}</p>
+              )}
+              
+              <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 mb-4">
+                <p className="text-sm text-yellow-200">
+                  ⚠️ By clicking "Join", you will become a member of this server and be able to see all channels and messages.
+                </p>
+              </div>
+              
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowServerInviteModal(false)}
+                  className="flex-1 rounded-lg bg-slate-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-600"
+                  disabled={isJoiningServer}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsJoiningServer(true)
+                    wsClient.joinServerWithInvite({ 
+                      type: 'join_server_with_invite', 
+                      invite_code: serverInviteInfo.code 
+                    })
+                    // Modal will close when we receive server_joined message
+                  }}
+                  className="flex-1 rounded-lg bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                  disabled={isJoiningServer}
+                >
+                  {isJoiningServer ? 'Joining...' : 'Join Server'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Server Rules Acceptance Modal */}
+        {rulesModalServerId && (
+          <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 p-4">
+            <div className="relative w-full max-w-lg rounded-2xl bg-slate-900 border border-white/10 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              {/* Header */}
+              <div className="flex items-center gap-3 border-b border-white/10 px-6 py-4">
+                <span className="text-2xl">📜</span>
+                <div>
+                  <h2 className="text-lg font-bold text-white">Server Rules</h2>
+                  <p className="text-sm text-slate-400">{rulesModalServerName}</p>
+                </div>
+              </div>
+
+              {/* Rules content */}
+              <div className="px-6 py-4 max-h-[60vh] overflow-y-auto">
+                <p className="text-sm text-slate-300 mb-4">
+                  Please read and accept the server rules before you can access channels and send messages.
+                </p>
+                <div className="rounded-xl border border-white/10 bg-slate-950/50 p-4 text-sm text-slate-200 whitespace-pre-wrap leading-relaxed">
+                  {rulesModalText}
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex gap-3 border-t border-white/10 px-6 py-4">
+                <button
+                  type="button"
+                  onClick={() => setRulesModalServerId(null)}
+                  className="flex-1 rounded-lg bg-slate-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-600"
+                >
+                  Later
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (rulesModalServerId) {
+                      wsClient.acceptServerRules({ type: 'accept_server_rules', server_id: rulesModalServerId })
+                    }
+                  }}
+                  className="flex-1 rounded-lg bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+                >
+                  I have read and agree to the rules
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+      {/* ── Incoming direct-call overlay ───────────────────────────────── */}
+      {incomingCall && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-6 rounded-2xl border border-white/10 bg-bg-secondary p-8 shadow-2xl w-80">
+            <div className="text-5xl animate-bounce">📞</div>
+            <div className="text-center">
+              <div className="text-lg font-semibold text-white">Incoming Call</div>
+              <div className="mt-1 text-text-muted">{incomingCall.from} is calling you</div>
+            </div>
+            <div className="flex w-full gap-3">
+              <button
+                type="button"
+                onClick={rejectCall}
+                className="flex-1 rounded-xl bg-rose-500/20 border border-rose-500/40 py-2.5 text-sm font-semibold text-rose-300 hover:bg-rose-500/30 transition"
+              >
+                📵 Decline
+              </button>
+              <button
+                type="button"
+                onClick={acceptCall}
+                className="flex-1 rounded-xl bg-emerald-500/20 border border-emerald-500/40 py-2.5 text-sm font-semibold text-emerald-300 hover:bg-emerald-500/30 transition"
+              >
+                📞 Accept
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      </div>
+    </div>
+  )
+}
