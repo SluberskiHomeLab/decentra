@@ -27,7 +27,8 @@ FROM python:3.11-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libldap2 \
+    libldap-2.5-0 \
+    libldap-common \
     libsasl2-2 \
     libssl3 \
     libxml2 \
