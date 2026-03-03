@@ -63,7 +63,7 @@ def _decode_jwt_payload(token: str) -> dict:
     parts = token.split('.')
     if len(parts) != 3:
         raise ValueError(f'Not a valid JWT: {token!r}')
-    padding = 4 - len(parts[1]) % 4
+    padding = (-len(parts[1])) % 4
     payload_bytes = base64.urlsafe_b64decode(parts[1] + '=' * padding)
     return json.loads(payload_bytes)
 
@@ -227,7 +227,7 @@ async def test_direct_call_no_livekit_token(token1: str, token2: str) -> None:
                     break
 
         # USER1 starts a DM call to USER2
-        await ws1.send(json.dumps({'type': 'voice_call', 'username': user2}))
+        await ws1.send(json.dumps({'type': 'start_voice_call', 'username': user2}))
 
         # USER2 should receive incoming_voice_call (not voice_channel_joined)
         deadline = time.monotonic() + 5

@@ -340,7 +340,7 @@ Add NPM to a separate `docker-compose.yml` or alongside Decentra:
 ```yaml
 services:
   npm:
-    image: jc21/nginx-proxy-manager:latest
+    image: jc21/nginx-proxy-manager:2.14.0
     container_name: nginx-proxy-manager
     restart: unless-stopped
     ports:
