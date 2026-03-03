@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libldap2-dev \
     libsasl2-dev \
+    libssl-dev \
     libxml2-dev \
     libxmlsec1-dev \
     libxmlsec1-openssl \
