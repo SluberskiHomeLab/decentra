@@ -201,7 +201,9 @@ class SAMLProvider:
         from lxml import etree
 
         xml_bytes = base64.b64decode(saml_response_b64)
-        root = etree.fromstring(xml_bytes)
+        # Use a hardened XML parser that disables external entity resolution to prevent XXE attacks.
+        parser = etree.XMLParser(resolve_entities=False)
+        root = etree.fromstring(xml_bytes, parser=parser)
 
         ns = {
             "saml": "urn:oasis:names:tc:SAML:2.0:assertion",
