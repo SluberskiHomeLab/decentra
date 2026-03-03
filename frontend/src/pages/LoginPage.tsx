@@ -145,9 +145,8 @@ export function LoginPage() {
       return
     }
 
-    let unsubscribeOpen: (() => void) | undefined
-    unsubscribeOpen = wsClient.onOpen(() => {
-      unsubscribeOpen?.()
+    const unsubOpen = wsClient.onOpen(() => {
+      unsubOpen()
       sendLogin()
     })
   }
@@ -170,9 +169,8 @@ export function LoginPage() {
       return
     }
 
-    let unsubscribeOpen: (() => void) | undefined
-    unsubscribeOpen = wsClient.onOpen(() => {
-      unsubscribeOpen?.()
+    const unsubOpen = wsClient.onOpen(() => {
+      unsubOpen()
       sendReset()
     })
   }
