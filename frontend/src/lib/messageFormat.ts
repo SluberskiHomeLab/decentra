@@ -81,26 +81,26 @@ export function parseMessageFormat(text: string): FormatToken[] {
       continue
     }
 
-    // Check for italic (**)
+    // Check for bold (**)
     if (text.slice(i, i + 2) === '**') {
       const end = text.indexOf('**', i + 2)
       if (end === -1) {
         tokens.push({ type: 'text', content: text.slice(i) })
         break
       }
-      tokens.push({ type: 'italic', content: text.slice(i + 2, end) })
+      tokens.push({ type: 'bold', content: text.slice(i + 2, end) })
       i = end + 2
       continue
     }
 
-    // Check for bold (*)
+    // Check for italic (*)
     if (text[i] === '*') {
       const end = text.indexOf('*', i + 1)
       if (end === -1) {
         tokens.push({ type: 'text', content: text.slice(i) })
         break
       }
-      tokens.push({ type: 'bold', content: text.slice(i + 1, end) })
+      tokens.push({ type: 'italic', content: text.slice(i + 1, end) })
       i = end + 1
       continue
     }
