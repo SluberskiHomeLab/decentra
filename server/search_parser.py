@@ -5,7 +5,7 @@ Supports Discord-style filter operators:
   from:username        - Messages from a specific user
   mentions:username    - Messages mentioning a specific user
   in:channel-name      - Messages in a specific channel (or "dm" for DMs only)
-  has:file|link|image|video|embed - Messages containing specific media
+  has:file|attachment|link|image|video|embed|audio - Messages containing specific media
   before:YYYY-MM-DD    - Messages before a date
   after:YYYY-MM-DD     - Messages after a date
   during:YYYY-MM-DD    - Messages on a specific date
