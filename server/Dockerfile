@@ -1,9 +1,10 @@
-# Use python:3.11-slim base image
-FROM python:3.11-slim
+# ── Build stage ──────────────────────────────────────────────────────────────
+# Installs compiler + -dev headers to compile python-ldap and xmlsec wheels,
+# then discards them in the runtime stage to keep the final image lean.
+FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
-# Install build dependencies for python-ldap and xmlsec
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libldap2-dev \
@@ -15,12 +16,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
   && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better layer caching
 COPY requirements.txt .
-
-# Install dependencies in a single RUN command to reduce layers
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# ── Runtime stage ─────────────────────────────────────────────────────────────
+# Only runtime shared libraries — no compiler or *-dev headers.
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libldap2 \
+    libsasl2-2 \
+    libssl3 \
+    libxml2 \
+    libxmlsec1 \
+    libxmlsec1-openssl \
+  && rm -rf /var/lib/apt/lists/*
+
+# Copy compiled packages from the builder stage
+COPY --from=builder /install /usr/local
 
 # Copy all application files in one layer
 COPY server.py database.py api.py encryption_utils.py email_utils.py ssl_utils.py license_validator.py instance_fingerprint.py sso_utils.py audio_utils.py search_parser.py bot_scopes.py license_public_key.pem ./
