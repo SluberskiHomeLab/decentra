@@ -145,9 +145,11 @@ export function LoginPage() {
       return
     }
 
-    ws.onopen = () => {
+    let unsubscribeOpen: (() => void) | undefined
+    unsubscribeOpen = wsClient.onOpen(() => {
+      unsubscribeOpen?.()
       sendLogin()
-    }
+    })
   }
 
   function handlePasswordReset(e: React.FormEvent) {
@@ -168,9 +170,11 @@ export function LoginPage() {
       return
     }
 
-    ws.onopen = () => {
+    let unsubscribeOpen: (() => void) | undefined
+    unsubscribeOpen = wsClient.onOpen(() => {
+      unsubscribeOpen?.()
       sendReset()
-    }
+    })
   }
 
   return (
