@@ -7969,7 +7969,7 @@ async def main():
             return web.json_response({'error': 'Invalid or expired token'}, status=401)
 
         # ── Generate time-limited Coturn HMAC credentials ──
-        # Format: username = "<expiry_timestamp>:<user_id>"
+        # Format: username = "<expiry_timestamp>:<username>"
         # credential = Base64(HMAC-SHA1(static_secret, username))
         # Valid for 1 hour.  Coturn validates these using use-auth-secret mode.
         # NOTE: SHA-1 is required here by the Coturn REST API / use-auth-secret
