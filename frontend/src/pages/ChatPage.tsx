@@ -60,8 +60,9 @@ function sanitizeLogoUrl(raw: string | undefined | null): string | null {
   if (/^data:image\/(png|jpe?g|gif|webp|avif);base64,[A-Za-z0-9+/]+=*$/i.test(trimmed)) {
     return trimmed
   }
-  // Absolute URL — only http/https. Return parser-normalised href rather than
-  // the raw tainted string so the return value is not derived from user input.
+  // Absolute URL — only http/https. Return the parser-normalised href so the
+  // value is canonicalised (e.g. percent-encoding resolved) and restricted to
+  // http/https; it is still derived from user input but protocol-validated.
   try {
     const parsed = new URL(trimmed)
     if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
