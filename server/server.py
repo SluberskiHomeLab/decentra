@@ -7970,8 +7970,13 @@ async def main():
 
         # ── Generate time-limited Coturn HMAC credentials ──
         # Format: username = "<expiry_timestamp>:<user_id>"
-        # credential = Base64(HMAC-SHA256(static_secret, username))
+        # credential = Base64(HMAC-SHA1(static_secret, username))
         # Valid for 1 hour.  Coturn validates these using use-auth-secret mode.
+        # NOTE: SHA-1 is required here by the Coturn REST API / use-auth-secret
+        # protocol (https://github.com/coturn/coturn/wiki/turnserver#turn-rest-api).
+        # Coturn's built-in verifier uses HMAC-SHA1 regardless of OpenSSL version;
+        # using any other digest will cause Coturn to reject every credential.
+        # The use of SHA-1 is a hard protocol constraint, not a design choice.  nosec B324
         # ── Early exit when TURN relay is not configured ──
         if not COTURN_URL or not COTURN_SECRET:
             return web.json_response(
@@ -7985,7 +7990,7 @@ async def main():
         expiry = int(time.time()) + ttl
         turn_username = f'{expiry}:{user_info["username"]}'
         turn_credential = base64.b64encode(
-            _hmac.new(COTURN_SECRET.encode(), turn_username.encode(), hashlib.sha256).digest()
+            _hmac.new(COTURN_SECRET.encode(), turn_username.encode(), hashlib.sha1).digest()  # nosec B324
         ).decode()
 
         ice: list[dict] = [
