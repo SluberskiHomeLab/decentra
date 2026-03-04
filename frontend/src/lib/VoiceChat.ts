@@ -98,15 +98,15 @@ export class VoiceChat {
     }
   }
 
-  /** Wrapper that logs and returns a detailed result so call-site code can distinguish failures. */
-  private async ensureIceServers(): Promise<{ success: true } | { success: false; error: Error }> {
+  /** Wrapper that logs and returns a boolean so call-site code can short-circuit on failure. */
+  private async ensureIceServers(): Promise<boolean> {
     try {
       await this.fetchIceServers()
-      return { success: true }
+      return true
     } catch (err) {
       const error = err instanceof Error ? err : new Error('Failed to fetch ICE servers')
       console.error('Failed to fetch ICE servers:', error)
-      return { success: false, error }
+      return false
     }
   }
 
