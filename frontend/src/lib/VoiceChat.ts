@@ -386,7 +386,11 @@ export class VoiceChat {
     console.log(`Attempting to join voice channel: ${serverId}/${channelId}`)
 
     // Refresh ICE servers (picks up TURN config from backend) before each join
-    if (!await this.ensureIceServers()) return false
+    const iceResult = await this.ensureIceServers()
+    if (!iceResult) {
+      console.error('Failed to ensure ICE servers before joining voice channel')
+      return false
+    }
 
     if (!await this.initLocalStream()) {
       console.error('Failed to initialize local stream')
