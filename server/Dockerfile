@@ -1,10 +1,13 @@
-# ── Build stage ──────────────────────────────────────────────────────────────
-# Installs compiler + -dev headers to compile python-ldap and xmlsec wheels,
-# then discards them in the runtime stage to keep the final image lean.
-FROM python:3.11-slim-bookworm AS builder
+# Use python:3.11-slim-bookworm base image (pinned Debian variant)
+FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
+# Copy requirements first so this layer is cached until requirements change
+COPY requirements.txt .
+
+# Install build-only deps, compile Python packages, then purge build tooling —
+# all in one RUN so compiler and *-dev headers don't persist in the final layer.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libldap2-dev \
@@ -14,30 +17,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxmlsec1-dev \
     libxmlsec1-openssl \
     pkg-config \
+  && pip install --no-cache-dir --upgrade pip \
+  && pip install --no-cache-dir -r requirements.txt \
+  && apt-get purge -y --auto-remove \
+    gcc \
+    libldap2-dev \
+    libsasl2-dev \
+    libssl-dev \
+    libxml2-dev \
+    libxmlsec1-dev \
+    pkg-config \
   && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir --prefix=/install -r requirements.txt
-
-# ── Runtime stage ─────────────────────────────────────────────────────────────
-# Only runtime shared libraries — no compiler or *-dev headers.
-FROM python:3.11-slim-bookworm
-
-WORKDIR /app
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libldap-2.5-0 \
-    libldap-common \
-    libsasl2-2 \
-    libssl3 \
-    libxml2 \
-    libxmlsec1 \
-    libxmlsec1-openssl \
-  && rm -rf /var/lib/apt/lists/*
-
-# Copy compiled packages from the builder stage
-COPY --from=builder /install /usr/local
 
 # Copy all application files in one layer
 COPY server.py database.py api.py encryption_utils.py email_utils.py ssl_utils.py license_validator.py instance_fingerprint.py sso_utils.py audio_utils.py search_parser.py bot_scopes.py license_public_key.pem ./
