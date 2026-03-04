@@ -1,5 +1,5 @@
-# Use python:3.11-slim base image
-FROM python:3.11-slim
+# Use python:3.11-slim-bookworm base image (pinned Debian variant)
+FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
