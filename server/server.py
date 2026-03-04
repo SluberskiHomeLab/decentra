@@ -7976,7 +7976,7 @@ async def main():
         # protocol (https://github.com/coturn/coturn/wiki/turnserver#turn-rest-api).
         # Coturn's built-in verifier uses HMAC-SHA1 regardless of OpenSSL version;
         # using any other digest will cause Coturn to reject every credential.
-        # The use of SHA-1 is a hard protocol constraint, not a design choice.  nosec B324
+        # The use of SHA-1 is a hard protocol constraint, not a design choice.
         # ── Early exit when TURN relay is not configured ──
         if not COTURN_URL or not COTURN_SECRET:
             return web.json_response(
