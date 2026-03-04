@@ -7970,7 +7970,7 @@ async def main():
 
         # ── Generate time-limited Coturn HMAC credentials ──
         # Format: username = "<expiry_timestamp>:<user_id>"
-        # credential = Base64(HMAC-SHA1(static_secret, username))
+        # credential = Base64(HMAC-SHA256(static_secret, username))
         # Valid for 1 hour.  Coturn validates these using use-auth-secret mode.
         # ── Early exit when TURN relay is not configured ──
         if not COTURN_URL or not COTURN_SECRET:
@@ -7985,7 +7985,7 @@ async def main():
         expiry = int(time.time()) + ttl
         turn_username = f'{expiry}:{user_info["username"]}'
         turn_credential = base64.b64encode(
-            _hmac.new(COTURN_SECRET.encode(), turn_username.encode(), hashlib.sha1).digest()
+            _hmac.new(COTURN_SECRET.encode(), turn_username.encode(), hashlib.sha256).digest()
         ).decode()
 
         ice: list[dict] = [
