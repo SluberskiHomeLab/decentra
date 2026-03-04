@@ -1,7 +1,7 @@
 # ── Build stage ──────────────────────────────────────────────────────────────
 # Installs compiler + -dev headers to compile python-ldap and xmlsec wheels,
 # then discards them in the runtime stage to keep the final image lean.
-FROM python:3.11-slim AS builder
+FROM python:3.11-slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 # Only runtime shared libraries — no compiler or *-dev headers.
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
