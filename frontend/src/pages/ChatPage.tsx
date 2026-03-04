@@ -57,7 +57,9 @@ function sanitizeLogoUrl(raw: string | undefined | null): string | null {
   }
   // data: URI — restrict to safe raster MIME types with strict base64 content;
   // SVG is excluded because data:image/svg+xml can contain <script> elements.
-  if (/^data:image\/(png|jpe?g|gif|webp|avif);base64,[A-Za-z0-9+/]+=*$/i.test(trimmed)) {
+  // The base64 pattern enforces 4-char groups with at most one valid padding
+  // sequence (2 chars + "==" or 3 chars + "=") to reject malformed data URIs.
+  if (/^data:image\/(png|jpe?g|gif|webp|avif);base64,(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/i.test(trimmed)) {
     return trimmed
   }
   // Absolute URL — only http/https. Return the parser-normalised href so the
