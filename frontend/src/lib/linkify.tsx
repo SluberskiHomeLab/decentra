@@ -3,10 +3,14 @@ import React from 'react'
 
 export const URL_REGEX = /(https?:\/\/[^\s]+|\/api\/download-attachment\/[^\s]+)/gi
 
+// Only allow specific safe relative URL prefixes.
+// Intentionally excludes protocol-relative URLs like //evil.com which
+// start with '/' but navigate to an external origin.
+export const SAFE_RELATIVE_PREFIXES = ['/api/download-attachment/'] as const
+
 export function sanitizeUrl(url: string): string | null {
   try {
-    // Allow relative URLs (like /api/download-attachment/...)
-    if (url.startsWith('/')) {
+    if (SAFE_RELATIVE_PREFIXES.some((prefix) => url.startsWith(prefix))) {
       return url
     }
     // For absolute URLs, validate protocol

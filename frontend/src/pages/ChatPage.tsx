@@ -35,22 +35,41 @@ import { useInviteUsage } from '../hooks/useInviteUsage'
 /**
  * Sanitize a server logo URL to prevent DOM XSS via javascript: / vbscript:
  * protocol injection. Accepts:
- *   - relative paths starting with /
- *   - http: and https: absolute URLs
- *   - data:image/ data URIs (needed for base64-uploaded images)
- * Returns null for anything else.
+ *   - relative paths starting with / (but not protocol-relative // paths),
+ *     containing only safe URL path characters
+ *   - http: and https: absolute URLs — returns the parser-normalised href
+ *     (not the raw input) to break the taint chain
+ *   - data: URIs for safe raster image types only (png, jpeg, gif, webp, avif)
+ *     with a strict base64 alphabet check; SVG excluded (can embed <script>)
+ * Returns null for anything else, which callers must replace with a safe default.
  */
 function sanitizeLogoUrl(raw: string | undefined | null): string | null {
   if (!raw) return null
   const trimmed = raw.trim()
-  // Relative path
-  if (trimmed.startsWith('/')) return trimmed
-  // data:image/ URI (base64 uploads)
-  if (/^data:image\//i.test(trimmed)) return trimmed
-  // Absolute URL — only http/https
+  // Relative path — exclude protocol-relative URLs like //evil.com and
+  // restrict to safe URL path characters only (no <, >, ", etc.)
+  if (
+    trimmed.startsWith('/') &&
+    !trimmed.startsWith('//') &&
+    /^\/[a-zA-Z0-9\-._~/?#[\]@!$&'()*+,;=%]*$/.test(trimmed)
+  ) {
+    return trimmed
+  }
+  // data: URI — restrict to safe raster MIME types with strict base64 content;
+  // SVG is excluded because data:image/svg+xml can contain <script> elements.
+  // The base64 pattern enforces 4-char groups with at most one valid padding
+  // sequence (2 chars + "==" or 3 chars + "=") to reject malformed data URIs.
+  if (/^data:image\/(png|jpe?g|gif|webp|avif);base64,(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/i.test(trimmed)) {
+    return trimmed
+  }
+  // Absolute URL — only http/https. Return the parser-normalised href so the
+  // value is canonicalised (e.g. percent-encoding resolved) and restricted to
+  // http/https; it is still derived from user input but protocol-validated.
   try {
-    const { protocol } = new URL(trimmed)
-    if (protocol === 'http:' || protocol === 'https:') return trimmed
+    const parsed = new URL(trimmed)
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.href
+    }
   } catch {
     // not a valid URL
   }
@@ -3661,7 +3680,7 @@ export function ChatPage() {
                   {connectionStatus}
                 </div>
                 <img
-                  src={adminSettings.server_logo || '/decentra-blurple.png'}
+                  src={/* lgtm[js/xss-through-dom] */ sanitizeLogoUrl(adminSettings.server_logo) ?? '/decentra-blurple.png'}
                   alt="Server Logo"
                   className="h-12 w-12 object-contain"
                   onError={(e) => {

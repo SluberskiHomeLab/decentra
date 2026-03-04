@@ -98,6 +98,17 @@ export class VoiceChat {
     }
   }
 
+  /** Wrapper that logs and returns false on failure so call-site code stays clean. */
+  private async ensureIceServers(): Promise<boolean> {
+    try {
+      await this.fetchIceServers()
+      return true
+    } catch (err) {
+      console.error('Failed to fetch ICE servers:', err)
+      return false
+    }
+  }
+
   setOnStateChange(callback: () => void) {
     this.onStateChange = callback
   }
@@ -375,7 +386,11 @@ export class VoiceChat {
     console.log(`Attempting to join voice channel: ${serverId}/${channelId}`)
 
     // Refresh ICE servers (picks up TURN config from backend) before each join
-    await this.fetchIceServers()
+    const iceResult = await this.ensureIceServers()
+    if (!iceResult) {
+      console.error('Failed to ensure ICE servers before joining voice channel')
+      return false
+    }
 
     if (!await this.initLocalStream()) {
       console.error('Failed to initialize local stream')
@@ -415,7 +430,7 @@ export class VoiceChat {
   }
 
   async startDirectCall(targetUsername: string): Promise<boolean> {
-    await this.fetchIceServers()
+    if (!await this.ensureIceServers()) return false
     if (!await this.initLocalStream()) {
       return false
     }
@@ -440,7 +455,7 @@ export class VoiceChat {
    * we just need to set up our local stream and send accept_voice_call to the server.
    */
   async acceptDirectCall(callerUsername: string): Promise<boolean> {
-    await this.fetchIceServers()
+    if (!await this.ensureIceServers()) return false
     if (!await this.initLocalStream()) {
       return false
     }
