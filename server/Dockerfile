@@ -1,13 +1,10 @@
-# Use python:3.11-slim-bookworm base image (pinned Debian variant)
-FROM python:3.11-slim-bookworm
+# ── Build stage ──────────────────────────────────────────────────────────────
+# Installs compiler + -dev headers to compile python-ldap and xmlsec wheels,
+# then discards them in the runtime stage to keep the final image lean.
+FROM python:3.11-slim-bookworm AS builder
 
 WORKDIR /app
 
-# Copy requirements first so this layer is cached until requirements change
-COPY requirements.txt .
-
-# Install build-only deps, compile Python packages, then purge build tooling —
-# all in one RUN so compiler and *-dev headers don't persist in the final layer.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libldap2-dev \
