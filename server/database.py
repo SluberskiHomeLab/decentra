@@ -1644,6 +1644,54 @@ class Database:
                         END $$;
                     ''')
 
+                    # ── Signal Protocol E2EE: extend user_e2e_keys + add OPK table ──
+                    cursor.execute('''
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'user_e2e_keys' AND column_name = 'registration_id'
+                            ) THEN
+                                ALTER TABLE user_e2e_keys ADD COLUMN registration_id INTEGER;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'user_e2e_keys' AND column_name = 'signed_prekey_id'
+                            ) THEN
+                                ALTER TABLE user_e2e_keys ADD COLUMN signed_prekey_id INTEGER;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'user_e2e_keys' AND column_name = 'signed_prekey_public'
+                            ) THEN
+                                ALTER TABLE user_e2e_keys ADD COLUMN signed_prekey_public TEXT;
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'user_e2e_keys' AND column_name = 'signed_prekey_signature'
+                            ) THEN
+                                ALTER TABLE user_e2e_keys ADD COLUMN signed_prekey_signature TEXT;
+                            END IF;
+                        END $$;
+                    ''')
+
+                    # One-time prekeys table for X3DH initial key exchange
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS user_one_time_prekeys (
+                            id SERIAL PRIMARY KEY,
+                            username VARCHAR(255) NOT NULL,
+                            key_id INTEGER NOT NULL,
+                            public_key TEXT NOT NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE,
+                            UNIQUE (username, key_id)
+                        )
+                    ''')
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_otpk_username
+                        ON user_one_time_prekeys(username)
+                    ''')
+
                     conn.commit()
 
                 # If we get here, connection was successful
@@ -2235,7 +2283,158 @@ class Database:
             ''', (username,))
             result = cursor.fetchone()
             return result['private_key_encrypted'] if result else None
-    
+
+    # ── Signal Protocol key bundle operations ────────────────────────────────
+
+    def save_e2e_key_bundle(
+        self,
+        username: str,
+        registration_id: int,
+        identity_key_public: str,
+        signed_prekey_id: int,
+        signed_prekey_public: str,
+        signed_prekey_signature: str,
+        identity_key_private_encrypted: str,
+    ) -> bool:
+        """
+        Upsert the full Signal Protocol key bundle for a user.
+
+        *identity_key_public* maps to the existing ``public_key`` column.
+        *identity_key_private_encrypted* maps to ``private_key_encrypted``
+        (client-side AES-GCM encrypted blob using the user's passphrase — the
+        server never holds the plaintext private key).
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO user_e2e_keys (
+                        username, public_key, private_key_encrypted, created_at,
+                        registration_id, signed_prekey_id, signed_prekey_public,
+                        signed_prekey_signature
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (username) DO UPDATE SET
+                        public_key                = EXCLUDED.public_key,
+                        private_key_encrypted     = EXCLUDED.private_key_encrypted,
+                        registration_id           = EXCLUDED.registration_id,
+                        signed_prekey_id          = EXCLUDED.signed_prekey_id,
+                        signed_prekey_public      = EXCLUDED.signed_prekey_public,
+                        signed_prekey_signature   = EXCLUDED.signed_prekey_signature
+                ''', (
+                    username, identity_key_public, identity_key_private_encrypted,
+                    datetime.now(), registration_id, signed_prekey_id,
+                    signed_prekey_public, signed_prekey_signature,
+                ))
+                return True
+        except Exception as e:
+            print(f"[E2EE] save_e2e_key_bundle error for {username}: {e}")
+            return False
+
+    def get_e2e_key_bundle(self, username: str) -> Optional[Dict]:
+        """
+        Return the public key bundle for X3DH session initiation.
+
+        Consumes one one-time prekey if available.  The returned dict contains
+        keys: identity_key_public, registration_id, signed_prekey_id,
+        signed_prekey_public, signed_prekey_signature, and optionally
+        one_time_prekey_id + one_time_prekey_public.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT public_key, registration_id, signed_prekey_id,
+                       signed_prekey_public, signed_prekey_signature
+                FROM user_e2e_keys
+                WHERE username = %s
+            ''', (username,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            bundle: Dict = {
+                'identity_key_public':    row['public_key'],
+                'registration_id':        row['registration_id'],
+                'signed_prekey_id':       row['signed_prekey_id'],
+                'signed_prekey_public':   row['signed_prekey_public'],
+                'signed_prekey_signature': row['signed_prekey_signature'],
+            }
+
+            # Consume one OPK
+            cursor.execute('''
+                DELETE FROM user_one_time_prekeys
+                WHERE id = (
+                    SELECT id FROM user_one_time_prekeys
+                    WHERE username = %s
+                    ORDER BY id ASC
+                    LIMIT 1
+                )
+                RETURNING key_id, public_key
+            ''', (username,))
+            opk = cursor.fetchone()
+            if opk:
+                bundle['one_time_prekey_id']     = opk['key_id']
+                bundle['one_time_prekey_public']  = opk['public_key']
+            return bundle
+
+    def add_one_time_prekeys(self, username: str, prekeys: List[Dict]) -> bool:
+        """
+        Bulk-insert one-time prekeys for a user.
+
+        Each element of *prekeys* must have ``key_id`` (int) and
+        ``public_key`` (str).
+        """
+        if not prekeys:
+            return True
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.executemany('''
+                    INSERT INTO user_one_time_prekeys (username, key_id, public_key)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (username, key_id) DO NOTHING
+                ''', [(username, pk['key_id'], pk['public_key']) for pk in prekeys])
+                return True
+        except Exception as e:
+            print(f"[E2EE] add_one_time_prekeys error for {username}: {e}")
+            return False
+
+    def count_one_time_prekeys(self, username: str) -> int:
+        """Return the number of remaining OPKs for *username*."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT COUNT(*) FROM user_one_time_prekeys WHERE username = %s',
+                (username,),
+            )
+            row = cursor.fetchone()
+            return row[0] if row else 0
+
+    def get_e2e_encrypted_private_key(self, username: str) -> Optional[str]:
+        """
+        Return the client-encrypted private key blob so the client can unlock
+        its key store on a new device / after clearing IndexedDB.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT private_key_encrypted FROM user_e2e_keys WHERE username = %s',
+                (username,),
+            )
+            row = cursor.fetchone()
+            return row['private_key_encrypted'] if row else None
+
+    def has_e2e_key_bundle(self, username: str) -> bool:
+        """Return True if the user has a complete Signal key bundle registered."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT 1 FROM user_e2e_keys
+                WHERE username = %s
+                  AND signed_prekey_public IS NOT NULL
+            ''', (username,))
+            return cursor.fetchone() is not None
+
     def get_first_user(self) -> Optional[str]:
         """Get the first user (admin) username."""
         with self.get_connection() as conn:
@@ -3371,32 +3570,41 @@ class Database:
             return None
     
     # Message attachment operations
-    def save_attachment(self, attachment_id: str, message_id: int, filename: str, 
+    def save_attachment(self, attachment_id: str, message_id: int, filename: str,
                        content_type: str, file_size: int, file_data: str) -> bool:
-        """Save a file attachment for a message."""
+        """Save a file attachment for a message.  file_data is Fernet-encrypted at rest."""
+        try:
+            encrypted_file_data = self.encryption_manager.encrypt(file_data)
+        except RuntimeError as e:
+            raise RuntimeError(f"Failed to save attachment: encryption error - {e}") from e
         with self.get_connection() as conn:
             cursor = conn.cursor()
             # Allow None/NULL for message_id to support embedding without message association
             msg_id = message_id if message_id != 0 else None
             cursor.execute('''
-                INSERT INTO message_attachments 
+                INSERT INTO message_attachments
                 (attachment_id, message_id, filename, content_type, file_size, file_data, uploaded_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ''', (attachment_id, msg_id, filename, content_type, file_size, file_data, datetime.now()))
+            ''', (attachment_id, msg_id, filename, content_type, file_size, encrypted_file_data, datetime.now()))
             return cursor.rowcount > 0
     
     def get_attachment(self, attachment_id: str) -> Optional[Dict]:
-        """Get a file attachment by ID."""
+        """Get a file attachment by ID, decrypting file_data at rest."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT attachment_id, message_id, filename, content_type, 
+                SELECT attachment_id, message_id, filename, content_type,
                        file_size, file_data, uploaded_at::text as uploaded_at
                 FROM message_attachments
                 WHERE attachment_id = %s
             ''', (attachment_id,))
             row = cursor.fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            result = dict(row)
+            # Decrypt file_data — decrypt() is backward-compatible with unencrypted rows.
+            result['file_data'] = self.encryption_manager.decrypt(result['file_data'])
+            return result
     
     def get_message_attachments(self, message_id: int) -> List[Dict]:
         """Get all attachments for a message."""

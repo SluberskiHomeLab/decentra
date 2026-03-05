@@ -4,6 +4,7 @@ import { wsClient } from '../api/wsClient'
 import { clearStoredAuth, setStoredAuth } from '../auth/storage'
 import { useAppStore } from '../store/appStore'
 import type { WsMessage } from '../types/protocol'
+import { initE2EEIdentity } from '../lib/e2ee/E2EESession'
 
 export function LoginPage() {
   const navigate = useNavigate()
@@ -85,6 +86,10 @@ export function LoginPage() {
         setStoredAuth({ token, username: u })
         setAuth({ token, username: u })
         setLastAuthError(null)
+        // Initialise E2EE identity (background — errors are non-fatal)
+        initE2EEIdentity(token, password).catch(err =>
+          console.warn('[E2EE] Failed to initialise identity:', err)
+        )
         
         // Redirect to chat with server_invite parameter if present
         const serverInvite = searchParams.get('server_invite')

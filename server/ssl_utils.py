@@ -129,4 +129,6 @@ def create_ssl_context(cert_path, key_path):
     """
     ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     ssl_context.load_cert_chain(cert_path, key_path)
+    # Enforce TLS 1.2 or higher — disables SSLv3, TLS 1.0, and TLS 1.1.
+    ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
     return ssl_context

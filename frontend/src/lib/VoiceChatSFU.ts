@@ -184,6 +184,12 @@ export class VoiceChatSFU {
   /**
    * Connect to a LiveKit room and publish the local mic.
    * Called by ChatPage after it receives 'voice_channel_joined' with a livekit_token.
+   *
+   * @param e2eeKey Optional base64 random key provided by the Decentra server.
+   *                When present this key is used directly for E2EE so each
+   *                session gets a unique key that the SFU never sees.
+   *                Falls back to the deterministic SHA-256 hash of
+   *                serverId+channelId for servers that haven't been updated yet.
    */
   async connect(
     url: string,
@@ -191,6 +197,7 @@ export class VoiceChatSFU {
     serverId: string,
     channelId: string,
     startMuted = false,
+    e2eeKey: string | null = null,
   ): Promise<void> {
     this.isConnecting = true
     this.currentVoiceServer = serverId
@@ -198,18 +205,26 @@ export class VoiceChatSFU {
     this.notifyStateChange()
 
     try {
-      // ── E2EE: Derive a shared key from serverId + channelId ──────────────
-      // All participants in the same channel derive the same key deterministically.
-      // This prevents the SFU from passively decrypting media.
-      // NOTE: The key is deterministic from public identifiers — it stops the
-      // server from reading media but does not provide per-user key isolation.
-      const keyMaterial = `${serverId}:${channelId}`
-      const hashBuffer = await crypto.subtle.digest(
-        'SHA-256',
-        new TextEncoder().encode(keyMaterial),
-      )
-      // Use the raw 32-byte hash as the shared passphrase (ArrayBuffer path → HKDF)
-      await this.e2eeKeyProvider.setKey(hashBuffer)
+      // ── E2EE key: prefer the server-provided random key; fall back to the
+      // deterministic hash only when connecting to an older server that doesn't
+      // send e2ee_key (maintains backward compatibility).
+      let e2eeKeyBuffer: ArrayBuffer
+      if (e2eeKey) {
+        // Server-provided random 32-byte key (base64url-encoded).
+        // Decode it and pass the raw bytes to the key provider.
+        const keyBytes = Uint8Array.from(atob(e2eeKey.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))
+        e2eeKeyBuffer = keyBytes.buffer
+      } else {
+        // Legacy fallback: deterministic key from public room identifiers.
+        // NOTE: This key can be derived by anyone who knows serverId/channelId;
+        // it prevents passive SFU decryption but not active key derivation.
+        const keyMaterial = `${serverId}:${channelId}`
+        e2eeKeyBuffer = await crypto.subtle.digest(
+          'SHA-256',
+          new TextEncoder().encode(keyMaterial),
+        )
+      }
+      await this.e2eeKeyProvider.setKey(e2eeKeyBuffer)
       this.isE2EEActive = true
 
       // Acquire microphone before connecting so connect() includes the track

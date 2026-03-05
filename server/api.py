@@ -3122,6 +3122,141 @@ async def api_bot_audit_log(request):
         return web.json_response({'error': str(e)}, status=500)
 
 
+
+# ── Signal Protocol E2EE key bundle endpoints ─────────────────────────────────
+
+async def api_e2e_register(request):
+    """
+    POST /api/e2e/register
+    Register (or replace) the caller's Signal Protocol key bundle.
+
+    Body JSON:
+        registration_id          int      — random device ID (1-16380)
+        identity_key_public      str      — base64 identity public key
+        identity_key_private_enc str      — client-AES-GCM-encrypted private key blob
+        signed_prekey_id         int      — current signed prekey ID
+        signed_prekey_public     str      — base64 signed prekey public key
+        signed_prekey_signature  str      — base64 signature over signed_prekey_public
+        one_time_prekeys         list     — [{key_id, public_key}, …]
+    """
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    payload = verify_jwt_token(token)
+    if not payload:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    username = payload.get('username')
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({'error': 'Invalid JSON'}, status=400)
+
+    required = ['registration_id', 'identity_key_public', 'identity_key_private_enc',
+                'signed_prekey_id', 'signed_prekey_public', 'signed_prekey_signature']
+    for field in required:
+        if field not in body:
+            return web.json_response({'error': f'Missing field: {field}'}, status=400)
+
+    ok = db.save_e2e_key_bundle(
+        username=username,
+        registration_id=int(body['registration_id']),
+        identity_key_public=body['identity_key_public'],
+        signed_prekey_id=int(body['signed_prekey_id']),
+        signed_prekey_public=body['signed_prekey_public'],
+        signed_prekey_signature=body['signed_prekey_signature'],
+        identity_key_private_encrypted=body['identity_key_private_enc'],
+    )
+    if not ok:
+        return web.json_response({'error': 'Failed to save key bundle'}, status=500)
+
+    # Bulk-add initial one-time prekeys if provided
+    opks = body.get('one_time_prekeys', [])
+    if opks:
+        db.add_one_time_prekeys(username, opks)
+
+    return web.json_response({'ok': True})
+
+
+async def api_e2e_get_key_bundle(request):
+    """
+    GET /api/e2e/key-bundle/{username}
+    Return the public key bundle for X3DH session initiation with *username*.
+    Consumes one of their one-time prekeys.
+    """
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    payload = verify_jwt_token(token)
+    if not payload:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+
+    target = request.match_info.get('username', '')
+    if not target:
+        return web.json_response({'error': 'username required'}, status=400)
+
+    bundle = db.get_e2e_key_bundle(target)
+    if not bundle:
+        return web.json_response({'error': 'No key bundle registered for this user'}, status=404)
+
+    return web.json_response(bundle)
+
+
+async def api_e2e_replenish_prekeys(request):
+    """
+    POST /api/e2e/prekeys/replenish
+    Add more one-time prekeys for the calling user.
+
+    Body JSON: {"one_time_prekeys": [{key_id: int, public_key: str}, …]}
+    """
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    payload = verify_jwt_token(token)
+    if not payload:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    username = payload.get('username')
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({'error': 'Invalid JSON'}, status=400)
+
+    opks = body.get('one_time_prekeys', [])
+    if not opks:
+        return web.json_response({'error': 'one_time_prekeys is required'}, status=400)
+
+    db.add_one_time_prekeys(username, opks)
+    remaining = db.count_one_time_prekeys(username)
+    return web.json_response({'ok': True, 'remaining': remaining})
+
+
+async def api_e2e_prekey_count(request):
+    """
+    GET /api/e2e/prekeys/count
+    Return the number of OPKs remaining on the server for the calling user.
+    """
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    payload = verify_jwt_token(token)
+    if not payload:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    username = payload.get('username')
+    count = db.count_one_time_prekeys(username)
+    return web.json_response({'count': count})
+
+
+async def api_e2e_get_private_key(request):
+    """
+    GET /api/e2e/private-key
+    Return the client-encrypted identity private key blob so the user can
+    restore their key store on a new device (they need their passphrase to
+    decrypt it — the server only stores an opaque ciphertext).
+    """
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    payload = verify_jwt_token(token)
+    if not payload:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    username = payload.get('username')
+    enc_private = db.get_e2e_encrypted_private_key(username)
+    if not enc_private:
+        return web.json_response({'error': 'No key bundle registered'}, status=404)
+    return web.json_response({'encrypted_private_key': enc_private})
+
+
 def setup_api_routes(app, database, jwt_verify_func, broadcast_func, send_user_func, create_dm_func, avatar_func, jwt_generate_func=None):
     """Setup REST API routes on the aiohttp application."""
     global db, verify_jwt_token, broadcast_to_server_func, send_to_user_func, get_or_create_dm_func, get_avatar_data_func, generate_jwt_token_func
@@ -3199,3 +3334,9 @@ def setup_api_routes(app, database, jwt_verify_func, broadcast_func, send_user_f
     app.router.add_post('/api/bot/commands', api_bot_register_commands)
     app.router.add_get('/api/bot/commands', api_bot_get_commands)
     app.router.add_post('/api/bot/reactions', api_bot_add_reaction)
+    # E2EE Signal Protocol key bundle routes
+    app.router.add_post('/api/e2e/register', api_e2e_register)
+    app.router.add_get('/api/e2e/key-bundle/{username}', api_e2e_get_key_bundle)
+    app.router.add_post('/api/e2e/prekeys/replenish', api_e2e_replenish_prekeys)
+    app.router.add_get('/api/e2e/prekeys/count', api_e2e_prekey_count)
+    app.router.add_get('/api/e2e/private-key', api_e2e_get_private_key)

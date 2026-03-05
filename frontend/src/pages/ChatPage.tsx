@@ -31,6 +31,7 @@ import { useChatLayoutState } from '../hooks/useChatLayoutState'
 import { useMessageDraft } from '../hooks/useMessageDraft'
 import { useFileUpload } from '../hooks/useFileUpload'
 import { useInviteUsage } from '../hooks/useInviteUsage'
+import { encryptDM, decryptDM, isE2EEContent, isE2EEReady, clearE2EESessionCache } from '../lib/e2ee/E2EESession'
 
 /**
  * Sanitize a server logo URL to prevent DOM XSS via javascript: / vbscript:
@@ -668,6 +669,7 @@ export function ChatPage() {
         
         // Clear authentication and redirect to login
         clearStoredAuth()
+        clearE2EESessionCache()
         useAppStore.getState().clearAuth()
       }
 
@@ -910,7 +912,14 @@ export function ChatPage() {
       }
 
       if (isWsChatMessage(msg)) {
-        appendMessage(msg)
+        // Transparently decrypt E2EE DM messages before adding to the store
+        if (msg.context === 'dm' && msg.username && isE2EEContent(msg.content || '')) {
+          decryptDM(msg.username, msg.content || '').then(plaintext => {
+            appendMessage(plaintext !== null ? { ...msg, content: plaintext } : msg)
+          }).catch(() => appendMessage(msg))
+        } else {
+          appendMessage(msg)
+        }
         
         // Update unread counts if message is not from current user and not in selected context
         const currentUsername = useAppStore.getState().init?.username
@@ -1672,6 +1681,7 @@ export function ChatPage() {
         const participants: string[]      = (msg as any).participants   ?? []
         const serverId: string            = (msg as any).server_id      ?? ''
         const channelId: string           = (msg as any).channel_id     ?? ''
+        const e2eeKey: string | null      = (msg as any).e2ee_key      ?? null
 
         if (livekitToken && livekitUrl && voiceChat) {
           // ── SFU path — LiveKit is configured on this server ──
@@ -1709,7 +1719,7 @@ export function ChatPage() {
           setVoiceChatSFU(sfu)
           // Connect to LiveKit (acquires mic, publishes, subscribes)
           try {
-            await sfu.connect(livekitUrl, livekitToken, serverId, channelId, voiceChat?.getIsMuted?.() ?? false)
+            await sfu.connect(livekitUrl, livekitToken, serverId, channelId, voiceChat?.getIsMuted?.() ?? false, e2eeKey)
           } catch (sfuErr) {
             console.error('[SFU] Failed to connect to LiveKit:', sfuErr)
             pushToast({ kind: 'error', message: 'Failed to connect to voice server' })
@@ -2079,7 +2089,16 @@ export function ChatPage() {
       } else if (selectedContext.kind === 'server') {
         wsClient.sendMessage({ type: 'message', content, context: 'server', context_id: `${selectedContext.serverId}/${selectedContext.channelId}`, mentions, role_mentions: pendingRoleMentions, reply_to, nonce })
       } else if (selectedContext.kind === 'dm') {
-        wsClient.sendMessage({ type: 'message', content, context: 'dm', context_id: selectedContext.dmId, mentions, reply_to, nonce })
+        // Attempt E2EE encryption; fall back to plaintext if recipient has no key bundle
+        let dmContent = content
+        try {
+          if (authToken && selectedContext.username && await isE2EEReady()) {
+            dmContent = await encryptDM(selectedContext.username, authToken, content)
+          }
+        } catch {
+          // Recipient has no E2EE registration — send as plaintext
+        }
+        wsClient.sendMessage({ type: 'message', content: dmContent, context: 'dm', context_id: selectedContext.dmId, mentions, reply_to, nonce })
       } else {
         wsClient.sendMessage({ type: 'message', content, context: 'global', context_id: null, mentions, reply_to, nonce })
       }
@@ -4717,6 +4736,7 @@ export function ChatPage() {
                         type="button"
                         onClick={() => {
                           clearStoredAuth()
+                          clearE2EESessionCache()
                           useAppStore.getState().clearAuth()
                           setIsUserMenuOpen(false)
                         }}

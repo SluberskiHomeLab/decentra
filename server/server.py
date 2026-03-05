@@ -135,6 +135,10 @@ voice_calls = {}
 voice_states = {}
 # Store voice members per channel: {server_id/channel_id: set(usernames)}
 voice_members = {}
+# Per-session random E2EE keys for SFU rooms: {room_name: base64_key}
+# Generated on the first participant joining; cleared when the room empties.
+# Keeps the SFU (LiveKit) operator from decrypting media without the Decentra server's key.
+voice_e2ee_keys = {}
 # Store soundboard play cooldowns: {username: last_play_timestamp}
 soundboard_cooldowns = {}
 
@@ -5088,6 +5092,14 @@ async def handler(websocket):
                                 livekit_token = generate_livekit_token(
                                     room_name, username, username
                                 )
+                                # Generate (or reuse) a random per-session E2EE key for the room.
+                                # All participants in the same room session share this key so that
+                                # the SFU cannot passively decrypt their media.
+                                import base64 as _b64, secrets as _sec
+                                if room_name not in voice_e2ee_keys:
+                                    voice_e2ee_keys[room_name] = _b64.urlsafe_b64encode(
+                                        _sec.token_bytes(32)
+                                    ).decode()
                                 await websocket.send_str(json.dumps({
                                     'type': 'voice_channel_joined',
                                     'server_id': server_id,
@@ -5095,6 +5107,7 @@ async def handler(websocket):
                                     'participants': [m['username'] for m in voice_members_list],
                                     'livekit_token': livekit_token,
                                     'livekit_url': LIVEKIT_URL if livekit_token else None,
+                                    'e2ee_key': voice_e2ee_keys.get(room_name),
                                 }))
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} joined voice channel {channel_id}")
                     
@@ -5132,6 +5145,11 @@ async def handler(websocket):
                                         'state': 'left',
                                         'voice_members': voice_members_list
                                     }))
+                                    # Clear the session E2EE key once the room is empty
+                                    # so the next session gets a fresh random key.
+                                    if not voice_members.get(voice_key):
+                                        room_name_leave = f"{server_id}__{channel_id}"
+                                        voice_e2ee_keys.pop(room_name_leave, None)
                             
                             del voice_states[username]
                             print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} left voice channel")
