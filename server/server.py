@@ -156,6 +156,7 @@ server_counter = 0
 channel_counter = 0
 category_counter = 0
 dm_counter = 0
+gdm_counter = 0
 role_counter = 0
 thread_counter = 0
 
@@ -399,6 +400,13 @@ def get_next_dm_id():
     return f"dm_{dm_counter}"
 
 
+def get_next_gdm_id():
+    """Get next Group DM ID."""
+    global gdm_counter
+    gdm_counter += 1
+    return f"gdm_{gdm_counter}"
+
+
 def create_message_object(username, msg_content, context, context_id, user_profile, message_key=None, message_id=None, reply_data=None):
     """
     Create a message object with common fields.
@@ -469,7 +477,7 @@ def create_message_object(username, msg_content, context, context_id, user_profi
 
 def init_counters_from_db():
     """Initialize ID counters from database."""
-    global server_counter, channel_counter, category_counter, dm_counter, role_counter
+    global server_counter, channel_counter, category_counter, dm_counter, gdm_counter, role_counter
     
     # Get highest server ID
     servers = db.get_all_servers()
@@ -532,6 +540,18 @@ def init_counters_from_db():
         if t_ids:
             max_thread = max([int(t.split('_')[1]) for t in t_ids if len(t.split('_')) == 2 and t.split('_')[1].isdigit()] + [0])
             thread_counter = max_thread
+
+    # Get highest group DM ID
+    global gdm_counter
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute('SELECT gdm_id FROM group_dms')
+            gdm_ids = [row['gdm_id'] for row in cursor.fetchall()]
+            if gdm_ids:
+                gdm_counter = max([int(g.split('_')[1]) for g in gdm_ids if len(g.split('_')) == 2 and g.split('_')[1].isdigit()] + [0])
+        except Exception:
+            pass  # Table may not exist yet on first run
 
 
 def get_next_call_id():
@@ -659,6 +679,28 @@ def build_user_dms_data(username):
         })
     
     return user_dms
+
+
+def build_user_group_dms_data(username):
+    """Build group DM list data for a user including member avatars."""
+    result = []
+    gdm_list = db.get_user_group_dms(username)
+    for gdm in gdm_list:
+        members_info = []
+        for m in gdm.get('members', []):
+            members_info.append({
+                'username': m,
+                **get_avatar_data(m),
+                'user_status': get_user_status(m)
+            })
+        result.append({
+            'id': gdm['gdm_id'],
+            'name': gdm.get('name'),
+            'owner': gdm['owner'],
+            'members': gdm.get('members', []),
+            'members_info': members_info
+        })
+    return result
 
 
 def build_user_friends_data(username):
@@ -945,6 +987,18 @@ async def broadcast_to_dm_participants(username, dm_id, message):
             for participant in participants:
                 await send_to_user(participant, message)
             break
+
+
+async def broadcast_to_group_dm_participants(gdm_id, message):
+    """Broadcast a message to all members of a group DM.
+
+    Args:
+        gdm_id: The group DM identifier
+        message: The JSON-encoded message string to broadcast
+    """
+    members = db.get_group_dm_members(gdm_id)
+    for member in members:
+        await send_to_user(member, message)
 
 
 async def cleanup_voice_state(username, reason=''):
@@ -1709,6 +1763,7 @@ async def handler(websocket):
         try:
             user_servers = build_user_servers_data(username) or []
             user_dms = build_user_dms_data(username) or []
+            user_group_dms = build_user_group_dms_data(username) or []
             friends_list = build_user_friends_data(username) or []
             friend_requests_sent, friend_requests_received = build_friend_requests_data(username)
             # Ensure friend requests are lists
@@ -1754,6 +1809,7 @@ async def handler(websocket):
                 'is_admin': is_admin,
                 'servers': user_servers,
                 'dms': user_dms,
+                'group_dms': user_group_dms,
                 'friends': friends_list,
                 'friend_requests_sent': friend_requests_sent,
                 'friend_requests_received': friend_requests_received
@@ -2098,6 +2154,59 @@ async def handler(websocket):
                                 
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] DM from {username} in {context_id}")
                         
+                        elif context == 'group_dm' and context_id:
+                            # Group DM message — verify caller is a member
+                            if db.is_group_dm_member(context_id, username):
+                                message_id = db.save_message(username, msg_content, 'group_dm', context_id, reply_to)
+
+                                gdm_members = db.get_group_dm_members(context_id)
+
+                                # Save valid mentions
+                                if mentions and message_id:
+                                    valid_mentions = [m for m in mentions if m in gdm_members and m != username]
+                                    if valid_mentions:
+                                        db.add_mentions(message_id, valid_mentions)
+                                        for mentioned_user in valid_mentions:
+                                            await send_to_user(mentioned_user, json.dumps({
+                                                'type': 'mention_notification',
+                                                'message_id': message_id,
+                                                'mentioned_by': username,
+                                                'content': msg_content[:100],
+                                                'context_type': 'group_dm',
+                                                'context_id': context_id
+                                            }))
+
+                                # Reply notification
+                                if reply_to and replied_to_user and replied_to_user != username and replied_to_user in gdm_members:
+                                    await send_to_user(replied_to_user, json.dumps({
+                                        'type': 'reply_notification',
+                                        'message_id': message_id,
+                                        'replied_by': username,
+                                        'content': msg_content[:100],
+                                        'context_type': 'group_dm',
+                                        'context_id': context_id,
+                                        'original_message_id': reply_to
+                                    }))
+
+                                msg_obj = create_message_object(
+                                    username=username,
+                                    msg_content=msg_content,
+                                    context=context,
+                                    context_id=context_id,
+                                    user_profile=user_profile,
+                                    message_key=message_key,
+                                    message_id=message_id,
+                                    reply_data=reply_data
+                                )
+                                if mentions:
+                                    msg_obj['mentions'] = [m for m in mentions if m in gdm_members]
+                                if nonce:
+                                    msg_obj['nonce'] = nonce
+
+                                # Broadcast to all group members
+                                await broadcast_to_group_dm_participants(context_id, json.dumps(msg_obj))
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] Group DM from {username} in {context_id}")
+
                         else:
                             # Global chat (backward compatibility)
                             msg_obj = create_message_object(
@@ -2289,6 +2398,11 @@ async def handler(websocket):
                                 if dm['dm_id'] == t_context_id:
                                     recipients = {dm['user1'], dm['user2']} - {username}
                                     break
+                        elif t_context == 'group_dm' and t_context_id:
+                            if db.is_group_dm_member(t_context_id, username):
+                                recipients = set(db.get_group_dm_members(t_context_id)) - {username}
+                            else:
+                                recipients = set()
                         else:
                             recipients = set()
 
@@ -2348,6 +2462,11 @@ async def handler(websocket):
                                 if dm['dm_id'] == t_context_id:
                                     recipients = {dm['user1'], dm['user2']} - {username}
                                     break
+                        elif t_context == 'group_dm' and t_context_id:
+                            if db.is_group_dm_member(t_context_id, username):
+                                recipients = set(db.get_group_dm_members(t_context_id)) - {username}
+                            else:
+                                recipients = set()
                         else:
                             recipients = set()
                         stop_payload = json.dumps({
@@ -2798,6 +2917,8 @@ async def handler(websocket):
                             elif message['context_type'] == 'dm':
                                 # Send to both DM participants using helper
                                 await broadcast_to_dm_participants(username, message['context_id'], json.dumps(edit_notification))
+                            elif message['context_type'] == 'group_dm':
+                                await broadcast_to_group_dm_participants(message['context_id'], json.dumps(edit_notification))
                             
                             print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} edited message {message_id}")
                         else:
@@ -2871,6 +2992,8 @@ async def handler(websocket):
                             elif message['context_type'] == 'dm':
                                 # Send to both DM participants using helper
                                 await broadcast_to_dm_participants(username, message['context_id'], json.dumps(delete_notification))
+                            elif message['context_type'] == 'group_dm':
+                                await broadcast_to_group_dm_participants(message['context_id'], json.dumps(delete_notification))
                             
                             print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} deleted message {message_id}")
                         else:
@@ -3167,6 +3290,170 @@ async def handler(websocket):
                                     **user_profile
                                 }
                             }))
+                    
+                    elif data.get('type') == 'create_group_dm':
+                        # ── Group DM creation (standard tier required) ─────────────────
+                        from license_validator import check_feature_access
+                        if not check_feature_access('group_dms'):
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': 'Group DMs require a Standard or higher license tier.'
+                            }))
+                            continue
+
+                        raw_members = data.get('members', [])  # list of usernames to invite
+                        gdm_name = data.get('name', '').strip() or None
+
+                        if not isinstance(raw_members, list):
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Invalid members list'}))
+                            continue
+
+                        # Validate: max 9 additional members (10 total with creator)
+                        if len(raw_members) > 9:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Group DMs may have at most 10 members'}))
+                            continue
+
+                        if len(raw_members) < 1:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Must invite at least 1 friend to create a group DM'}))
+                            continue
+
+                        # All invited members must be friends of the creator
+                        friends = set(db.get_friends(username))
+                        invalid = [m for m in raw_members if m not in friends or not db.get_user(m)]
+                        if invalid:
+                            await websocket.send_str(json.dumps({
+                                'type': 'error',
+                                'message': f'Cannot invite non-friends: {", ".join(invalid)}'
+                            }))
+                            continue
+
+                        gdm_id = get_next_gdm_id()
+                        ok = db.create_group_dm(gdm_id, username, raw_members, name=gdm_name)
+                        if not ok:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Failed to create group DM'}))
+                            continue
+
+                        gdm_payload = {
+                            'id': gdm_id,
+                            'name': gdm_name,
+                            'owner': username,
+                            'members': db.get_group_dm_members(gdm_id),
+                            'members_info': [
+                                {'username': m, **get_avatar_data(m), 'user_status': get_user_status(m)}
+                                for m in db.get_group_dm_members(gdm_id)
+                            ]
+                        }
+                        # Notify all members
+                        for member in gdm_payload['members']:
+                            await send_to_user(member, json.dumps({
+                                'type': 'group_dm_created',
+                                'group_dm': gdm_payload
+                            }))
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} created group DM {gdm_id} with {raw_members}")
+
+                    elif data.get('type') == 'get_group_dm_history':
+                        gdm_id = data.get('gdm_id', '')
+                        if not db.is_group_dm_member(gdm_id, username):
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Not a member of this group DM'}))
+                            continue
+
+                        gdm_messages = db.get_messages('group_dm', gdm_id, MAX_HISTORY)
+                        if gdm_messages:
+                            msg_ids = [m['id'] for m in gdm_messages]
+                            reactions_map = db.get_reactions_for_messages(msg_ids)
+                            mentions_map = db.get_mentions_for_messages(msg_ids)
+                            for m in gdm_messages:
+                                m['reactions'] = reactions_map.get(m['id'], [])
+                                m['attachments'] = db.get_message_attachments(m['id'])
+                                m['mentions'] = mentions_map.get(m['id'], [])
+                                m['user_status'] = get_user_status(m['username'])
+
+                        await websocket.send_str(json.dumps({
+                            'type': 'group_dm_history',
+                            'gdm_id': gdm_id,
+                            'messages': gdm_messages or []
+                        }))
+
+                    elif data.get('type') == 'add_group_dm_member':
+                        gdm_id = data.get('gdm_id', '')
+                        new_member = data.get('username', '').strip()
+
+                        gdm = db.get_group_dm(gdm_id)
+                        if not gdm or gdm['owner'] != username:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Only the group owner can add members'}))
+                            continue
+
+                        friends = set(db.get_friends(username))
+                        if not db.get_user(new_member) or new_member not in friends:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Can only add friends to a group DM'}))
+                            continue
+
+                        if not db.add_group_dm_member(gdm_id, new_member):
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Unable to add member (group may be full or user already a member)'}))
+                            continue
+
+                        current_members = db.get_group_dm_members(gdm_id)
+                        payload = json.dumps({
+                            'type': 'group_dm_member_added',
+                            'gdm_id': gdm_id,
+                            'username': new_member,
+                            'members': current_members
+                        })
+                        for m in current_members:
+                            await send_to_user(m, payload)
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} added {new_member} to group DM {gdm_id}")
+
+                    elif data.get('type') == 'remove_group_dm_member':
+                        gdm_id = data.get('gdm_id', '')
+                        target = data.get('username', '').strip()
+
+                        gdm = db.get_group_dm(gdm_id)
+                        if not gdm:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Group DM not found'}))
+                            continue
+
+                        # Allow: owner can remove anyone; anyone can remove themselves
+                        if gdm['owner'] != username and target != username:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Only the group owner can remove other members'}))
+                            continue
+
+                        if not db.is_group_dm_member(gdm_id, target):
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'User is not a member of this group DM'}))
+                            continue
+
+                        # Capture members before removal so we can notify them
+                        members_before = db.get_group_dm_members(gdm_id)
+                        db.remove_group_dm_member(gdm_id, target)
+                        remaining = db.get_group_dm_members(gdm_id)
+
+                        payload = json.dumps({
+                            'type': 'group_dm_member_removed',
+                            'gdm_id': gdm_id,
+                            'username': target,
+                            'members': remaining
+                        })
+                        # Notify all who were members before removal (including the removed user)
+                        for m in members_before:
+                            await send_to_user(m, payload)
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {target} removed from group DM {gdm_id} by {username}")
+
+                    elif data.get('type') == 'delete_group_dm':
+                        gdm_id = data.get('gdm_id', '')
+
+                        gdm = db.get_group_dm(gdm_id)
+                        if not gdm or gdm['owner'] != username:
+                            await websocket.send_str(json.dumps({'type': 'error', 'message': 'Only the group owner can disband this group'}))
+                            continue
+
+                        members_before = db.get_group_dm_members(gdm_id)
+                        db.delete_group_dm(gdm_id)
+
+                        payload = json.dumps({'type': 'group_dm_deleted', 'gdm_id': gdm_id})
+                        for m in members_before:
+                            await send_to_user(m, payload)
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} disbanded group DM {gdm_id}")
+
+
                     
                     elif data.get('type') == 'mark_as_read':
                         # Mark messages as read in a specific context
@@ -3708,6 +3995,7 @@ async def handler(websocket):
                         # Use helper functions to build data consistently with init message
                         refreshed_servers = build_user_servers_data(username)
                         refreshed_dms = build_user_dms_data(username)
+                        refreshed_group_dms = build_user_group_dms_data(username)
                         refreshed_friends = build_user_friends_data(username)
                         refreshed_requests_sent, refreshed_requests_received = build_friend_requests_data(username)
                         
@@ -3716,6 +4004,7 @@ async def handler(websocket):
                             'type': 'data_synced',
                             'servers': refreshed_servers,
                             'dms': refreshed_dms,
+                            'group_dms': refreshed_group_dms,
                             'friends': refreshed_friends,
                             'friend_requests_sent': refreshed_requests_sent,
                             'friend_requests_received': refreshed_requests_received

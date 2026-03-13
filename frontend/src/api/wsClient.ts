@@ -45,6 +45,11 @@ import type {
   WsOutboundAcceptServerRules,
   WsOutboundGetServerAutomation,
   WsOutboundUpdateServerAutomation,
+  WsOutboundCreateGroupDm,
+  WsOutboundGetGroupDmHistory,
+  WsOutboundAddGroupDmMember,
+  WsOutboundRemoveGroupDmMember,
+  WsOutboundDeleteGroupDm,
 } from '../types/protocol'
 
 type MessageHandler = (msg: WsMessage) => void
@@ -379,6 +384,27 @@ export class WsClient {
 
   // ── Slash commands ─────────────────────────────────────────
   sendSlashCommand(payload: import('../types/protocol').WsOutboundSlashCommand) {
+    this.send(payload)
+  }
+
+  // ── Group DMs ──────────────────────────────────────────────
+  createGroupDm(payload: WsOutboundCreateGroupDm) {
+    this.send(payload)
+  }
+
+  getGroupDmHistory(payload: WsOutboundGetGroupDmHistory) {
+    this.send(payload)
+  }
+
+  addGroupDmMember(payload: WsOutboundAddGroupDmMember) {
+    this.send(payload)
+  }
+
+  removeGroupDmMember(payload: WsOutboundRemoveGroupDmMember) {
+    this.send(payload)
+  }
+
+  deleteGroupDm(payload: WsOutboundDeleteGroupDm) {
     this.send(payload)
   }
 

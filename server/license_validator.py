@@ -41,6 +41,7 @@ DEFAULT_FEATURES: Dict[str, bool] = {
     "sso": False,
     "scim": False,
     "soundboard": True,
+    "group_dms": False,
 }
 
 DEFAULT_LIMITS: Dict[str, int] = {
@@ -68,6 +69,7 @@ _TIER_ORDER = ["community", "lite", "standard", "elite", "off_the_walls"]
 _TIER_FEATURE_MINIMUMS: Dict[str, str] = {
     "sso": "standard",
     "scim": "standard",
+    "group_dms": "standard",
 }
 
 # Path to the public key shipped with the server

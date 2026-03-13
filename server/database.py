@@ -174,6 +174,35 @@ class Database:
                         )
                     ''')
                     
+                    # Group DMs table (multi-user direct message conversations)
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS group_dms (
+                            gdm_id VARCHAR(255) PRIMARY KEY,
+                            name VARCHAR(255),
+                            owner VARCHAR(255) NOT NULL,
+                            created_at TIMESTAMP NOT NULL,
+                            FOREIGN KEY (owner) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+
+                    # Group DM members table
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS group_dm_members (
+                            gdm_id VARCHAR(255) NOT NULL,
+                            username VARCHAR(255) NOT NULL,
+                            joined_at TIMESTAMP NOT NULL,
+                            PRIMARY KEY (gdm_id, username),
+                            FOREIGN KEY (gdm_id) REFERENCES group_dms(gdm_id) ON DELETE CASCADE,
+                            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
+                        )
+                    ''')
+
+                    # Index for fast per-user group DM lookups
+                    cursor.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_group_dm_members_username
+                        ON group_dm_members(username)
+                    ''')
+
                     # Invite codes table
                     cursor.execute('''
                         CREATE TABLE IF NOT EXISTS invite_codes (
@@ -3909,8 +3938,121 @@ class Database:
                 WHERE user1 = %s OR user2 = %s
             ''', (username, username))
             return [dict(row) for row in cursor.fetchall()]
-    
-    # Invite code operations
+
+    # Group DM operations
+    def create_group_dm(self, gdm_id: str, owner: str, member_usernames: List[str], name: Optional[str] = None) -> bool:
+        """Create a group DM.  owner is automatically included as a member.
+        member_usernames should NOT include the owner — they are added separately.
+        Total members (owner + member_usernames) must be ≤ 10.
+        Returns True on success, False on failure.
+        """
+        all_members = list(dict.fromkeys([owner] + member_usernames))  # dedup, owner first
+        if len(all_members) > 10:
+            return False
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO group_dms (gdm_id, name, owner, created_at)
+                    VALUES (%s, %s, %s, %s)
+                ''', (gdm_id, name or None, owner, datetime.now()))
+                for member in all_members:
+                    cursor.execute('''
+                        INSERT INTO group_dm_members (gdm_id, username, joined_at)
+                        VALUES (%s, %s, %s)
+                    ''', (gdm_id, member, datetime.now()))
+                return True
+        except Exception:
+            return False
+
+    def get_group_dm(self, gdm_id: str) -> Optional[Dict]:
+        """Get group DM info including members list."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT gdm_id, name, owner, created_at FROM group_dms WHERE gdm_id = %s', (gdm_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            gdm = dict(row)
+            gdm['members'] = self.get_group_dm_members(gdm_id)
+            return gdm
+
+    def get_group_dm_members(self, gdm_id: str) -> List[str]:
+        """Return list of usernames in a group DM ordered by join time."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT username FROM group_dm_members WHERE gdm_id = %s ORDER BY joined_at',
+                (gdm_id,)
+            )
+            return [row['username'] for row in cursor.fetchall()]
+
+    def get_user_group_dms(self, username: str) -> List[Dict]:
+        """Get all group DMs a user is a member of, newest first."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT gd.gdm_id, gd.name, gd.owner, gd.created_at
+                FROM group_dms gd
+                JOIN group_dm_members gdm ON gd.gdm_id = gdm.gdm_id
+                WHERE gdm.username = %s
+                ORDER BY gd.created_at DESC
+            ''', (username,))
+            gdms = [dict(row) for row in cursor.fetchall()]
+        for gdm in gdms:
+            gdm['members'] = self.get_group_dm_members(gdm['gdm_id'])
+        return gdms
+
+    def add_group_dm_member(self, gdm_id: str, username: str) -> bool:
+        """Add a member to a group DM (max 10 total).  Returns False if full or already member."""
+        current = self.get_group_dm_members(gdm_id)
+        if len(current) >= 10 or username in current:
+            return False
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO group_dm_members (gdm_id, username, joined_at)
+                    VALUES (%s, %s, %s)
+                ''', (gdm_id, username, datetime.now()))
+                return True
+        except Exception:
+            return False
+
+    def remove_group_dm_member(self, gdm_id: str, username: str) -> bool:
+        """Remove a member from a group DM.  Deletes the group when nobody remains."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'DELETE FROM group_dm_members WHERE gdm_id = %s AND username = %s',
+                (gdm_id, username)
+            )
+        remaining = self.get_group_dm_members(gdm_id)
+        if not remaining:
+            self.delete_group_dm(gdm_id)
+        return True
+
+    def delete_group_dm(self, gdm_id: str):
+        """Delete a group DM and all associated messages (cascades members)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM messages WHERE context_type = 'group_dm' AND context_id = %s",
+                (gdm_id,)
+            )
+            cursor.execute('DELETE FROM group_dms WHERE gdm_id = %s', (gdm_id,))
+
+    def is_group_dm_member(self, gdm_id: str, username: str) -> bool:
+        """Return True if username is a member of the given group DM."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT 1 FROM group_dm_members WHERE gdm_id = %s AND username = %s',
+                (gdm_id, username)
+            )
+            return cursor.fetchone() is not None
+
+
     def create_invite_code(self, code: str, creator: str, code_type: str = 'global', 
                           server_id: Optional[str] = None, max_uses: Optional[int] = None, 
                           description: Optional[str] = None) -> bool:

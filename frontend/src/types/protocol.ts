@@ -157,6 +157,21 @@ export type Dm = {
   has_mention?: boolean
 } & Avatar
 
+export type GroupDmMemberInfo = {
+  username: string
+  user_status?: 'online' | 'away' | 'busy' | 'offline'
+} & Avatar
+
+export type GroupDm = {
+  id: string
+  name: string | null
+  owner: string
+  members: string[]
+  members_info?: GroupDmMemberInfo[]
+  unread_count?: number
+  has_mention?: boolean
+}
+
 export type Friend = {
   username: string
   user_status?: 'online' | 'away' | 'busy' | 'offline'
@@ -192,6 +207,7 @@ export type WsDataSynced = {
   type: 'data_synced'
   servers?: Server[]
   dms?: Dm[]
+  group_dms?: GroupDm[]
   friends?: Friend[]
   friend_requests_sent?: Friend[]
   friend_requests_received?: Friend[]
@@ -710,6 +726,11 @@ export type WsMessage =
   | WsChannelCategoryUpdated
   | WsChannelDeleted
   | WsDmStarted
+  | WsGroupDmCreated
+  | WsGroupDmHistory
+  | WsGroupDmMemberAdded
+  | WsGroupDmMemberRemoved
+  | WsGroupDmDeleted
   | WsServerMembers
   | WsInviteCode
   | WsServerInviteCode
@@ -835,7 +856,7 @@ export type WsOutboundGetDmHistory = {
 export type WsOutboundSendMessage = {
   type: 'message'
   content: string
-  context?: 'global' | 'server' | 'dm'
+  context?: 'global' | 'server' | 'dm' | 'group_dm'
   context_id?: string | null
   mentions?: string[]
   role_mentions?: string[]
@@ -867,6 +888,64 @@ export type WsOutboundCreateVoiceChannel = {
 export type WsOutboundStartDm = {
   type: 'start_dm'
   username: string
+}
+
+export type WsOutboundCreateGroupDm = {
+  type: 'create_group_dm'
+  members: string[]
+  name?: string
+}
+
+export type WsOutboundGetGroupDmHistory = {
+  type: 'get_group_dm_history'
+  gdm_id: string
+}
+
+export type WsOutboundAddGroupDmMember = {
+  type: 'add_group_dm_member'
+  gdm_id: string
+  username: string
+}
+
+export type WsOutboundRemoveGroupDmMember = {
+  type: 'remove_group_dm_member'
+  gdm_id: string
+  username: string
+}
+
+export type WsOutboundDeleteGroupDm = {
+  type: 'delete_group_dm'
+  gdm_id: string
+}
+
+export type WsGroupDmCreated = {
+  type: 'group_dm_created'
+  group_dm: GroupDm
+}
+
+export type WsGroupDmHistory = {
+  type: 'group_dm_history'
+  gdm_id: string
+  messages: WsChatMessage[]
+}
+
+export type WsGroupDmMemberAdded = {
+  type: 'group_dm_member_added'
+  gdm_id: string
+  username: string
+  members: string[]
+}
+
+export type WsGroupDmMemberRemoved = {
+  type: 'group_dm_member_removed'
+  gdm_id: string
+  username: string
+  members: string[]
+}
+
+export type WsGroupDmDeleted = {
+  type: 'group_dm_deleted'
+  gdm_id: string
 }
 
 export type WsOutboundGenerateInvite = {
@@ -1153,6 +1232,7 @@ export interface LicenseFeatures {
   audit_logs: boolean
   sso: boolean
   scim: boolean
+  group_dms: boolean
 }
 
 export interface LicenseLimits {
@@ -1196,7 +1276,7 @@ export interface WsOutboundRemoveLicense {
 
 export type WsMarkAsRead = {
   type: 'mark_as_read'
-  context_type: 'server' | 'dm' | 'global'
+  context_type: 'server' | 'dm' | 'group_dm' | 'global'
   context_id: string
 }
 

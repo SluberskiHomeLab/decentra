@@ -7,7 +7,7 @@ import { useToastStore } from '../store/toastStore'
 import { VoiceChat } from '../lib/VoiceChat'
 import { VoiceChatSFU } from '../lib/VoiceChatSFU'
 import type { ChatContext, TypingUser } from '../store/appStore'
-import type { Attachment, AuditLogEntry, Reaction, Server, ServerMember, Thread, WsChatMessage, WsMessage } from '../types/protocol'
+import type { Attachment, AuditLogEntry, GroupDm, Reaction, Server, ServerMember, Thread, WsChatMessage, WsMessage } from '../types/protocol'
 import { LicensePanel } from '../components/admin/LicensePanel'
 import { WebhookPanel } from '../components/admin/WebhookPanel'
 import { UsersPanel } from '../components/admin/UsersPanel'
@@ -22,6 +22,7 @@ import { keybindManager } from '../utils/keybindManager'
 import { SearchBar, type SearchResult } from '../components/SearchBar'
 import SoundboardPanel from '../components/SoundboardPanel'
 import { AvatarWithStatus } from '../components/AvatarWithStatus'
+import { FeatureGate } from '../components/FeatureGate'
 import { isWsChatMessage, isWsServerJoined } from '../lib/typeGuards'
 import { linkifyText } from '../lib/linkify'
 import { MessageEmbeds } from '../components/chat/MessageEmbeds'
@@ -120,6 +121,11 @@ export function ChatPage() {
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null)
   const [editingCategoryName, setEditingCategoryName] = useState('')
   const [dmUsername, setDmUsername] = useState('')
+  const [showCreateGroupDm, setShowCreateGroupDm] = useState(false)
+  const [groupDmName, setGroupDmName] = useState('')
+  const [groupDmSelectedFriends, setGroupDmSelectedFriends] = useState<string[]>([])
+  const [managingGroupDm, setManagingGroupDm] = useState<GroupDm | null>(null)
+  const [addGroupDmMemberInput, setAddGroupDmMemberInput] = useState('')
   const [lastInviteCode, setLastInviteCode] = useState<string | null>(null)
   const {
     inviteUsageServerId,
@@ -337,6 +343,8 @@ export function ChatPage() {
       loadServerEmojis(ctx.serverId)
     } else if (ctx.kind === 'dm') {
       wsClient.getDmHistory({ type: 'get_dm_history', dm_id: ctx.dmId })
+    } else if (ctx.kind === 'group_dm') {
+      wsClient.getGroupDmHistory({ type: 'get_group_dm_history', gdm_id: ctx.gdmId })
     } else if (ctx.kind === 'thread') {
       wsClient.getThreadHistory({ type: 'get_thread_history', thread_id: ctx.threadId })
     }
@@ -359,6 +367,15 @@ export function ChatPage() {
         return dm
       })
       setInit({ ...prev, dms: updatedDms })
+    } else if (ctx.kind === 'group_dm') {
+      // Clear group DM unread count
+      const updatedGroupDms = prev.group_dms?.map((gdm) => {
+        if (gdm.id === ctx.gdmId) {
+          return { ...gdm, unread_count: 0, has_mention: false }
+        }
+        return gdm
+      })
+      setInit({ ...prev, group_dms: updatedGroupDms })
     } else if (ctx.kind === 'server') {
       // Clear channel unread count
       const updatedServers = prev.servers?.map((server) => {
@@ -601,6 +618,7 @@ export function ChatPage() {
           user_status: msg.user_status,
           servers: msg.servers,
           dms: msg.dms,
+          group_dms: (msg as any).group_dms,
           friends: msg.friends,
           friend_requests_sent: msg.friend_requests_sent,
           friend_requests_received: msg.friend_requests_received,
@@ -658,6 +676,22 @@ export function ChatPage() {
           setSelectedCamera(devices.camera)
           setScreenShareResolution(devices.screenShareResolution)
           setScreenShareFramerate(devices.screenShareFramerate)
+        }
+      }
+
+      if (msg.type === 'data_synced') {
+        // Full data refresh from the server (triggered by sync_data request)
+        const prev = useAppStore.getState().init
+        if (prev) {
+          setInit({
+            ...prev,
+            servers: (msg as any).servers ?? prev.servers,
+            dms: (msg as any).dms ?? prev.dms,
+            group_dms: (msg as any).group_dms ?? prev.group_dms,
+            friends: (msg as any).friends ?? prev.friends,
+            friend_requests_sent: (msg as any).friend_requests_sent ?? prev.friend_requests_sent,
+            friend_requests_received: (msg as any).friend_requests_received ?? prev.friend_requests_received,
+          })
         }
       }
 
@@ -872,6 +906,82 @@ export function ChatPage() {
         requestHistoryFor(next)
       }
 
+      if (msg.type === 'group_dm_created') {
+        const prev = useAppStore.getState().init
+        if (prev) {
+          const existing = prev.group_dms ?? []
+          const already = existing.some((g) => g.id === msg.group_dm.id)
+          const updated = already ? existing : [...existing, msg.group_dm]
+          setInit({ ...prev, group_dms: updated })
+        }
+        // Auto-switch context if current user is the initiator (owner)
+        const currentUser = useAppStore.getState().init?.username
+        if (msg.group_dm.owner === currentUser) {
+          const next: ChatContext = { kind: 'group_dm', gdmId: msg.group_dm.id }
+          selectContext(next)
+          requestHistoryFor(next)
+        }
+      }
+
+      if (msg.type === 'group_dm_history') {
+        const ctx: ChatContext = { kind: 'group_dm', gdmId: msg.gdm_id }
+        setMessagesForContext(ctx, msg.messages ?? [])
+      }
+
+      if (msg.type === 'group_dm_member_added') {
+        const prev = useAppStore.getState().init
+        if (prev) {
+          const updated = prev.group_dms?.map((g) =>
+            g.id === msg.gdm_id ? { ...g, members: msg.members } : g
+          ) ?? []
+          setInit({ ...prev, group_dms: updated })
+        }
+        // Keep managingGroupDm in sync
+        setManagingGroupDm((prev) =>
+          prev && prev.id === msg.gdm_id ? { ...prev, members: msg.members } : prev
+        )
+      }
+
+      if (msg.type === 'group_dm_member_removed') {
+        const currentUser = useAppStore.getState().init?.username
+        const prev = useAppStore.getState().init
+        if (prev) {
+          // If current user was removed, drop the group from state and deselect
+          if (msg.username === currentUser) {
+            setInit({ ...prev, group_dms: (prev.group_dms ?? []).filter((g) => g.id !== msg.gdm_id) })
+            const ctx = useAppStore.getState().selectedContext
+            if (ctx.kind === 'group_dm' && ctx.gdmId === msg.gdm_id) {
+              selectContext({ kind: 'global' })
+            }
+          } else {
+            const updated = prev.group_dms?.map((g) =>
+              g.id === msg.gdm_id ? { ...g, members: msg.members } : g
+            ) ?? []
+            setInit({ ...prev, group_dms: updated })
+          }
+        }
+        setManagingGroupDm((prev) =>
+          prev && prev.id === msg.gdm_id
+            ? msg.members.length === 0
+              ? null
+              : { ...prev, members: msg.members }
+            : prev
+        )
+      }
+
+      if (msg.type === 'group_dm_deleted') {
+        const prev = useAppStore.getState().init
+        if (prev) {
+          setInit({ ...prev, group_dms: (prev.group_dms ?? []).filter((g) => g.id !== msg.gdm_id) })
+        }
+        const ctx = useAppStore.getState().selectedContext
+        if (ctx.kind === 'group_dm' && ctx.gdmId === msg.gdm_id) {
+          selectContext({ kind: 'global' })
+        }
+        if (managingGroupDm?.id === msg.gdm_id) setManagingGroupDm(null)
+      }
+
+
       if (msg.type === 'server_members') {
         setServerMembers((prev) => ({
           ...prev,
@@ -933,6 +1043,8 @@ export function ChatPage() {
             let isInCurrentContext = false
             if (msg.context === 'dm' && currentContext.kind === 'dm') {
               isInCurrentContext = msg.context_id === currentContext.dmId
+            } else if (msg.context === 'group_dm' && currentContext.kind === 'group_dm') {
+              isInCurrentContext = msg.context_id === currentContext.gdmId
             } else if (msg.context === 'server' && currentContext.kind === 'server') {
               const contextId = `${currentContext.serverId}/${currentContext.channelId}`
               isInCurrentContext = msg.context_id === contextId
@@ -955,6 +1067,19 @@ export function ChatPage() {
                   return dm
                 })
                 setInit({ ...prev, dms: updatedDms })
+              } else if (msg.context === 'group_dm' && msg.context_id) {
+                // Update group DM unread count
+                const updatedGroupDms = prev.group_dms?.map((gdm) => {
+                  if (gdm.id === msg.context_id) {
+                    return {
+                      ...gdm,
+                      unread_count: (gdm.unread_count ?? 0) + 1,
+                      has_mention: gdm.has_mention || isMention
+                    }
+                  }
+                  return gdm
+                })
+                setInit({ ...prev, group_dms: updatedGroupDms })
               } else if (msg.context === 'server' && msg.context_id) {
                 // Update server/channel unread count
                 const [serverId, channelId] = msg.context_id.split('/')
@@ -2044,13 +2169,19 @@ export function ChatPage() {
       ? 'Global'
       : selectedContext.kind === 'dm'
         ? selectedContext.username
-        : selectedContext.kind === 'thread'
-          ? `🧵 ${selectedContext.threadName || activeThread?.name || selectedContext.threadId}`
-          : (() => {
-              const server = init?.servers?.find((s) => s.id === selectedContext.serverId)
-              const channel = server?.channels?.find((c) => c.id === selectedContext.channelId)
-              return server && channel ? `${server.name} / ${channel.name}` : 'Channel'
+        : selectedContext.kind === 'group_dm'
+          ? (() => {
+              const gdm = init?.group_dms?.find((g) => g.id === selectedContext.gdmId)
+              if (!gdm) return 'Group DM'
+              return gdm.name ?? gdm.members.filter((m) => m !== init?.username).join(', ')
             })()
+          : selectedContext.kind === 'thread'
+            ? `🧵 ${selectedContext.threadName || activeThread?.name || selectedContext.threadId}`
+            : (() => {
+                const server = init?.servers?.find((s) => s.id === selectedContext.serverId)
+                const channel = server?.channels?.find((c) => c.id === selectedContext.channelId)
+                return server && channel ? `${server.name} / ${channel.name}` : 'Channel'
+              })()
 
   const canSend = wsClient.readyState === WebSocket.OPEN && (draft.trim().length > 0 || selectedFiles.length > 0)
 
@@ -2072,6 +2203,7 @@ export function ChatPage() {
       let context_id: string | null = null
       if (selectedContext.kind === 'server') { context = 'server'; context_id = `${selectedContext.serverId}/${selectedContext.channelId}` }
       else if (selectedContext.kind === 'dm') { context = 'dm'; context_id = selectedContext.dmId }
+      else if (selectedContext.kind === 'group_dm') { context = 'group_dm'; context_id = selectedContext.gdmId }
       try { wsClient.sendTypingStop({ type: 'typing_stop', context, context_id }) } catch { /* ignore */ }
     }
 
@@ -2099,6 +2231,8 @@ export function ChatPage() {
           // Recipient has no E2EE registration — send as plaintext
         }
         wsClient.sendMessage({ type: 'message', content: dmContent, context: 'dm', context_id: selectedContext.dmId, mentions, reply_to, nonce })
+      } else if (selectedContext.kind === 'group_dm') {
+        wsClient.sendMessage({ type: 'message', content, context: 'group_dm', context_id: selectedContext.gdmId, mentions, reply_to, nonce })
       } else {
         wsClient.sendMessage({ type: 'message', content, context: 'global', context_id: null, mentions, reply_to, nonce })
       }
@@ -2140,6 +2274,15 @@ export function ChatPage() {
           content, 
           context: 'dm', 
           context_id: selectedContext.dmId,
+          mentions,
+          reply_to
+        })
+      } else if (selectedContext.kind === 'group_dm') {
+        wsClient.sendMessage({ 
+          type: 'message', 
+          content, 
+          context: 'group_dm', 
+          context_id: selectedContext.gdmId,
           mentions,
           reply_to
         })
@@ -2533,6 +2676,9 @@ export function ChatPage() {
       } else if (selectedContext.kind === 'dm') {
         context = 'dm'
         context_id = selectedContext.dmId
+      } else if (selectedContext.kind === 'group_dm') {
+        context = 'group_dm'
+        context_id = selectedContext.gdmId
       }
 
       if (newDraft.trim()) {
@@ -3336,6 +3482,73 @@ export function ChatPage() {
                 )}
               </div>
 
+              {/* Group DMs section */}
+              <FeatureGate feature="group_dms">
+                <div className="border-t border-border-primary px-4 py-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-xs font-medium text-text-muted uppercase">Group DMs</div>
+                    <button
+                      type="button"
+                      onClick={() => setShowCreateGroupDm(true)}
+                      className="text-text-muted hover:text-text-secondary text-sm leading-none"
+                      title="New Group DM"
+                    >
+                      +
+                    </button>
+                  </div>
+                  {(init?.group_dms ?? []).length === 0 ? (
+                    <div className="text-sm text-text-muted">No group DMs yet</div>
+                  ) : (
+                    <div className="space-y-1">
+                      {(init?.group_dms ?? []).map((gdm) => {
+                        const isSelected = selectedContext.kind === 'group_dm' && selectedContext.gdmId === gdm.id
+                        const hasUnread = (gdm.unread_count ?? 0) > 0
+                        const hasMention = gdm.has_mention ?? false
+                        const displayName = gdm.name
+                          ?? gdm.members.filter((m) => m !== (init?.username ?? '')).join(', ')
+
+                        return (
+                          <button
+                            key={gdm.id}
+                            type="button"
+                            onClick={() => {
+                              const next: ChatContext = { kind: 'group_dm', gdmId: gdm.id }
+                              selectContext(next)
+                              requestHistoryFor(next)
+                              setSelectedServerId(null)
+                              clearUnreadForContext(next)
+                              if (wsClient.readyState === WebSocket.OPEN) {
+                                wsClient.send({
+                                  type: 'mark_as_read',
+                                  context_type: 'group_dm',
+                                  context_id: gdm.id
+                                })
+                              }
+                            }}
+                            className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition ${
+                              isSelected ? 'bg-sky-500/15 text-sky-100' : 'text-text-secondary hover:bg-white/5'
+                            }`}
+                          >
+                            <span className="text-base shrink-0">👥</span>
+                            <span
+                              className={`text-sm truncate ${
+                                hasMention
+                                  ? 'font-bold italic text-red-400'
+                                  : hasUnread
+                                    ? 'font-bold italic'
+                                    : 'font-medium'
+                              }`}
+                            >
+                              {displayName}
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              </FeatureGate>
+
               <div className="border-t border-border-primary px-4 py-4">
                 <div className="text-xs font-medium text-text-muted mb-2">Start DM</div>
                 <div className="flex gap-2">
@@ -3595,9 +3808,11 @@ export function ChatPage() {
                       ? 'Global Chat'
                       : selectedContext.kind === 'dm'
                         ? 'Direct Message'
-                        : isVoiceChannel
-                          ? 'Voice Channel'
-                          : 'Channel'}
+                        : selectedContext.kind === 'group_dm'
+                          ? `Group DM · ${(init?.group_dms?.find((g) => g.id === selectedContext.gdmId)?.members.length ?? 0)} members`
+                          : isVoiceChannel
+                            ? 'Voice Channel'
+                            : 'Channel'}
                   </div>
                   <div className="mt-1 text-lg font-semibold text-white truncate">{selectedTitle}</div>
                 </div>
@@ -3663,6 +3878,20 @@ export function ChatPage() {
                     title="End call"
                   >
                     📵 End Call
+                  </button>
+                )}
+                {/* Group DM manage button */}
+                {selectedContext.kind === 'group_dm' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const gdm = init?.group_dms?.find((g) => g.id === (selectedContext as { kind: 'group_dm'; gdmId: string }).gdmId)
+                      if (gdm) setManagingGroupDm(gdm)
+                    }}
+                    className="rounded-xl border border-border-primary bg-bg-primary/30 px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-secondary/50 transition"
+                    title="Manage Group DM"
+                  >
+                    👥 Manage
                   </button>
                 )}
                 {selectedServerId && !isVoiceChannel && selectedContext.kind !== 'thread' && (
@@ -8102,6 +8331,238 @@ export function ChatPage() {
             </div>
           </div>
         )}
+
+      {/* ── Create Group DM Modal ──────────────────────────────────────── */}
+      {showCreateGroupDm && (
+        <div
+          className="fixed inset-0 z-[90] flex items-center justify-center bg-black/70 p-4"
+          onClick={() => setShowCreateGroupDm(false)}
+        >
+          <div
+            className="relative w-full max-w-md rounded-2xl bg-slate-900 border border-white/10 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 border-b border-white/10 px-6 py-4">
+              <span className="text-2xl">👥</span>
+              <h2 className="text-lg font-bold text-white">New Group DM</h2>
+            </div>
+            <div className="px-6 py-4 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-text-muted mb-1">Group Name (optional)</label>
+                <input
+                  value={groupDmName}
+                  onChange={(e) => setGroupDmName(e.target.value)}
+                  placeholder="e.g. Study Group"
+                  className="w-full rounded-lg border border-border-primary bg-bg-primary/40 px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-text-muted mb-1">
+                  Add Friends (up to 9) — {groupDmSelectedFriends.length} selected
+                </label>
+                {(init?.friends ?? []).length === 0 ? (
+                  <p className="text-sm text-text-muted">You have no friends to add.</p>
+                ) : (
+                  <div className="max-h-48 overflow-y-auto space-y-1 rounded-lg border border-border-primary p-2">
+                    {(init?.friends ?? []).map((f) => {
+                      const checked = groupDmSelectedFriends.includes(f.username)
+                      const disabled = !checked && groupDmSelectedFriends.length >= 9
+                      return (
+                        <label
+                          key={f.username}
+                          className={`flex items-center gap-3 rounded-md px-2 py-1.5 cursor-pointer ${disabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-white/5'}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={disabled}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setGroupDmSelectedFriends((prev) => [...prev, f.username])
+                              } else {
+                                setGroupDmSelectedFriends((prev) => prev.filter((u) => u !== f.username))
+                              }
+                            }}
+                            className="accent-sky-500"
+                          />
+                          <span className="text-sm text-text-primary">{f.username}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex gap-3 border-t border-white/10 px-6 py-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCreateGroupDm(false)
+                  setGroupDmName('')
+                  setGroupDmSelectedFriends([])
+                }}
+                className="flex-1 rounded-lg bg-slate-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-600"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={groupDmSelectedFriends.length === 0 || wsClient.readyState !== WebSocket.OPEN}
+                onClick={() => {
+                  wsClient.createGroupDm({
+                    type: 'create_group_dm',
+                    members: groupDmSelectedFriends,
+                    name: groupDmName.trim() || undefined
+                  })
+                  setShowCreateGroupDm(false)
+                  setGroupDmName('')
+                  setGroupDmSelectedFriends([])
+                }}
+                className="flex-1 rounded-lg bg-sky-500 px-4 py-2.5 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Manage Group DM Modal ──────────────────────────────────────── */}
+      {managingGroupDm && (() => {
+        const gdm = init?.group_dms?.find((g) => g.id === managingGroupDm.id) ?? managingGroupDm
+        const isOwner = gdm.owner === (init?.username ?? '')
+        return (
+          <div
+            className="fixed inset-0 z-[90] flex items-center justify-center bg-black/70 p-4"
+            onClick={() => setManagingGroupDm(null)}
+          >
+            <div
+              className="relative w-full max-w-md rounded-2xl bg-slate-900 border border-white/10 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-3 border-b border-white/10 px-6 py-4">
+                <span className="text-2xl">👥</span>
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-lg font-bold text-white truncate">
+                    {gdm.name ?? gdm.members.filter((m) => m !== (init?.username ?? '')).join(', ')}
+                  </h2>
+                  <p className="text-xs text-text-muted">{gdm.members.length} members · owned by {gdm.owner}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setManagingGroupDm(null)}
+                  className="text-text-muted hover:text-text-secondary text-xl leading-none"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="px-6 py-4 space-y-3">
+                {/* Member list */}
+                <div>
+                  <div className="text-xs font-medium text-text-muted mb-2">Members</div>
+                  <div className="max-h-48 overflow-y-auto space-y-1 rounded-lg border border-border-primary p-2">
+                    {gdm.members.map((m) => (
+                      <div key={m} className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5">
+                        <span className="text-sm text-text-primary">{m}{m === gdm.owner ? ' 👑' : ''}</span>
+                        {isOwner && m !== (init?.username ?? '') && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              wsClient.removeGroupDmMember({ type: 'remove_group_dm_member', gdm_id: gdm.id, username: m })
+                            }}
+                            className="text-xs text-rose-400 hover:text-rose-300 shrink-0"
+                            title={`Remove ${m}`}
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                {/* Add member (owner only) */}
+                {isOwner && gdm.members.length < 10 && (
+                  <div>
+                    <div className="text-xs font-medium text-text-muted mb-1">Add Member</div>
+                    <div className="flex gap-2">
+                      <input
+                        value={addGroupDmMemberInput}
+                        onChange={(e) => setAddGroupDmMemberInput(e.target.value)}
+                        placeholder="Username (must be a friend)"
+                        className="flex-1 rounded-lg border border-border-primary bg-bg-primary/40 px-2 py-1.5 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && addGroupDmMemberInput.trim()) {
+                            wsClient.addGroupDmMember({ type: 'add_group_dm_member', gdm_id: gdm.id, username: addGroupDmMemberInput.trim() })
+                            setAddGroupDmMemberInput('')
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        disabled={!addGroupDmMemberInput.trim() || wsClient.readyState !== WebSocket.OPEN}
+                        onClick={() => {
+                          wsClient.addGroupDmMember({ type: 'add_group_dm_member', gdm_id: gdm.id, username: addGroupDmMemberInput.trim() })
+                          setAddGroupDmMemberInput('')
+                        }}
+                        className="shrink-0 rounded-lg bg-sky-500 px-3 py-1.5 text-sm font-semibold text-bg-primary hover:bg-sky-400 disabled:opacity-60"
+                      >
+                        Add
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className="flex gap-3 border-t border-white/10 px-6 py-4">
+                {isOwner ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setManagingGroupDm(null)}
+                      className="flex-1 rounded-lg bg-slate-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-600"
+                    >
+                      Close
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (confirm(`Disband group "${gdm.name ?? 'this group DM'}"? This cannot be undone.`)) {
+                          wsClient.deleteGroupDm({ type: 'delete_group_dm', gdm_id: gdm.id })
+                          setManagingGroupDm(null)
+                        }
+                      }}
+                      className="flex-1 rounded-lg bg-rose-500/20 border border-rose-500/40 px-4 py-2.5 text-sm font-semibold text-rose-300 hover:bg-rose-500/30 transition"
+                    >
+                      Disband Group
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setManagingGroupDm(null)}
+                      className="flex-1 rounded-lg bg-slate-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-600"
+                    >
+                      Close
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (confirm('Leave this group DM?')) {
+                          wsClient.removeGroupDmMember({ type: 'remove_group_dm_member', gdm_id: gdm.id, username: init?.username ?? '' })
+                          setManagingGroupDm(null)
+                        }
+                      }}
+                      className="flex-1 rounded-lg bg-rose-500/20 border border-rose-500/40 px-4 py-2.5 text-sm font-semibold text-rose-300 hover:bg-rose-500/30 transition"
+                    >
+                      Leave Group
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* ── Incoming direct-call overlay ───────────────────────────────── */}
       {incomingCall && (

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-import type { Dm, Friend, Server, Thread, WsChatMessage } from '../types/protocol'
+import type { Dm, Friend, GroupDm, Server, Thread, WsChatMessage } from '../types/protocol'
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected'
 
@@ -18,6 +18,7 @@ export type InitData = {
   email_verified?: boolean
   servers?: Server[]
   dms?: Dm[]
+  group_dms?: GroupDm[]
   friends?: Friend[]
   friend_requests_sent?: Friend[]
   friend_requests_received?: Friend[]
@@ -27,11 +28,13 @@ export type ChatContext =
   | { kind: 'global' }
   | { kind: 'server'; serverId: string; channelId: string }
   | { kind: 'dm'; dmId: string; username?: string }
+  | { kind: 'group_dm'; gdmId: string }
   | { kind: 'thread'; serverId: string; channelId?: string; threadId: string; threadName: string }
 
 export function contextKey(ctx: ChatContext): string {
   if (ctx.kind === 'global') return 'global'
   if (ctx.kind === 'dm') return `dm:${ctx.dmId}`
+  if (ctx.kind === 'group_dm') return `group_dm:${ctx.gdmId}`
   if (ctx.kind === 'thread') return `thread:${ctx.serverId}/${ctx.threadId}`
   return `server:${ctx.serverId}/${ctx.channelId}`
 }
@@ -130,6 +133,8 @@ export const useAppStore = create<AppState>((set) => ({
         ctx = { kind: 'server', serverId, channelId }
       } else if (message.context === 'dm' && typeof message.context_id === 'string') {
         ctx = { kind: 'dm', dmId: message.context_id }
+      } else if (message.context === 'group_dm' && typeof message.context_id === 'string') {
+        ctx = { kind: 'group_dm', gdmId: message.context_id }
       } else {
         ctx = { kind: 'global' }
       }
