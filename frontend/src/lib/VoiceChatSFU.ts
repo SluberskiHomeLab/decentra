@@ -1,21 +1,13 @@
 /**
- * VoiceChatSFU — LiveKit-based voice/video implementation for server voice channels.
+ * VoiceChatSFU — LiveKit-based voice/video for all call types.
  *
- * Replaces the P2P mesh (VoiceChat.ts) for server channels; P2P is still used for
- * direct (DM) calls.
+ * Handles both server voice channels and DM calls; P2P WebRTC has been removed.
  *
- * Public interface mirrors VoiceChat so ChatPage.tsx can route calls to either class
- * without knowing which mode is active.
- *
- * SECURITY HARDENING:
- * - iceTransportPolicy: 'relay' — all media is routed through TURN, preventing IP leakage.
- * - bundlePolicy: 'max-bundle' — reduces ICE candidate attack surface.
- * - E2EE via LiveKit insertable streams — media is encrypted client-side with a shared
- *   key derived from SHA-256(serverId + ":" + channelId).  The LiveKit SFU sees only
- *   encrypted frames and cannot decrypt audio/video.
- *   NOTE: This key is deterministic from public room identifiers.  It prevents the
- *   server from passively decrypting media, but does not protect against other room
- *   members who know the server + channel IDs (i.e., every member of the channel).
+ * Key behaviours:
+ * - iceTransportPolicy: 'relay' — all media through LiveKit's built-in TURN.
+ * - E2EE via insertable streams — server-provided random key per session.
+ * - Camera and screen share published as independent tracks simultaneously.
+ * - Remote camera/audio and remote screen share reported via separate callbacks.
  */
 
 import {
@@ -44,42 +36,41 @@ export class VoiceChatSFU {
   private username: string
   private ws: any
 
-  // E2EE key provider — shared key derived per-room
   private e2eeKeyProvider: ExternalE2EEKeyProvider
   private isE2EEActive = false
 
-  // Local media tracks
+  // Local tracks — camera and screen share are independent (both can be active at once)
   private localAudioTrack: LocalAudioTrack | null = null
-  private localVideoTrack: LocalVideoTrack | null = null
+  private localCameraTrack: LocalVideoTrack | null = null
   private localScreenTrack: LocalVideoTrack | null = null
 
-  // Per-participant remote MediaStreams (keyed by participant identity = username)
-  private participantStreams: Map<string, MediaStream> = new Map()
+  // Per-participant streams split by source
+  private participantCameraStreams: Map<string, MediaStream> = new Map()
+  private participantScreenStreams: Map<string, MediaStream> = new Map()
 
-  // UI state
   private isMuted = false
-  private isVideoEnabled = false
+  private isCameraEnabled = false
   private isScreenSharing = false
   private isConnecting = false
   private isInRoom = false
 
-  // Channel tracking (mirrors VoiceChat API so ChatPage can call getCurrentChannel())
   private currentVoiceServer: string | null = null
   private currentVoiceChannel: string | null = null
 
-  // Quality
   private qualityPreset: VoiceQualityPreset
 
-  // Device preferences
   private selectedMicrophoneId: string | null = null
   private selectedSpeakerId: string | null = null
   private selectedCameraId: string | null = null
   private screenShareResolution = 1080
   private screenShareFramerate = 60
 
-  // Callbacks — same signatures as VoiceChat
+  // Callbacks
   private onStateChange: (() => void) | null = null
+  /** Called when a participant's camera+audio stream changes. */
   private onRemoteStreamChange: ((peer: string, stream: MediaStream | null) => void) | null = null
+  /** Called when a participant's screen-share stream changes. */
+  private onRemoteScreenChange: ((peer: string, stream: MediaStream | null) => void) | null = null
   private onParticipantsChange: ((participants: string[]) => void) | null = null
 
   constructor(ws: any, username: string) {
@@ -94,21 +85,29 @@ export class VoiceChatSFU {
   // ─── Room construction ─────────────────────────────────────────────────────
 
   private buildRoom(): Room {
+    // E2EE worker: wrap construction in try/catch so bundler misconfigurations
+    // (wrong worker URL in some Vite setups) degrade gracefully to no-E2EE.
+    let encryptionOptions: any = undefined
+    try {
+      const e2eeWorker = new Worker(
+        new URL('livekit-client/e2ee-worker', import.meta.url),
+        { type: 'module' },
+      )
+      encryptionOptions = {
+        keyProvider: this.e2eeKeyProvider,
+        worker: e2eeWorker,
+      }
+    } catch (err) {
+      console.warn('[SFU] E2EE worker unavailable — media will not be end-to-end encrypted:', err)
+    }
+
     const room = new Room({
-      // Automatically subscribe to all published tracks
       adaptiveStream: true,
       dynacast: true,
-      // SECURITY: E2EE via insertable streams.
-      // The ExternalE2EEKeyProvider uses a shared passphrase for all participants.
-      // The actual key is set in connect() before joining the room.
-      encryption: {
-        keyProvider: this.e2eeKeyProvider,
-        worker: new Worker(new URL('livekit-client/e2ee-worker', import.meta.url)),
-      },
+      ...(encryptionOptions ? { encryption: encryptionOptions } : {}),
     })
 
     room.on(RoomEvent.Connected, () => {
-      console.log('[SFU] Connected to LiveKit room')
       this.isConnecting = false
       this.isInRoom = true
       this.notifyStateChange()
@@ -116,63 +115,75 @@ export class VoiceChatSFU {
     })
 
     room.on(RoomEvent.Disconnected, () => {
-      console.log('[SFU] Disconnected from LiveKit room')
       this.isInRoom = false
       this.isConnecting = false
-      this.isVideoEnabled = false
+      this.isCameraEnabled = false
       this.isScreenSharing = false
-      this.participantStreams.clear()
+      this.participantCameraStreams.clear()
+      this.participantScreenStreams.clear()
       this.notifyStateChange()
       this.updateParticipantsList()
     })
 
     room.on(
       RoomEvent.TrackSubscribed,
-      (track: RemoteTrack, _pub: RemoteTrackPublication, participant: RemoteParticipant) => {
-        if (track.kind === Track.Kind.Audio || track.kind === Track.Kind.Video) {
-          let stream = this.participantStreams.get(participant.identity)
+      (track: RemoteTrack, pub: RemoteTrackPublication, participant: RemoteParticipant) => {
+        const isScreen =
+          pub.source === Track.Source.ScreenShare ||
+          pub.source === Track.Source.ScreenShareAudio
+
+        if (isScreen) {
+          let stream = this.participantScreenStreams.get(participant.identity)
           if (!stream) {
             stream = new MediaStream()
-            this.participantStreams.set(participant.identity, stream)
+            this.participantScreenStreams.set(participant.identity, stream)
           }
           stream.addTrack(track.mediaStreamTrack)
-          if (this.onRemoteStreamChange) {
-            this.onRemoteStreamChange(participant.identity, stream)
+          this.onRemoteScreenChange?.(participant.identity, stream)
+        } else if (track.kind === Track.Kind.Audio || track.kind === Track.Kind.Video) {
+          let stream = this.participantCameraStreams.get(participant.identity)
+          if (!stream) {
+            stream = new MediaStream()
+            this.participantCameraStreams.set(participant.identity, stream)
           }
+          stream.addTrack(track.mediaStreamTrack)
+          this.onRemoteStreamChange?.(participant.identity, stream)
         }
       },
     )
 
     room.on(
       RoomEvent.TrackUnsubscribed,
-      (track: RemoteTrack, _pub: RemoteTrackPublication, participant: RemoteParticipant) => {
-        const stream = this.participantStreams.get(participant.identity)
+      (track: RemoteTrack, pub: RemoteTrackPublication, participant: RemoteParticipant) => {
+        const isScreen =
+          pub.source === Track.Source.ScreenShare ||
+          pub.source === Track.Source.ScreenShareAudio
+
+        const streams = isScreen
+          ? this.participantScreenStreams
+          : this.participantCameraStreams
+        const notify = isScreen ? this.onRemoteScreenChange : this.onRemoteStreamChange
+
+        const stream = streams.get(participant.identity)
         if (stream) {
           stream.removeTrack(track.mediaStreamTrack)
-          // If no tracks remain, clear the stream entry
           if (stream.getTracks().length === 0) {
-            this.participantStreams.delete(participant.identity)
-            if (this.onRemoteStreamChange) {
-              this.onRemoteStreamChange(participant.identity, null)
-            }
+            streams.delete(participant.identity)
+            notify?.(participant.identity, null)
           } else {
-            if (this.onRemoteStreamChange) {
-              this.onRemoteStreamChange(participant.identity, stream)
-            }
+            notify?.(participant.identity, stream)
           }
         }
       },
     )
 
-    room.on(RoomEvent.ParticipantConnected, (_participant: RemoteParticipant) => {
-      this.updateParticipantsList()
-    })
+    room.on(RoomEvent.ParticipantConnected, () => this.updateParticipantsList())
 
     room.on(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
-      this.participantStreams.delete(participant.identity)
-      if (this.onRemoteStreamChange) {
-        this.onRemoteStreamChange(participant.identity, null)
-      }
+      this.participantCameraStreams.delete(participant.identity)
+      this.participantScreenStreams.delete(participant.identity)
+      this.onRemoteStreamChange?.(participant.identity, null)
+      this.onRemoteScreenChange?.(participant.identity, null)
       this.updateParticipantsList()
     })
 
@@ -182,14 +193,12 @@ export class VoiceChatSFU {
   // ─── Connect / disconnect ──────────────────────────────────────────────────
 
   /**
-   * Connect to a LiveKit room and publish the local mic.
-   * Called by ChatPage after it receives 'voice_channel_joined' with a livekit_token.
+   * Connect to a LiveKit room.
    *
-   * @param e2eeKey Optional base64 random key provided by the Decentra server.
-   *                When present this key is used directly for E2EE so each
-   *                session gets a unique key that the SFU never sees.
-   *                Falls back to the deterministic SHA-256 hash of
-   *                serverId+channelId for servers that haven't been updated yet.
+   * @param serverId  For server channels: the server ID. For DM calls: pass 'dm'.
+   * @param channelId For server channels: the channel ID. For DM calls: the room name.
+   * @param e2eeKey   Base64 random key provided by the Decentra server; falls back to
+   *                  a deterministic SHA-256 hash when not supplied.
    */
   async connect(
     url: string,
@@ -205,31 +214,25 @@ export class VoiceChatSFU {
     this.notifyStateChange()
 
     try {
-      // ── E2EE key: prefer the server-provided random key; fall back to the
-      // deterministic hash only when connecting to an older server that doesn't
-      // send e2ee_key (maintains backward compatibility).
-      let e2eeKeyBuffer: ArrayBuffer
-      if (e2eeKey) {
-        // Server-provided random 32-byte key (base64url-encoded).
-        // Decode it and pass the raw bytes to the key provider.
-        const keyBytes = Uint8Array.from(atob(e2eeKey.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))
-        e2eeKeyBuffer = keyBytes.buffer
-      } else {
-        // Legacy fallback: deterministic key from public room identifiers.
-        // NOTE: This key can be derived by anyone who knows serverId/channelId;
-        // it prevents passive SFU decryption but not active key derivation.
-        const keyMaterial = `${serverId}:${channelId}`
-        e2eeKeyBuffer = await crypto.subtle.digest(
-          'SHA-256',
-          new TextEncoder().encode(keyMaterial),
-        )
+      // ── E2EE key setup ──────────────────────────────────────────────────────
+      if (this.isE2EECapable()) {
+        let e2eeKeyBuffer: ArrayBuffer
+        if (e2eeKey) {
+          const keyBytes = Uint8Array.from(
+            atob(e2eeKey.replace(/-/g, '+').replace(/_/g, '/')),
+            (c) => c.charCodeAt(0),
+          )
+          e2eeKeyBuffer = keyBytes.buffer
+        } else {
+          const keyMaterial = `${serverId}:${channelId}`
+          e2eeKeyBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(keyMaterial))
+        }
+        await this.e2eeKeyProvider.setKey(e2eeKeyBuffer)
+        this.isE2EEActive = true
       }
-      await this.e2eeKeyProvider.setKey(e2eeKeyBuffer)
-      this.isE2EEActive = true
 
-      // Acquire microphone before connecting so connect() includes the track
+      // ── Acquire microphone ──────────────────────────────────────────────────
       const config = VOICE_QUALITY_CONFIGS[this.qualityPreset]
-
       this.localAudioTrack = await createLocalAudioTrack({
         echoCancellation: true,
         noiseSuppression: true,
@@ -238,19 +241,22 @@ export class VoiceChatSFU {
         deviceId: this.selectedMicrophoneId ?? undefined,
       })
 
+      // ── Connect to LiveKit ──────────────────────────────────────────────────
       await this.room.connect(url, token, {
         autoSubscribe: true,
-        // SECURITY: Force all ICE traffic through TURN relay only — prevents IP leakage.
         rtcConfig: {
+          // Force all ICE traffic through LiveKit's built-in TURN relay.
+          // Prevents direct peer-to-peer connections and IP address leakage.
           iceTransportPolicy: 'relay',
           bundlePolicy: 'max-bundle',
         },
       })
 
-      // Enable E2EE after connection is established
-      await this.room.setE2EEEnabled(true)
+      if (this.isE2EEActive) {
+        await this.room.setE2EEEnabled(true)
+      }
 
-      // Publish audio with quality-preset encoding params
+      // Publish microphone
       await this.room.localParticipant.publishTrack(this.localAudioTrack, {
         audioPreset: { maxBitrate: config.bitrate },
         dtx: config.dtx,
@@ -269,25 +275,22 @@ export class VoiceChatSFU {
       this.currentVoiceServer = null
       this.currentVoiceChannel = null
       this.notifyStateChange()
-      // Re-throw so callers (ChatPage) can surface an error toast to the user.
       throw err
     }
   }
 
-  /** Cleanly disconnect from the LiveKit room and release all local tracks. */
   disconnect(): void {
     this.room.disconnect()
-
     this.localAudioTrack?.stop()
     this.localAudioTrack = null
-    this.localVideoTrack?.stop()
-    this.localVideoTrack = null
+    this.localCameraTrack?.stop()
+    this.localCameraTrack = null
     this.localScreenTrack?.stop()
     this.localScreenTrack = null
-
-    this.participantStreams.clear()
+    this.participantCameraStreams.clear()
+    this.participantScreenStreams.clear()
     this.isMuted = false
-    this.isVideoEnabled = false
+    this.isCameraEnabled = false
     this.isScreenSharing = false
     this.isInRoom = false
     this.isE2EEActive = false
@@ -296,25 +299,57 @@ export class VoiceChatSFU {
     this.notifyStateChange()
   }
 
-  // ─── Mute / video / screen share ──────────────────────────────────────────
+  // ─── Mute ─────────────────────────────────────────────────────────────────
 
   toggleMute(): void {
     if (!this.localAudioTrack) return
     this.isMuted = !this.isMuted
-    // Toggle via the underlying MediaStreamTrack so this works regardless of
-    // livekit-client version and doesn't require an await.
     this.localAudioTrack.mediaStreamTrack.enabled = !this.isMuted
     this.notifyStateChange()
     this.sendVoiceState()
   }
 
+  // ─── Camera ───────────────────────────────────────────────────────────────
+
   toggleVideo(): void {
-    if (this.isVideoEnabled) {
-      this.disableVideo()
+    if (this.isCameraEnabled) {
+      this.disableCamera()
     } else {
-      this.enableVideo()
+      this.enableCamera()
     }
   }
+
+  async enableCamera(): Promise<boolean> {
+    try {
+      this.localCameraTrack = await createLocalVideoTrack({
+        resolution: { width: 640, height: 480 },
+        deviceId: this.selectedCameraId ?? undefined,
+      })
+      await this.room.localParticipant.publishTrack(this.localCameraTrack, {
+        source: Track.Source.Camera,
+      })
+      this.isCameraEnabled = true
+      this.notifyStateChange()
+      this.sendVoiceState()
+      return true
+    } catch (err) {
+      console.error('[SFU] enableCamera error:', err)
+      return false
+    }
+  }
+
+  disableCamera(): void {
+    if (this.localCameraTrack) {
+      this.room.localParticipant.unpublishTrack(this.localCameraTrack)
+      this.localCameraTrack.stop()
+      this.localCameraTrack = null
+    }
+    this.isCameraEnabled = false
+    this.notifyStateChange()
+    this.sendVoiceState()
+  }
+
+  // ─── Screen share (independent of camera) ─────────────────────────────────
 
   toggleScreenShare(): void {
     if (this.isScreenSharing) {
@@ -324,38 +359,9 @@ export class VoiceChatSFU {
     }
   }
 
-  async enableVideo(): Promise<boolean> {
-    try {
-      this.localVideoTrack = await createLocalVideoTrack({
-        resolution: { width: 640, height: 480 },
-        deviceId: this.selectedCameraId ?? undefined,
-      })
-      await this.room.localParticipant.publishTrack(this.localVideoTrack)
-      this.isVideoEnabled = true
-      this.notifyStateChange()
-      this.sendVoiceState()
-      return true
-    } catch (err) {
-      console.error('[SFU] enableVideo error:', err)
-      return false
-    }
-  }
-
-  disableVideo(): void {
-    if (this.localVideoTrack) {
-      this.room.localParticipant.unpublishTrack(this.localVideoTrack)
-      this.localVideoTrack.stop()
-      this.localVideoTrack = null
-    }
-    this.isVideoEnabled = false
-    this.notifyStateChange()
-    this.sendVoiceState()
-  }
-
   async enableScreenShare(): Promise<boolean> {
     try {
       const tracks = await createLocalScreenTracks({
-        // resolution sits at the top level of ScreenShareCaptureOptions
         resolution: {
           width: this.screenShareResolution === 720 ? 1280 : 1920,
           height: this.screenShareResolution,
@@ -367,12 +373,14 @@ export class VoiceChatSFU {
       if (!videoTrack) return false
 
       this.localScreenTrack = videoTrack
+      // Browser's "Stop Sharing" button fires onended
       videoTrack.mediaStreamTrack.onended = () => this.disableScreenShare()
 
       await this.room.localParticipant.publishTrack(videoTrack, {
         source: Track.Source.ScreenShare,
       })
       this.isScreenSharing = true
+      // Camera stays running — both tracks are published simultaneously
       this.notifyStateChange()
       this.sendVoiceState()
       return true
@@ -389,6 +397,7 @@ export class VoiceChatSFU {
       this.localScreenTrack = null
     }
     this.isScreenSharing = false
+    // Camera is unaffected — remains published if it was running
     this.notifyStateChange()
     this.sendVoiceState()
   }
@@ -398,11 +407,8 @@ export class VoiceChatSFU {
   setQualityPreset(preset: VoiceQualityPreset): void {
     this.qualityPreset = preset
     saveVoiceQualityPreset(preset)
-
-    // Re-publish audio track with new encoding params if connected
     if (this.localAudioTrack && this.isInRoom) {
       const config = VOICE_QUALITY_CONFIGS[preset]
-      // Republish: unpublish then publish with updated options
       this.room.localParticipant.unpublishTrack(this.localAudioTrack).then(() => {
         this.room.localParticipant.publishTrack(this.localAudioTrack!, {
           audioPreset: { maxBitrate: config.bitrate },
@@ -421,41 +427,32 @@ export class VoiceChatSFU {
 
   async playSoundboard(soundId: string): Promise<void> {
     if (!this.localAudioTrack?.sender) return
-
     try {
       const token = localStorage.getItem('token')
       const response = await fetch(`/api/download-soundboard-sound/${soundId}?token=${token}`)
       if (!response.ok) return
-
       const audioBlob = await response.blob()
       const audioUrl = URL.createObjectURL(audioBlob)
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
-      const arrayBuffer = await audioBlob.arrayBuffer()
-      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
-
+      const audioBuffer = await audioContext.decodeAudioData(await audioBlob.arrayBuffer())
       const soundSource = audioContext.createBufferSource()
       soundSource.buffer = audioBuffer
       const destination = audioContext.createMediaStreamDestination()
-
       const soundGain = audioContext.createGain()
       soundGain.gain.value = 0.8
       soundSource.connect(soundGain)
       soundGain.connect(destination)
-
-      // Mix original mic track back in
-      const micStream = new MediaStream([this.localAudioTrack.mediaStreamTrack])
-      const micSource = audioContext.createMediaStreamSource(micStream)
+      const micSource = audioContext.createMediaStreamSource(
+        new MediaStream([this.localAudioTrack.mediaStreamTrack]),
+      )
       const micGain = audioContext.createGain()
       micGain.gain.value = 1.0
       micSource.connect(micGain)
       micGain.connect(destination)
-
       const mixedTrack = destination.stream.getAudioTracks()[0]
       const originalTrack = this.localAudioTrack.mediaStreamTrack
-
       await this.localAudioTrack.sender.replaceTrack(mixedTrack)
       soundSource.start(0)
-
       soundSource.onended = async () => {
         if (this.localAudioTrack?.sender) {
           await this.localAudioTrack.sender.replaceTrack(originalTrack)
@@ -484,15 +481,9 @@ export class VoiceChatSFU {
     }
   }
 
-  // ─── Participants / state that mirrors VoiceChat API ──────────────────────
+  // ─── Participant helpers ──────────────────────────────────────────────────
 
-  /**
-   * No-op for SFU mode — participant updates come from LiveKit room events.
-   * ChatPage may still call this when voice_state_update arrives; we ignore it
-   * for media purposes but still update the participants list.
-   */
   handleVoiceJoined(_participants: string[]): void {
-    // SFU handles participant tracks via RoomEvent.ParticipantConnected/TrackSubscribed
     this.updateParticipantsList()
   }
 
@@ -501,14 +492,13 @@ export class VoiceChatSFU {
   }
 
   handleUserLeftVoice(username: string): void {
-    this.participantStreams.delete(username)
-    if (this.onRemoteStreamChange) {
-      this.onRemoteStreamChange(username, null)
-    }
+    this.participantCameraStreams.delete(username)
+    this.participantScreenStreams.delete(username)
+    this.onRemoteStreamChange?.(username, null)
+    this.onRemoteScreenChange?.(username, null)
     this.updateParticipantsList()
   }
 
-  /** Cleanly leave voice — disconnect from LiveKit and notify the WS server. */
   leaveVoice(): void {
     this.disconnect()
     this.ws.send({ type: 'leave_voice_channel' })
@@ -519,41 +509,24 @@ export class VoiceChatSFU {
   async getAudioDevices(): Promise<MediaDeviceInfo[]> {
     try {
       return (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput')
-    } catch {
-      return []
-    }
+    } catch { return [] }
   }
 
   async getVideoDevices(): Promise<MediaDeviceInfo[]> {
     try {
       return (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput')
-    } catch {
-      return []
-    }
+    } catch { return [] }
   }
 
   async getSpeakerDevices(): Promise<MediaDeviceInfo[]> {
     try {
       return (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audiooutput')
-    } catch {
-      return []
-    }
+    } catch { return [] }
   }
 
-  setMicrophone(deviceId: string): void {
-    this.selectedMicrophoneId = deviceId
-    this.saveDevicePreferences()
-  }
-
-  setSpeaker(deviceId: string): void {
-    this.selectedSpeakerId = deviceId
-    this.saveDevicePreferences()
-  }
-
-  setCamera(deviceId: string): void {
-    this.selectedCameraId = deviceId
-    this.saveDevicePreferences()
-  }
+  setMicrophone(deviceId: string): void { this.selectedMicrophoneId = deviceId; this.saveDevicePreferences() }
+  setSpeaker(deviceId: string): void    { this.selectedSpeakerId    = deviceId; this.saveDevicePreferences() }
+  setCamera(deviceId: string): void     { this.selectedCameraId     = deviceId; this.saveDevicePreferences() }
 
   setScreenShareSettings(resolution: number, framerate: number): void {
     this.screenShareResolution = resolution
@@ -573,62 +546,44 @@ export class VoiceChatSFU {
 
   // ─── Callbacks ────────────────────────────────────────────────────────────
 
-  setOnStateChange(cb: () => void): void {
-    this.onStateChange = cb
-  }
-
+  setOnStateChange(cb: () => void): void { this.onStateChange = cb }
   setOnRemoteStreamChange(cb: (peer: string, stream: MediaStream | null) => void): void {
     this.onRemoteStreamChange = cb
   }
-
+  setOnRemoteScreenChange(cb: (peer: string, stream: MediaStream | null) => void): void {
+    this.onRemoteScreenChange = cb
+  }
   setOnParticipantsChange(cb: (participants: string[]) => void): void {
     this.onParticipantsChange = cb
   }
 
-  // ─── Getters (mirror VoiceChat) ───────────────────────────────────────────
+  // ─── Getters ──────────────────────────────────────────────────────────────
 
-  getIsMuted(): boolean {
-    return this.isMuted
-  }
-
-  getIsVideoEnabled(): boolean {
-    return this.isVideoEnabled
-  }
-
-  getIsScreenSharing(): boolean {
-    return this.isScreenSharing
-  }
-
-  getIsInVoice(): boolean {
-    return this.isInRoom
-  }
-
-  getIsConnecting(): boolean {
-    return this.isConnecting
-  }
-
-  getIsE2EEActive(): boolean {
-    return this.isE2EEActive
-  }
+  getIsMuted(): boolean          { return this.isMuted }
+  getIsVideoEnabled(): boolean   { return this.isCameraEnabled }
+  getIsScreenSharing(): boolean  { return this.isScreenSharing }
+  getIsInVoice(): boolean        { return this.isInRoom }
+  getIsConnecting(): boolean     { return this.isConnecting }
+  getIsE2EEActive(): boolean     { return this.isE2EEActive }
 
   getCurrentChannel(): { server: string | null; channel: string | null } {
     return { server: this.currentVoiceServer, channel: this.currentVoiceChannel }
   }
 
-  /** Required by ChatPage; SFU has no concept of a pending channel after connect(). */
   getPendingChannel(): { server: string | null; channel: string | null } {
     return { server: null, channel: null }
   }
 
-  getDirectCallPeer(): string | null {
-    return null
-  }
+  getDirectCallPeer(): string | null { return null }
 
   // ─── Private helpers ──────────────────────────────────────────────────────
 
-  private notifyStateChange(): void {
-    this.onStateChange?.()
+  private isE2EECapable(): boolean {
+    // E2EE requires the worker to have been created successfully in buildRoom()
+    return (this.room as any).options?.encryption != null
   }
+
+  private notifyStateChange(): void { this.onStateChange?.() }
 
   private updateParticipantsList(): void {
     if (!this.onParticipantsChange) return
@@ -643,37 +598,33 @@ export class VoiceChatSFU {
     this.ws.send({
       type: 'voice_state_update',
       muted: this.isMuted,
-      video: this.isVideoEnabled,
+      video: this.isCameraEnabled,
       screen_sharing: this.isScreenSharing,
     })
   }
 
   private loadDevicePreferences(): void {
     try {
-      const mic = localStorage.getItem('voicechat_microphone_id')
-      const speaker = localStorage.getItem('voicechat_speaker_id')
-      const camera = localStorage.getItem('voicechat_camera_id')
+      const mic        = localStorage.getItem('voicechat_microphone_id')
+      const speaker    = localStorage.getItem('voicechat_speaker_id')
+      const camera     = localStorage.getItem('voicechat_camera_id')
       const resolution = localStorage.getItem('voicechat_screenshare_resolution')
-      const framerate = localStorage.getItem('voicechat_screenshare_framerate')
-      if (mic) this.selectedMicrophoneId = mic
-      if (speaker) this.selectedSpeakerId = speaker
-      if (camera) this.selectedCameraId = camera
-      if (resolution) this.screenShareResolution = parseInt(resolution)
-      if (framerate) this.screenShareFramerate = parseInt(framerate)
-    } catch {
-      // localStorage unavailable
-    }
+      const framerate  = localStorage.getItem('voicechat_screenshare_framerate')
+      if (mic)        this.selectedMicrophoneId    = mic
+      if (speaker)    this.selectedSpeakerId       = speaker
+      if (camera)     this.selectedCameraId        = camera
+      if (resolution) this.screenShareResolution   = parseInt(resolution)
+      if (framerate)  this.screenShareFramerate     = parseInt(framerate)
+    } catch { /* localStorage unavailable */ }
   }
 
   private saveDevicePreferences(): void {
     try {
       if (this.selectedMicrophoneId) localStorage.setItem('voicechat_microphone_id', this.selectedMicrophoneId)
-      if (this.selectedSpeakerId) localStorage.setItem('voicechat_speaker_id', this.selectedSpeakerId)
-      if (this.selectedCameraId) localStorage.setItem('voicechat_camera_id', this.selectedCameraId)
+      if (this.selectedSpeakerId)    localStorage.setItem('voicechat_speaker_id',    this.selectedSpeakerId)
+      if (this.selectedCameraId)     localStorage.setItem('voicechat_camera_id',     this.selectedCameraId)
       localStorage.setItem('voicechat_screenshare_resolution', this.screenShareResolution.toString())
-      localStorage.setItem('voicechat_screenshare_framerate', this.screenShareFramerate.toString())
-    } catch {
-      // localStorage unavailable
-    }
+      localStorage.setItem('voicechat_screenshare_framerate',  this.screenShareFramerate.toString())
+    } catch { /* localStorage unavailable */ }
   }
 }

@@ -1,35 +1,16 @@
 """
-Decentra License Validator
+Decentra License Validator - Unlocked
 
-Validates signed license keys produced by the create_license.py tool. The
-module loads the RSA public key from ``license_public_key.pem`` (located next
-to this file) and exposes both a class-based API (``LicenseValidator``) and
-module-level convenience functions for quick checks.
-
-If the public key file is missing the module still works -- every check simply
-falls back to free-tier defaults so the server can run without a license.
+All features are enabled and all limits are removed. No license key or
+license server contact is required.
 """
 
 from __future__ import annotations
 
-import base64
-import json
-import logging
-import os
-from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-import aiohttp
-import asyncio
-
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding
-
-logger = logging.getLogger(__name__)
-
 # ---------------------------------------------------------------------------
-# Free-tier defaults (used when no valid license is present)
+# All features enabled, all limits removed
 # ---------------------------------------------------------------------------
 
 DEFAULT_FEATURES: Dict[str, bool] = {
@@ -38,402 +19,73 @@ DEFAULT_FEATURES: Dict[str, bool] = {
     "webhooks": True,
     "custom_emojis": True,
     "audit_logs": True,
-    "sso": False,
-    "scim": False,
+    "sso": True,
+    "scim": True,
     "soundboard": True,
-    "group_dms": False,
+    "group_dms": True,
 }
 
 DEFAULT_LIMITS: Dict[str, int] = {
-    "max_users": 30,
-    "max_servers": 2,
-    "max_channels_per_server": 30,
-    "max_file_size_mb": 10,
+    "max_users": -1,
+    "max_servers": -1,
+    "max_channels_per_server": -1,
+    "max_file_size_mb": -1,
     "max_messages_history": -1,
-    "max_sounds_per_user": 5,
-    "max_sound_duration_seconds": 5,
-    "max_server_sounds": 10,
+    "max_sounds_per_user": -1,
+    "max_sound_duration_seconds": -1,
+    "max_server_sounds": -1,
 }
 
 DEFAULT_QUALITIES: Dict[str, str] = {
-    "video_quality": "720p",
-    "screensharing_quality": "720p",
+    "video_quality": "4k",
+    "screensharing_quality": "4k",
 }
 
-# Features that are implicitly enabled for a given tier and above,
-# even when the license JWT doesn't explicitly list them.
-# Tiers are ordered from lowest to highest.
 _TIER_ORDER = ["community", "lite", "standard", "elite", "off_the_walls"]
-
-# Maps feature_name -> minimum tier required for it to be implicitly True
-_TIER_FEATURE_MINIMUMS: Dict[str, str] = {
-    "sso": "standard",
-    "scim": "standard",
-    "group_dms": "standard",
-}
-
-# Path to the public key shipped with the server
-_PUBLIC_KEY_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "license_public_key.pem"
-)
-
-
-def _load_public_key():
-    """
-    Attempt to load the RSA public key from disk.
-
-    Returns ``None`` when the file does not exist so callers can gracefully
-    degrade to free-tier behaviour.
-    """
-    if not os.path.exists(_PUBLIC_KEY_PATH):
-        logger.warning(
-            "License public key not found at %s -- running in free-tier mode.",
-            _PUBLIC_KEY_PATH,
-        )
-        return None
-
-    with open(_PUBLIC_KEY_PATH, "rb") as f:
-        public_key = serialization.load_pem_public_key(f.read())
-    return public_key
+_TIER_FEATURE_MINIMUMS: Dict[str, str] = {}
 
 
 class LicenseValidator:
-    """
-    Validates and caches a Decentra license key.
-
-    Supports both offline RSA validation and online check-ins to a licensing server.
-
-    Usage::
-
-        validator = LicenseValidator()
-        result = validator.validate_license(license_key_string)
-        if validator.is_valid():
-            print(validator.get_tier())
-    """
+    """Stub validator — always reports off_the_walls tier with all features unlocked."""
 
     def __init__(self, license_server_url: Optional[str] = None) -> None:
-        self._public_key = _load_public_key()
-        self._license_data: Optional[Dict[str, Any]] = None
-        self._valid: bool = False
-        self._license_server_url = license_server_url or os.getenv(
-            "LICENSE_SERVER_URL",
-            "https://keygen.decentrachat.cc"
-        )
-
-    # ----- core validation ------------------------------------------------
+        pass
 
     def validate_license(self, license_key: str) -> Dict[str, Any]:
-        """
-        Decode, verify and cache a license key.
-
-        Returns a dict with ``"valid"`` (bool), ``"error"`` (str or None),
-        and the full ``"license"`` data when valid.
-        """
-        self._license_data = None
-        self._valid = False
-
-        if self._public_key is None:
-            return {
-                "valid": False,
-                "error": "Public key not available; cannot verify license.",
-                "license": None,
-            }
-
-        # --- Decode base64 ------------------------------------------------
-        # License key format: base64(json) + "." + base64(signature)
-        try:
-            parts = license_key.split(".")
-            if len(parts) != 2:
-                logger.error(f"License key has {len(parts)} parts instead of 2")
-                return {
-                    "valid": False,
-                    "error": "License key format is invalid (missing or misplaced separator).",
-                    "license": None,
-                }
-            
-            json_bytes = base64.b64decode(parts[0])
-            signature = base64.b64decode(parts[1])
-            logger.info(f"Successfully decoded license key: JSON={len(json_bytes)} bytes, Signature={len(signature)} bytes")
-        except Exception as e:
-            logger.error(f"Base64 decode error: {e}")
-            return {
-                "valid": False,
-                "error": "License key is not valid base64.",
-                "license": None,
-            }
-
-        # --- Verify RSA-PSS signature -------------------------------------
-        try:
-            self._public_key.verify(
-                signature,
-                json_bytes,
-                padding.PSS(
-                    mgf=padding.MGF1(hashes.SHA256()),
-                    salt_length=padding.PSS.MAX_LENGTH,
-                ),
-                hashes.SHA256(),
-            )
-        except InvalidSignature:
-            return {
-                "valid": False,
-                "error": "License signature verification failed.",
-                "license": None,
-            }
-
-        # --- Parse JSON payload -------------------------------------------
-        try:
-            license_data = json.loads(json_bytes.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return {
-                "valid": False,
-                "error": "License payload is not valid JSON.",
-                "license": None,
-            }
-
-        # --- Check expiration ---------------------------------------------
-        expires_at_str = license_data.get("expires_at")
-        if expires_at_str:
-            try:
-                expires_at = datetime.fromisoformat(expires_at_str)
-                if expires_at.tzinfo is None:
-                    expires_at = expires_at.replace(tzinfo=timezone.utc)
-                if datetime.now(timezone.utc) > expires_at:
-                    return {
-                        "valid": False,
-                        "error": "License has expired.",
-                        "license": license_data,
-                    }
-            except (ValueError, TypeError):
-                return {
-                    "valid": False,
-                    "error": "License expiration date is malformed.",
-                    "license": None,
-                }
-
-        # --- All checks passed --------------------------------------------
-        self._license_data = license_data
-        self._valid = True
-        return {
-            "valid": True,
-            "error": None,
-            "license": license_data,
-        }
-
-    # ----- accessors ------------------------------------------------------
+        return {"valid": True, "error": None, "license": None}
 
     def get_feature_enabled(self, feature_name: str) -> bool:
-        """Return whether *feature_name* is enabled by the current license.
+        return True
 
-        Falls back to a tier-based implicit grant when the feature is not
-        explicitly listed in the license JWT.  For example, SCIM is granted
-        to all Standard-and-above tiers even if the license was issued before
-        the SCIM feature flag was introduced.
-        """
-        if self._license_data is None:
-            return DEFAULT_FEATURES.get(feature_name, False)
+    def get_limit(self, limit_name: str, default: int = -1) -> int:
+        return -1
 
-        features = self._license_data.get("features", {})
-        if feature_name in features:
-            return bool(features[feature_name])
-
-        # Feature not explicitly set — check tier-based minimum
-        minimum_tier = _TIER_FEATURE_MINIMUMS.get(feature_name)
-        if minimum_tier is not None:
-            current_tier = self._license_data.get("tier", "community").lower()
-            try:
-                required_idx = _TIER_ORDER.index(minimum_tier)
-                current_idx = _TIER_ORDER.index(current_tier)
-                if current_idx >= required_idx:
-                    return True
-            except ValueError:
-                pass  # Unknown tier name — fall through to default
-
-        return DEFAULT_FEATURES.get(feature_name, False)
-
-    def get_limit(self, limit_name: str, default: int = 0) -> int:
-        """Return the numeric limit for *limit_name*."""
-        if self._license_data is None:
-            return DEFAULT_LIMITS.get(limit_name, default)
-        return self._license_data.get("limits", {}).get(
-            limit_name, DEFAULT_LIMITS.get(limit_name, default)
-        )
-
-    def get_quality(self, quality_name: str, default: str = "720p") -> str:
-        """Return the quality setting for *quality_name* (e.g., 'video_quality')."""
-        if self._license_data is None:
-            return DEFAULT_QUALITIES.get(quality_name, default)
-        return self._license_data.get("limits", {}).get(
-            quality_name, DEFAULT_QUALITIES.get(quality_name, default)
-        )
+    def get_quality(self, quality_name: str, default: str = "4k") -> str:
+        return DEFAULT_QUALITIES.get(quality_name, "4k")
 
     def get_tier(self) -> str:
-        """Return the tier string (``'community'`` when no license is loaded)."""
-        if self._license_data is None:
-            return "community"
-        return self._license_data.get("tier", "community")
+        return "off_the_walls"
 
     def get_customer_info(self) -> Dict[str, str]:
-        """Return the customer block or an empty dict."""
-        if self._license_data is None:
-            return {}
-        return self._license_data.get("customer", {})
+        return {}
 
     def get_expiry(self) -> Optional[str]:
-        """Return the ISO-8601 expiry string, or ``None``."""
-        if self._license_data is None:
-            return None
-        return self._license_data.get("expires_at")
+        return None
 
     def is_valid(self) -> bool:
-        """Return ``True`` when a license has been validated successfully."""
-        return self._valid
+        return True
 
     def clear(self) -> None:
-        """Remove the cached license (revert to free-tier defaults)."""
-        self._license_data = None
-        self._valid = False
+        pass
 
-    # ----- server check-in methods ----------------------------------------
+    async def perform_server_checkin(self, *args, **kwargs) -> Dict[str, Any]:
+        return {"success": True, "valid": True, "error": None, "server_response": None}
 
-    async def perform_server_checkin(
-        self,
-        license_key: str,
-        instance_fingerprint: str,
-        app_version: str = "1.0.0"
-    ) -> Dict[str, Any]:
-        """
-        Contact the licensing server to verify the license.
+    def should_perform_checkin(self, last_check_at) -> bool:
+        return False
 
-        Returns:
-            dict with keys: success (bool), valid (bool), error (str or None),
-            server_response (dict or None)
-        """
-        from instance_fingerprint import get_platform_info
-
-        platform_info = get_platform_info()
-
-        payload = {
-            "license_key": license_key,
-            "instance_fingerprint": instance_fingerprint,
-            "hostname": platform_info.get("hostname"),
-            "platform": platform_info.get("platform"),
-            "app_version": app_version
-        }
-
-        try:
-            timeout = aiohttp.ClientTimeout(total=10)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    f"{self._license_server_url}/api/v1/verify",
-                    json=payload,
-                    headers={"Content-Type": "application/json"}
-                ) as response:
-                    response_data = await response.json()
-
-                    if response.status == 200:
-                        logger.info(
-                            f"License check-in successful: {response_data.get('license_id')}"
-                        )
-                        return {
-                            "success": True,
-                            "valid": True,
-                            "error": None,
-                            "server_response": response_data
-                        }
-                    elif response.status == 403:
-                        # License revoked or installation limit exceeded
-                        logger.warning(
-                            f"License validation failed: {response_data.get('message')}"
-                        )
-                        return {
-                            "success": True,
-                            "valid": False,
-                            "error": response_data.get("message"),
-                            "server_response": response_data
-                        }
-                    elif response.status == 404:
-                        # License not found in server database
-                        logger.warning(
-                            "License not found on licensing server (may be offline-only)"
-                        )
-                        return {
-                            "success": True,
-                            "valid": True,  # Allow offline licenses
-                            "error": "License not registered on server",
-                            "server_response": response_data
-                        }
-                    else:
-                        logger.error(f"Unexpected response from license server: {response.status}")
-                        return {
-                            "success": False,
-                            "valid": None,
-                            "error": f"Server returned {response.status}",
-                            "server_response": None
-                        }
-        except asyncio.TimeoutError:
-            logger.warning("License server check-in timed out")
-            return {
-                "success": False,
-                "valid": None,
-                "error": "Connection timeout",
-                "server_response": None
-            }
-        except aiohttp.ClientError as e:
-            logger.warning(f"License server check-in failed: {e}")
-            return {
-                "success": False,
-                "valid": None,
-                "error": str(e),
-                "server_response": None
-            }
-        except Exception as e:
-            logger.error(f"Unexpected error during license check-in: {e}")
-            return {
-                "success": False,
-                "valid": None,
-                "error": str(e),
-                "server_response": None
-            }
-
-    def should_perform_checkin(self, last_check_at: Optional[datetime]) -> bool:
-        """
-        Determine if a server check-in is needed.
-
-        Check-in is needed if:
-        - Never checked in before (last_check_at is None)
-        - More than 30 days since last check-in
-        """
-        if last_check_at is None:
-            return True
-
-        if last_check_at.tzinfo is None:
-            last_check_at = last_check_at.replace(tzinfo=timezone.utc)
-
-        days_since_check = (datetime.now(timezone.utc) - last_check_at).days
-        return days_since_check >= 30
-
-    def is_in_grace_period(
-        self,
-        last_check_at: Optional[datetime],
-        grace_period_days: int = 7
-    ) -> bool:
-        """
-        Check if we're still within the grace period for failed check-ins.
-
-        Grace period starts AFTER the 30-day check-in window expires.
-        Total allowed offline time: 30 days (normal) + 7 days (grace) = 37 days
-        """
-        if last_check_at is None:
-            # No previous check-in - we're in grace period
-            return True
-
-        if last_check_at.tzinfo is None:
-            last_check_at = last_check_at.replace(tzinfo=timezone.utc)
-
-        days_since_check = (datetime.now(timezone.utc) - last_check_at).days
-        max_allowed_days = 30 + grace_period_days  # 37 days total
-
-        return days_since_check < max_allowed_days
+    def is_in_grace_period(self, last_check_at, grace_period_days: int = 7) -> bool:
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -448,27 +100,16 @@ license_validator = LicenseValidator()
 
 
 def check_feature_access(feature_name: str) -> bool:
-    """Quick check: is *feature_name* enabled by the current license?"""
-    return license_validator.get_feature_enabled(feature_name)
+    return True
 
 
 def check_limit(limit_name: str) -> int:
-    """Quick check: return the current numeric limit for *limit_name*."""
-    return license_validator.get_limit(limit_name)
+    return -1
 
 
 def check_quality(quality_name: str) -> str:
-    """Quick check: return the current quality setting for *quality_name*."""
-    return license_validator.get_quality(quality_name)
+    return DEFAULT_QUALITIES.get(quality_name, "4k")
 
 
 def enforce_limit(current_count: int, limit_name: str) -> bool:
-    """
-    Return ``True`` if *current_count* is within the allowed limit.
-
-    A limit value of ``-1`` means unlimited (always returns ``True``).
-    """
-    limit = license_validator.get_limit(limit_name)
-    if limit == -1:
-        return True
-    return current_count < limit
+    return True

@@ -28,32 +28,16 @@ services:
     command: --config /etc/livekit.yaml
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
+      # To enable TURN-over-TLS (turns:// on port 5349), mount your TLS cert:
+      # - /etc/letsencrypt/live/your-domain.com/fullchain.pem:/etc/livekit/tls.crt:ro
+      # - /etc/letsencrypt/live/your-domain.com/privkey.pem:/etc/livekit/tls.key:ro
     ports:
-      - "7880:7880"       # HTTP/WS signaling
+      - "7880:7880"       # HTTP/WS signaling — can be proxied by nginx/Caddy
       - "7881:7881/tcp"   # WebRTC TCP fallback
-      - "7882:7882/udp"   # WebRTC UDP
-    networks:
-      - decentra-network
-    restart: unless-stopped
-
-  coturn:
-    image: coturn/coturn:4.9.0
-    container_name: decentra-coturn
-    # Pass the HMAC secret via CLI so docker-compose expands it before container start.
-    # The coturn image does not have envsubst, so ${COTURN_SECRET} in the config file
-    # cannot be expanded inside the container.  The CLI arg takes precedence over the
-    # config-file placeholder and is the safe injection method.
-    command: -c /etc/coturn/turnserver.conf --static-auth-secret=${COTURN_SECRET:-changeme_dev_secret}
-    volumes:
-      - ./coturn/coturn.conf:/etc/coturn/turnserver.conf:ro
-    ports:
-      - "3478:3478/udp"    # TURN UDP relay
-      - "3478:3478/tcp"    # TURN TCP relay
-      - "5349:5349/tcp"    # TURN TLS
-      - "49152-49200:49152-49200/udp"  # TURN relay port range
-    environment:
-      # CHANGE IN PRODUCTION: use a long random secret shared with the server container.
-      - COTURN_SECRET=${COTURN_SECRET:-changeme_dev_secret}
+      - "7882:7882/udp"   # WebRTC UDP direct
+      - "3478:3478/udp"   # Built-in TURN UDP relay
+      - "3478:3478/tcp"   # Built-in TURN TCP relay (proxy-compatible)
+      - "5349:5349/tcp"   # Built-in TURN-over-TLS (strict firewall compatible)
     networks:
       - decentra-network
     restart: unless-stopped
@@ -73,11 +57,6 @@ services:
       # URL the *browser* uses to reach LiveKit (must be reachable from client machines).
       # In production set this to wss://your-domain.com:7880
       - LIVEKIT_URL=${LIVEKIT_URL:-ws://localhost:7880}
-      # Coturn TURN relay — used for P2P DM calls and ICE relay
-      # CHANGE IN PRODUCTION: must match the secret in the coturn service above.
-      - COTURN_SECRET=${COTURN_SECRET:-changeme_dev_secret}
-      - COTURN_URL=${COTURN_URL:-turn:localhost:3478}
-      - COTURN_REALM=${COTURN_REALM:-decentra.local}
     networks:
       - decentra-network
     restart: unless-stopped
@@ -85,8 +64,6 @@ services:
       postgres:
         condition: service_healthy
       livekit:
-        condition: service_started
-      coturn:
         condition: service_started
 
   frontend:

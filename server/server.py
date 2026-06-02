@@ -94,13 +94,8 @@ JWT_EXPIRATION_HOURS = 24  # Token expires after 24 hours
 LIVEKIT_API_KEY    = os.environ.get('LIVEKIT_API_KEY', '')
 LIVEKIT_API_SECRET = os.environ.get('LIVEKIT_API_SECRET', '')
 LIVEKIT_URL        = os.environ.get('LIVEKIT_URL', 'ws://localhost:7880')
-# ── Coturn TURN Relay ───────────────────────────────────────────────────────
-# Self-hosted Coturn instance for ICE relay (both P2P DM calls and SFU fallback).
-# COTURN_SECRET must match the static-auth-secret in coturn/coturn.conf.
-# COTURN_URL is the TURN URI clients connect to (e.g., turn:your-domain.com:3478).
-COTURN_SECRET = os.environ.get('COTURN_SECRET', '')
-COTURN_URL    = os.environ.get('COTURN_URL', 'turn:localhost:3478')
-COTURN_REALM  = os.environ.get('COTURN_REALM', 'decentra.local')
+# Coturn/TURN relay is now handled by LiveKit's built-in TURN server (see livekit.yaml).
+# Legacy COTURN_* env vars are accepted but ignored for backward compatibility.
 # ────────────────────────────────────────────────────────────────────────────
 
 # Store pending signups temporarily (in-memory)
@@ -1042,17 +1037,9 @@ async def cleanup_voice_state(username, reason=''):
     return False
 
 
-def create_voice_state(direct_call_peer=None, server_id=None, channel_id=None):
-    """Create a voice state dictionary with consistent structure.
-    
-    Args:
-        direct_call_peer: Username of direct call peer (for DM calls)
-        server_id: Server ID (for voice channels)
-        channel_id: Channel ID (for voice channels)
-    
-    Returns:
-        Dictionary with voice state structure
-    """
+def create_voice_state(direct_call_peer=None, server_id=None, channel_id=None,
+                       dm_room_name=None, dm_e2ee_key=None):
+    """Create a voice state dictionary with consistent structure."""
     state = {
         'in_voice': True,
         'muted': False,
@@ -1060,13 +1047,17 @@ def create_voice_state(direct_call_peer=None, server_id=None, channel_id=None):
         'screen_sharing': False,
         'showing_screen': False
     }
-    
+
     if direct_call_peer:
         state['direct_call_peer'] = direct_call_peer
+        if dm_room_name:
+            state['dm_room_name'] = dm_room_name
+        if dm_e2ee_key:
+            state['dm_e2ee_key'] = dm_e2ee_key
     elif server_id and channel_id:
         state['server_id'] = server_id
         state['channel_id'] = channel_id
-    
+
     return state
 
 
@@ -7429,19 +7420,27 @@ async def handler(websocket):
                             }))
                             continue
 
-                        # Direct voice call with a friend
+                        # Direct voice call with a friend (routed through SFU)
                         friend_username = data.get('username', '').strip()
-                        
+
                         # Verify mutual friendship
                         friends = set(db.get_friends(username))
                         if db.get_user(friend_username) and friend_username in friends:
-                            # Clean up any existing voice state
                             await cleanup_voice_state(username, 'started new call')
-                            
-                            # Track direct call in voice_states for video/screen sharing
-                            voice_states[username] = create_voice_state(direct_call_peer=friend_username)
-                            
-                            # Notify the friend about incoming call
+
+                            # Create deterministic room name for this pair (sorted so it's
+                            # symmetric — the same room regardless of who calls whom)
+                            import base64 as _b64, secrets as _sec
+                            dm_room_name = 'dm__' + '__'.join(sorted([username, friend_username]))
+                            dm_e2ee_key = _b64.urlsafe_b64encode(_sec.token_bytes(32)).decode()
+
+                            voice_states[username] = create_voice_state(
+                                direct_call_peer=friend_username,
+                                dm_room_name=dm_room_name,
+                                dm_e2ee_key=dm_e2ee_key,
+                            )
+
+                            # Notify the friend — they'll get the LiveKit token on accept
                             await send_to_user(friend_username, json.dumps({
                                 'type': 'incoming_voice_call',
                                 'from': username
@@ -7450,31 +7449,63 @@ async def handler(websocket):
                     
                     elif data.get('type') == 'accept_voice_call':
                         caller_username = data.get('from', '').strip()
-                        
+
                         # Verify caller exists and is a friend
                         friends = set(db.get_friends(username))
                         if db.get_user(caller_username) and caller_username in friends:
-                            # Clean up any existing voice state for callee
                             await cleanup_voice_state(username, 'accepted another call')
-                            
-                            # Clean up any existing voice state for caller (if any),
-                            # but avoid cleaning up the pending call from caller -> this user,
-                            # as that would send a call_ended event for the call being accepted.
-                            caller_voice_state = voice_states.get(caller_username)
-                            caller_direct_peer = None
-                            if isinstance(caller_voice_state, dict):
-                                caller_direct_peer = caller_voice_state.get('direct_call_peer')
-                            
-                            if caller_voice_state is not None and caller_direct_peer != username:
+
+                            # Recover the room name / E2EE key the caller prepared
+                            caller_state = voice_states.get(caller_username, {})
+                            dm_room_name = caller_state.get('dm_room_name')
+                            dm_e2ee_key  = caller_state.get('dm_e2ee_key')
+
+                            # Fallback in case the caller's state was lost
+                            import base64 as _b64, secrets as _sec
+                            if not dm_room_name:
+                                dm_room_name = 'dm__' + '__'.join(sorted([username, caller_username]))
+                            if not dm_e2ee_key:
+                                dm_e2ee_key = _b64.urlsafe_b64encode(_sec.token_bytes(32)).decode()
+
+                            # Only clean up the caller's state if they're not in a pending
+                            # call *to this user* (that would fire a spurious call_ended)
+                            caller_direct_peer = caller_state.get('direct_call_peer') if isinstance(caller_state, dict) else None
+                            if caller_state and caller_direct_peer != username:
                                 await cleanup_voice_state(caller_username, 'call accepted')
-                            
-                            # Track direct call in voice_states for BOTH participants
-                            voice_states[username] = create_voice_state(direct_call_peer=caller_username)
-                            voice_states[caller_username] = create_voice_state(direct_call_peer=username)
-                            
+
+                            voice_states[username] = create_voice_state(
+                                direct_call_peer=caller_username,
+                                dm_room_name=dm_room_name,
+                                dm_e2ee_key=dm_e2ee_key,
+                            )
+                            voice_states[caller_username] = create_voice_state(
+                                direct_call_peer=username,
+                                dm_room_name=dm_room_name,
+                                dm_e2ee_key=dm_e2ee_key,
+                            )
+
+                            # Generate individual LiveKit tokens for each party
+                            callee_token = generate_livekit_token(dm_room_name, username, username)
+                            caller_token = generate_livekit_token(dm_room_name, caller_username, caller_username)
+
+                            # Tell the callee (this user) — connect to LiveKit now
+                            await websocket.send_str(json.dumps({
+                                'type': 'voice_call_accepted',
+                                'from': caller_username,
+                                'livekit_token': callee_token,
+                                'livekit_url': LIVEKIT_URL if callee_token else None,
+                                'e2ee_key': dm_e2ee_key,
+                                'dm_room_name': dm_room_name,
+                            }))
+
+                            # Tell the caller — connect to LiveKit now
                             await send_to_user(caller_username, json.dumps({
                                 'type': 'voice_call_accepted',
-                                'from': username
+                                'from': username,
+                                'livekit_token': caller_token,
+                                'livekit_url': LIVEKIT_URL if caller_token else None,
+                                'e2ee_key': dm_e2ee_key,
+                                'dm_room_name': dm_room_name,
                             }))
                     
                     elif data.get('type') == 'reject_voice_call':
@@ -8045,175 +8076,9 @@ async def process_scheduled_messages():
 
 
 async def load_license():
-    """
-    Load and validate the Decentra license key at startup.
-
-    Performs both offline validation (RSA signature) and online check-in
-    to the licensing server if needed.
-
-    Checks (in order):
-    1. DECENTRA_LICENSE_KEY environment variable
-    2. server/.license file
-    3. Database (via db.get_license_key())
-    """
-    from instance_fingerprint import generate_instance_fingerprint
-
+    """All features are unlocked — no license key or server check-in required."""
     print("=" * 50)
-    print("License Validation")
-    print("=" * 50)
-
-    license_key = None
-
-    # 1. Environment variable
-    env_key = os.environ.get("DECENTRA_LICENSE_KEY")
-    if env_key:
-        license_key = env_key.strip()
-        print("License key source: environment variable")
-
-    # 2. .license file next to this script
-    if not license_key:
-        license_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".license")
-        try:
-            with open(license_file, "r", encoding="utf-8") as f:
-                file_key = f.read().strip()
-                if file_key:
-                    license_key = file_key
-                    print("License key source: .license file")
-        except (FileNotFoundError, OSError):
-            pass
-
-    # 3. Database
-    if not license_key:
-        try:
-            stored = db.get_license_key()
-            if stored and stored.get('license_key'):
-                license_key = stored['license_key']
-                print("License key source: database")
-        except Exception as e:
-            print(f"Warning: failed to load license key from database: {e}")
-            traceback.print_exc()
-
-    # Validate if we found a key
-    if not license_key:
-        print("License: Community tier (no license key found)")
-        print("=" * 50)
-        return
-
-    # Step 1: Validate RSA signature offline (existing logic)
-    result = license_validator.validate_license(license_key)
-
-    if not result.get('valid'):
-        print(f"License: invalid ({result.get('error', 'unknown error')})")
-        print("License: Community tier (invalid license)")
-        print("=" * 50)
-        # Update database to reflect invalid license
-        try:
-            db.update_admin_settings({
-                'license_tier': 'community',
-                'license_expires_at': None
-            })
-        except Exception as e:
-            print(f"Warning: Failed to update admin settings: {e}")
-        return
-
-    tier = license_validator.get_tier()
-    expiry = license_validator.get_expiry() or "never"
-    print(f"License signature valid: {tier} tier (expires: {expiry})")
-
-    # Step 2: Check if we need to perform server check-in
-    try:
-        settings = db.get_admin_settings()
-        last_check_at = settings.get('last_license_check_at')
-        
-        # Ensure last_check_at is timezone-aware
-        if last_check_at and last_check_at.tzinfo is None:
-            last_check_at = last_check_at.replace(tzinfo=timezone.utc)
-        
-        grace_period_days = settings.get('license_check_grace_period_days', 7)
-        instance_fingerprint = settings.get('instance_fingerprint')
-
-        # Generate fingerprint if not exists
-        if not instance_fingerprint:
-            instance_fingerprint = generate_instance_fingerprint()
-            db.update_admin_settings({'instance_fingerprint': instance_fingerprint})
-            print(f"Generated instance fingerprint")
-
-        # Check if we need to contact the server
-        if license_validator.should_perform_checkin(last_check_at):
-            print("Performing license server check-in (30 days since last check)...")
-
-            checkin_result = await license_validator.perform_server_checkin(
-                license_key=license_key,
-                instance_fingerprint=instance_fingerprint,
-                app_version="1.0.0"  # Get from package.json or version file
-            )
-
-            if checkin_result["success"]:
-                # Server responded
-                if checkin_result["valid"]:
-                    # License is valid - update last check timestamp
-                    db.update_admin_settings({
-                        'last_license_check_at': datetime.now(timezone.utc)
-                    })
-                    print("✓ License server check-in successful - license is valid")
-                else:
-                    # License was revoked or invalid
-                    error_msg = checkin_result.get("error", "Unknown error")
-                    print(f"✗ License REVOKED by server: {error_msg}")
-                    print("License: Community tier (license revoked)")
-
-                    # Revoke the license locally
-                    db.update_admin_settings({
-                        'license_key': '',
-                        'license_tier': 'community',
-                        'license_expires_at': None,
-                        'license_customer_name': '',
-                        'license_customer_email': ''
-                    })
-
-                    # Clear from validator
-                    license_validator.clear()
-            else:
-                # Server check-in failed (network error, timeout, etc.)
-                if license_validator.is_in_grace_period(last_check_at, grace_period_days):
-                    days_since = (
-                        (datetime.now(timezone.utc) - last_check_at).days
-                        if last_check_at else 0
-                    )
-                    days_remaining = (30 + grace_period_days) - days_since
-                    print(
-                        f"⚠ License server check-in failed: {checkin_result['error']}"
-                    )
-                    print(
-                        f"⚠ Continuing with cached license (grace period: {days_remaining} days remaining)"
-                    )
-                else:
-                    print(
-                        "✗ License server check-in failed and grace period expired"
-                    )
-                    print("License: Community tier (grace period expired)")
-
-                    # Grace period expired - revoke license
-                    db.update_admin_settings({
-                        'license_key': '',
-                        'license_tier': 'community',
-                        'license_expires_at': None
-                    })
-                    license_validator.clear()
-        else:
-            days_since_check = (
-                (datetime.now(timezone.utc) - last_check_at).days
-                if last_check_at else 0
-            )
-            print(
-                f"License server check-in not needed "
-                f"({days_since_check} days since last check, threshold: 30 days)"
-            )
-
-    except Exception as e:
-        print(f"Warning: Failed to perform license check-in: {e}")
-        traceback.print_exc()
-
+    print("License: off_the_walls (all features unlocked)")
     print("=" * 50)
 
 
@@ -8250,72 +8115,9 @@ async def main():
     app = web.Application()
     app.router.add_get('/ws', websocket_handler)
 
-    # ── Voice / ICE-server endpoint (hardened) ────────────────────────────────
-    async def ice_servers_handler(request: web.Request) -> web.Response:
-        """
-        Return ICE server configuration with time-limited HMAC credentials.
-
-        SECURITY CHANGES:
-        - Requires a valid session token (Authorization header or ?token= param).
-        - Returns ONLY the self-hosted Coturn TURN relay — no third-party STUN.
-        - Generates short-lived HMAC-SHA1 credentials (RFC 8489) valid for 1 hour.
-        - With iceTransportPolicy:'relay' enforced on the client, all media is
-          routed through Coturn and peers never see each other's real IP addresses.
-        """
-        # ── Authenticate ──
-        token = None
-        auth_header = request.headers.get('Authorization', '')
-        if auth_header.startswith('Bearer '):
-            token = auth_header[7:]
-        if not token:
-            token = request.query.get('token')
-        if not token:
-            return web.json_response({'error': 'Authentication required'}, status=401)
-        user_info = verify_jwt_token(token)
-        if not user_info:
-            return web.json_response({'error': 'Invalid or expired token'}, status=401)
-
-        # ── Generate time-limited Coturn HMAC credentials ──
-        # Format: username = "<expiry_timestamp>:<username>"
-        # credential = Base64(HMAC-SHA1(static_secret, username))
-        # Valid for 1 hour.  Coturn validates these using use-auth-secret mode.
-        # NOTE: SHA-1 is required here by the Coturn REST API / use-auth-secret
-        # protocol (https://github.com/coturn/coturn/wiki/turnserver#turn-rest-api).
-        # Coturn's built-in verifier uses HMAC-SHA1 regardless of OpenSSL version;
-        # using any other digest will cause Coturn to reject every credential.
-        # The use of SHA-1 is a hard protocol constraint, not a design choice.
-        # ── Early exit when TURN relay is not configured ──
-        if not COTURN_URL or not COTURN_SECRET:
-            return web.json_response(
-                {'error': 'TURN relay is not configured on this server — '
-                          'set COTURN_SECRET and COTURN_URL environment variables.'},
-                status=503,
-            )
-
-        import hmac as _hmac
-        ttl = 3600  # 1 hour
-        expiry = int(time.time()) + ttl
-        turn_username = f'{expiry}:{user_info["username"]}'
-        turn_credential = base64.b64encode(
-            _hmac.new(COTURN_SECRET.encode(), turn_username.encode(), hashlib.sha1).digest()  # nosec B324
-        ).decode()
-
-        ice: list[dict] = [
-            {
-                'urls': COTURN_URL,
-                'username': turn_username,
-                'credential': turn_credential,
-            },
-            {
-                # TURN-over-TCP — for networks that block UDP
-                'urls': COTURN_URL + '?transport=tcp',
-                'username': turn_username,
-                'credential': turn_credential,
-            },
-        ]
-        return web.json_response({'ice_servers': ice})
-
-    app.router.add_get('/api/voice/ice-servers', ice_servers_handler)
+    # ICE/TURN credentials are now distributed by LiveKit's built-in TURN server.
+    # The /api/voice/ice-servers endpoint has been removed — VoiceChatSFU.ts no
+    # longer fetches credentials; LiveKit handles them in the room-join handshake.
     # ─────────────────────────────────────────────────────────────────────────
     setup_api_routes(app, db, verify_jwt_token, broadcast_to_server, send_to_user, get_or_create_dm, get_avatar_data, jwt_generate_func=generate_jwt_token)
     

@@ -4,7 +4,6 @@ import { wsClient } from '../api/wsClient'
 import { clearStoredAuth, getStoredAuth, setStoredAuth } from '../auth/storage'
 import { contextKey, useAppStore } from '../store/appStore'
 import { useToastStore } from '../store/toastStore'
-import { VoiceChat } from '../lib/VoiceChat'
 import { VoiceChatSFU } from '../lib/VoiceChatSFU'
 import type { ChatContext, TypingUser } from '../store/appStore'
 import type { Attachment, AuditLogEntry, GroupDm, Reaction, Server, ServerMember, Thread, WsChatMessage, WsMessage } from '../types/protocol'
@@ -208,18 +207,20 @@ export function ChatPage() {
   const [deletingMessageId, setDeletingMessageId] = useState<number | null>(null)
   const [reactionPickerMessageId, setReactionPickerMessageId] = useState<number | null>(null)
 
-  // Voice/Video chat state
-  const [voiceChat, setVoiceChat] = useState<any>(null)
-  // SFU instance — active when the current voice channel uses LiveKit
+  // Voice/Video chat state — single SFU instance handles all call types
   const [voiceChatSFU, setVoiceChatSFU] = useState<VoiceChatSFU | null>(null)
   const [isInVoice, setIsInVoice] = useState(false)
   const [isVoiceConnecting, setIsVoiceConnecting] = useState(false)
   const [voiceParticipants, setVoiceParticipants] = useState<string[]>([])
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map())
+  // Per-participant screen-share streams (separate from camera streams)
+  const [remoteScreenStreams, setRemoteScreenStreams] = useState<Map<string, MediaStream>>(new Map())
   const [isVoiceMuted, setIsVoiceMuted] = useState(false)
   const [isVideoEnabled, setIsVideoEnabled] = useState(false)
   const [isScreenSharing, setIsScreenSharing] = useState(false)
   const [isE2EEActive, setIsE2EEActive] = useState(false)
+  // Outgoing DM call waiting for acceptance
+  const [isCallingPeer, setIsCallingPeer] = useState<string | null>(null)
   // Incoming direct-call state — set when the server sends 'incoming_voice_call'
   const [incomingCall, setIncomingCall] = useState<{ from: string } | null>(null)
   
@@ -560,12 +561,47 @@ export function ChatPage() {
   useEffect(() => {
     const serverInviteCode = searchParams.get('server_invite')
     if (serverInviteCode && connectionStatus === 'connected' && init) {
-      // Request server info (only after authentication is complete)
       wsClient.getServerInfoByInvite({ type: 'get_server_info_by_invite', invite_code: serverInviteCode })
-      // Clear the URL parameter
       setSearchParams({})
     }
   }, [searchParams, setSearchParams, connectionStatus, init])
+
+  /** Create a new SFU instance with all callbacks wired up. */
+  const buildSfu = (username: string): VoiceChatSFU => {
+    const sfu = new VoiceChatSFU(wsClient, username)
+    sfu.setOnStateChange(() => {
+      setIsVoiceMuted(sfu.getIsMuted())
+      setIsVideoEnabled(sfu.getIsVideoEnabled())
+      setIsScreenSharing(sfu.getIsScreenSharing())
+      setIsInVoice(sfu.getIsInVoice())
+      setIsVoiceConnecting(sfu.getIsConnecting())
+      setIsE2EEActive(sfu.getIsE2EEActive())
+    })
+    sfu.setOnRemoteStreamChange((peer, stream) => {
+      setRemoteStreams((prev) => {
+        const m = new Map(prev)
+        if (stream) m.set(peer, stream)
+        else m.delete(peer)
+        return m
+      })
+    })
+    sfu.setOnRemoteScreenChange((peer, stream) => {
+      setRemoteScreenStreams((prev) => {
+        const m = new Map(prev)
+        if (stream) m.set(peer, stream)
+        else m.delete(peer)
+        return m
+      })
+    })
+    sfu.setOnParticipantsChange(setVoiceParticipants)
+    // VoiceChatSFU constructor already reads device prefs from localStorage;
+    // these calls sync any React-state overrides the user applied in this session.
+    if (selectedMicrophone) sfu.setMicrophone(selectedMicrophone)
+    if (selectedSpeaker)    sfu.setSpeaker(selectedSpeaker)
+    if (selectedCamera)     sfu.setCamera(selectedCamera)
+    sfu.setScreenShareSettings(screenShareResolution, screenShareFramerate)
+    return sfu
+  }
 
   useEffect(() => {
     const unsubscribe = wsClient.onMessage(async (msg: WsMessage) => {
@@ -639,43 +675,20 @@ export function ChatPage() {
           requestHistoryFor(useAppStore.getState().selectedContext)
         }
 
-        // Initialize VoiceChat
-        if (!voiceChat && initUsername) {
-          const vc = new VoiceChat(wsClient, initUsername)
-          vc.setOnStateChange(() => {
-            setIsVoiceMuted(vc.getIsMuted())
-            setIsVideoEnabled(vc.getIsVideoEnabled())
-            setIsScreenSharing(vc.getIsScreenSharing())
-            setIsInVoice(vc.getIsInVoice())
-            setIsVoiceConnecting(vc.getIsConnecting())
-          })
-          vc.setOnRemoteStreamChange((peer, stream) => {
-            setRemoteStreams((prev) => {
-              const newMap = new Map(prev)
-              if (stream) {
-                newMap.set(peer, stream)
-              } else {
-                newMap.delete(peer)
-              }
-              return newMap
-            })
-          })
-          vc.setOnParticipantsChange((participants) => {
-            setVoiceParticipants(participants)
-          })
-          setVoiceChat(vc)
-
-          // Load devices (commented out to avoid unused variable warnings)
-          // vc.getAudioDevices().then(setAudioDevices)
-          // vc.getVideoDevices().then(setVideoDevices)
-          // vc.getSpeakerDevices().then(setSpeakerDevices)
-
-          const devices = vc.getSelectedDevices()
-          setSelectedMicrophone(devices.microphone)
-          setSelectedSpeaker(devices.speaker)
-          setSelectedCamera(devices.camera)
-          setScreenShareResolution(devices.screenShareResolution)
-          setScreenShareFramerate(devices.screenShareFramerate)
+        // Load stored device preferences into UI state (no voice instance needed at startup)
+        if (initUsername) {
+          try {
+            const mic        = localStorage.getItem('voicechat_microphone_id')
+            const speaker    = localStorage.getItem('voicechat_speaker_id')
+            const camera     = localStorage.getItem('voicechat_camera_id')
+            const resolution = localStorage.getItem('voicechat_screenshare_resolution')
+            const framerate  = localStorage.getItem('voicechat_screenshare_framerate')
+            if (mic)        setSelectedMicrophone(mic)
+            if (speaker)    setSelectedSpeaker(speaker)
+            if (camera)     setSelectedCamera(camera)
+            if (resolution) setScreenShareResolution(parseInt(resolution))
+            if (framerate)  setScreenShareFramerate(parseInt(framerate))
+          } catch { /* localStorage unavailable */ }
         }
       }
 
@@ -1803,97 +1816,39 @@ export function ChatPage() {
       if (msg.type === 'voice_channel_joined') {
         const livekitToken: string | null = (msg as any).livekit_token ?? null
         const livekitUrl: string | null   = (msg as any).livekit_url   ?? null
-        const participants: string[]      = (msg as any).participants   ?? []
         const serverId: string            = (msg as any).server_id      ?? ''
         const channelId: string           = (msg as any).channel_id     ?? ''
         const e2eeKey: string | null      = (msg as any).e2ee_key      ?? null
 
-        if (livekitToken && livekitUrl && voiceChat) {
-          // ── SFU path — LiveKit is configured on this server ──
-          // Cancel the P2P pending join so VoiceChat.ts does not create peer connections.
-          voiceChat.cancelPendingJoin?.()
-
-          const sfu = new VoiceChatSFU(wsClient, init?.username ?? '')
-          sfu.setOnStateChange(() => {
-            setIsVoiceMuted(sfu.getIsMuted())
-            setIsVideoEnabled(sfu.getIsVideoEnabled())
-            setIsScreenSharing(sfu.getIsScreenSharing())
-            setIsInVoice(sfu.getIsInVoice())
-            setIsVoiceConnecting(sfu.getIsConnecting())
-            setIsE2EEActive(sfu.getIsE2EEActive())
-          })
-          sfu.setOnRemoteStreamChange((peer, stream) => {
-            setRemoteStreams((prev) => {
-              const m = new Map(prev)
-              if (stream) m.set(peer, stream)
-              else m.delete(peer)
-              return m
-            })
-          })
-          sfu.setOnParticipantsChange(setVoiceParticipants)
-
-          // Transfer device preferences from the P2P instance
-          const devices = voiceChat.getSelectedDevices?.() ?? {}
-          if (devices.microphone) sfu.setMicrophone(devices.microphone)
-          if (devices.speaker)    sfu.setSpeaker(devices.speaker)
-          if (devices.camera)     sfu.setCamera(devices.camera)
-          if (devices.screenShareResolution && devices.screenShareFramerate) {
-            sfu.setScreenShareSettings(devices.screenShareResolution, devices.screenShareFramerate)
-          }
-
+        if (livekitToken && livekitUrl) {
+          const sfu = buildSfu(init?.username ?? '')
           setVoiceChatSFU(sfu)
-          // Connect to LiveKit (acquires mic, publishes, subscribes)
+          setIsVoiceConnecting(true)
           try {
-            await sfu.connect(livekitUrl, livekitToken, serverId, channelId, voiceChat?.getIsMuted?.() ?? false, e2eeKey)
+            await sfu.connect(livekitUrl, livekitToken, serverId, channelId, false, e2eeKey)
           } catch (sfuErr) {
-            console.error('[SFU] Failed to connect to LiveKit:', sfuErr)
+            console.error('[SFU] Failed to connect to voice channel:', sfuErr)
             pushToast({ kind: 'error', message: 'Failed to connect to voice server' })
+            setVoiceChatSFU(null)
+            setIsVoiceConnecting(false)
           }
-        } else if (voiceChat) {
-          // ── P2P fallback — LiveKit not configured (or DM call) ──
-          voiceChat.handleVoiceJoined(participants)
+        } else {
+          pushToast({ kind: 'error', message: 'Voice server is not configured on this instance' })
         }
       }
 
       if (msg.type === 'voice_state_update') {
-        console.log('Received voice_state_update:', msg)
-        // Update voice participants when someone joins/leaves
-        if (msg.voice_members && Array.isArray(msg.voice_members) && voiceChat) {
+        if (msg.voice_members && Array.isArray(msg.voice_members) && voiceChatSFU) {
           const participantUsernames = msg.voice_members.map((m: any) => m.username)
-          const currentChannel = voiceChat.getCurrentChannel()
-          
-          // Check if message matches current or pending channel
+          const currentChannel = voiceChatSFU.getCurrentChannel()
           const matchesCurrentChannel =
-            !!currentChannel?.server &&
-            !!currentChannel?.channel &&
+            currentChannel?.server &&
             msg.server_id === currentChannel.server &&
             msg.channel_id === currentChannel.channel
-          
-          // Also check pending channel (when first joining)
-          const pendingChannel = voiceChat.getPendingChannel?.()
-          const matchesPendingChannel = 
-            pendingChannel &&
-            !!pendingChannel?.server &&
-            !!pendingChannel?.channel &&
-            msg.server_id === pendingChannel.server &&
-            msg.channel_id === pendingChannel.channel
-
-          if (matchesCurrentChannel || matchesPendingChannel) {
+          if (matchesCurrentChannel) {
             setVoiceParticipants(participantUsernames)
-            const isUserInVoice = participantUsernames.includes(init?.username)
-            setIsInVoice(isUserInVoice)
-            // Only trigger P2P peer connection setup when SFU is NOT active;
-            // in SFU mode participant streams arrive via LiveKit RoomEvents.
-            if (!voiceChatSFU) {
-              voiceChat.handleVoiceJoined(participantUsernames)
-            }
-            console.log('Updated voice participants:', participantUsernames)
           }
         }
-      }
-
-      if (msg.type === 'direct_call_started' && voiceChat) {
-        voiceChat.handleVoiceJoined([msg.caller])
       }
 
       // ── Direct call signalling ───────────────────────────────────
@@ -1903,65 +1858,55 @@ export function ChatPage() {
         notificationManager.showCallNotification(caller, 'voice')
       }
 
-      if (msg.type === 'voice_call_accepted' && voiceChat) {
-        const callee = (msg as any).from as string
-        setIsInVoice(true)
-        pushToast({ kind: 'success', message: `${callee} accepted your call` })
-        // Caller already has shouldInitiateOffers=true; passing both participants
-        // triggers the WebRTC offer flow in handleVoiceJoined.
-        await voiceChat.handleVoiceJoined([init?.username ?? '', callee])
+      if (msg.type === 'voice_call_accepted') {
+        const peer: string            = (msg as any).from ?? ''
+        const livekitToken: string | null = (msg as any).livekit_token ?? null
+        const livekitUrl: string | null   = (msg as any).livekit_url   ?? null
+        const e2eeKey: string | null      = (msg as any).e2ee_key      ?? null
+        const dmRoomName: string          = (msg as any).dm_room_name  ?? `dm__${peer}`
+
+        pushToast({ kind: 'success', message: `${peer} accepted your call` })
+        setIsCallingPeer(null)
+        setIncomingCall(null)
+
+        if (livekitToken && livekitUrl) {
+          const sfu = buildSfu(init?.username ?? '')
+          setVoiceChatSFU(sfu)
+          setIsVoiceConnecting(true)
+          try {
+            await sfu.connect(livekitUrl, livekitToken, 'dm', dmRoomName, false, e2eeKey)
+          } catch (sfuErr) {
+            console.error('[SFU] Failed to connect to DM call:', sfuErr)
+            pushToast({ kind: 'error', message: 'Failed to connect to call' })
+            setVoiceChatSFU(null)
+            setIsVoiceConnecting(false)
+          }
+        }
       }
 
       if (msg.type === 'voice_call_rejected') {
         const callee = (msg as any).from as string
+        setIsCallingPeer(null)
         pushToast({ kind: 'error', message: `${callee} declined your call` })
       }
 
-      if (msg.type === 'user_joined_voice' && voiceChat) {
-        if (!voiceChatSFU) voiceChat.handleUserJoinedVoice(msg.username)
-      }
-
-      if (msg.type === 'user_left_voice' && voiceChat) {
-        if (!voiceChatSFU) voiceChat.handleUserLeftVoice(msg.username)
-        else voiceChatSFU.handleUserLeftVoice(msg.username)
-      }
-
-      if (msg.type === 'webrtc_offer' && voiceChat && !voiceChatSFU) {
-        const fromUsername = (msg as any).from_username ?? (msg as any).from
-        if (fromUsername) {
-          voiceChat.handleWebRTCOffer(fromUsername, msg.offer)
-        }
-      }
-
-      if (msg.type === 'webrtc_answer' && voiceChat && !voiceChatSFU) {
-        const fromUsername = (msg as any).from_username ?? (msg as any).from
-        if (fromUsername) {
-          voiceChat.handleWebRTCAnswer(fromUsername, msg.answer)
-        }
-      }
-
-      if (msg.type === 'webrtc_ice_candidate' && voiceChat && !voiceChatSFU) {
-        const fromUsername = (msg as any).from_username ?? (msg as any).from
-        if (fromUsername) {
-          voiceChat.handleICECandidate(fromUsername, msg.candidate)
-        }
+      if (msg.type === 'user_left_voice') {
+        voiceChatSFU?.handleUserLeftVoice(msg.username)
       }
       
       // Soundboard handler
-      if (msg.type === 'soundboard_play' && voiceChat) {
+      if (msg.type === 'soundboard_play' && voiceChatSFU) {
         const soundId = (msg as any).sound_id
         const soundName = (msg as any).sound_name || 'Unknown'
         const playingUsername = (msg as any).username
-        
+
         // Don't play if it's the current user (already played locally)
         if (playingUsername && playingUsername === init?.username) {
           return
         }
-        
-        // Play the sound remotely (works for both P2P and SFU modes)
-        const activeRemoteVC = voiceChatSFU ?? voiceChat
-        if (soundId && activeRemoteVC) {
-          activeRemoteVC.playRemoteSoundboard(soundId).catch((err: any) => {
+
+        if (soundId) {
+          voiceChatSFU.playRemoteSoundboard(soundId).catch((err: any) => {
             console.error('Failed to play remote soundboard sound:', err)
           })
           
@@ -1983,48 +1928,31 @@ export function ChatPage() {
 
     // Register keybind callbacks
     keybindManager.on('push_to_talk', () => {
-      const avc = voiceChatSFU ?? voiceChat
-      if (avc && avc.getIsInVoice()) {
-        avc.toggleMute()
-      }
+      if (voiceChatSFU?.getIsInVoice()) voiceChatSFU.toggleMute()
     })
 
     keybindManager.on('toggle_mute', () => {
-      const avc = voiceChatSFU ?? voiceChat
-      if (avc && avc.getIsInVoice()) {
-        avc.toggleMute()
-      }
+      if (voiceChatSFU?.getIsInVoice()) voiceChatSFU.toggleMute()
     })
 
     keybindManager.on('toggle_deafen', () => {
-      // TODO: Implement deafen functionality in VoiceChat.ts
       console.log('Toggle deafen not yet implemented')
     })
 
     keybindManager.on('toggle_video', () => {
-      const avc = voiceChatSFU ?? voiceChat
-      if (avc && avc.getIsInVoice()) {
-        avc.toggleVideo()
-      }
+      if (voiceChatSFU?.getIsInVoice()) voiceChatSFU.toggleVideo()
     })
 
     keybindManager.on('toggle_screen_share', () => {
-      const avc = voiceChatSFU ?? voiceChat
-      if (avc && avc.getIsInVoice()) {
-        avc.toggleScreenShare()
-      }
+      if (voiceChatSFU?.getIsInVoice()) voiceChatSFU.toggleScreenShare()
     })
 
     keybindManager.on('answer_end_call', () => {
-      // TODO: Implement answer/end call functionality
       console.log('Answer/end call not yet implemented')
     })
 
-    // Cleanup on unmount
-    return () => {
-      keybindManager.destroy()
-    }
-  }, [voiceChat])
+    return () => { keybindManager.destroy() }
+  }, [voiceChatSFU])
 
   // Populate account settings when init data is available
   useEffect(() => {
@@ -2962,129 +2890,60 @@ export function ChatPage() {
     })
   }
 
-  // Voice/Video control functions
-  const joinVoiceChannel = async (serverId: string, channelId: string) => {
-    if (!voiceChat) {
-      pushToast({ kind: 'error', message: 'Voice chat not initialized' })
-      return
-    }
-    try {
-      const success = await voiceChat.joinVoiceChannel(serverId, channelId)
-      if (!success) {
-        pushToast({ kind: 'error', message: 'Failed to join voice channel. Please check microphone permissions.' })
-      } else {
-        pushToast({ kind: 'success', message: 'Joining voice channel...' })
-      }
-    } catch (error) {
-      console.error('Error joining voice channel:', error)
-      pushToast({ kind: 'error', message: 'Failed to join voice channel' })
-    }
+  // ── Voice/Video control functions ────────────────────────────────────────
+
+  const joinVoiceChannel = (serverId: string, channelId: string) => {
+    wsClient.send({ type: 'join_voice_channel', server_id: serverId, channel_id: channelId })
+    setIsVoiceConnecting(true)
+    pushToast({ kind: 'success', message: 'Joining voice channel…' })
   }
 
-  const startDirectCall = async (targetUsername: string) => {
-    if (!voiceChat) {
-      pushToast({ kind: 'error', message: 'Voice chat not initialized' })
-      return
-    }
-    try {
-      const success = await voiceChat.startDirectCall(targetUsername)
-      if (!success) {
-        pushToast({ kind: 'error', message: 'Failed to start call. Please check microphone permissions.' })
-      } else {
-        pushToast({ kind: 'success', message: `Calling ${targetUsername}…` })
-      }
-    } catch (error) {
-      console.error('Error starting direct call:', error)
-      pushToast({ kind: 'error', message: 'Failed to start call' })
-    }
+  const startDirectCall = (targetUsername: string) => {
+    wsClient.send({ type: 'start_voice_call', username: targetUsername })
+    setIsCallingPeer(targetUsername)
+    pushToast({ kind: 'success', message: `Calling ${targetUsername}…` })
   }
 
-  const acceptCall = async () => {
-    if (!incomingCall || !voiceChat) return
-    const caller = incomingCall.from
+  const acceptCall = () => {
+    if (!incomingCall) return
+    wsClient.send({ type: 'accept_voice_call', from: incomingCall.from })
     setIncomingCall(null)
-    try {
-      const success = await voiceChat.acceptDirectCall(caller)
-      if (!success) {
-        pushToast({ kind: 'error', message: 'Failed to accept call. Please check microphone permissions.' })
-      } else {
-        setIsInVoice(true)
-        pushToast({ kind: 'success', message: `Connected to call with ${caller}` })
-      }
-    } catch (error) {
-      console.error('Error accepting call:', error)
-      pushToast({ kind: 'error', message: 'Failed to accept call' })
-    }
+    // SFU connection happens when 'voice_call_accepted' is received with a token
   }
 
   const rejectCall = () => {
     if (!incomingCall) return
-    const caller = incomingCall.from
-    wsClient.send({ type: 'reject_voice_call', from: caller })
+    wsClient.send({ type: 'reject_voice_call', from: incomingCall.from })
     setIncomingCall(null)
   }
 
   const leaveVoice = () => {
     if (voiceChatSFU) {
-      // SFU mode: disconnect LiveKit + send leave WS message
       voiceChatSFU.disconnect()
       wsClient.send({ type: 'leave_voice_channel' })
       setVoiceChatSFU(null)
       setIsInVoice(false)
+      setIsVoiceConnecting(false)
+      setIsCallingPeer(null)
       setVoiceParticipants([])
       setRemoteStreams(new Map())
-      return
+      setRemoteScreenStreams(new Map())
     }
-    if (!voiceChat) return
-    voiceChat.leaveVoice()
   }
 
-  const toggleVoiceMute = () => {
-    const avc = voiceChatSFU ?? voiceChat
-    if (!avc) return
-    avc.toggleMute()
-  }
+  const toggleVoiceMute        = () => voiceChatSFU?.toggleMute()
+  const toggleVoiceVideo       = () => voiceChatSFU?.toggleVideo()
+  const toggleVoiceScreenShare = () => voiceChatSFU?.toggleScreenShare()
 
-  const toggleVoiceVideo = () => {
-    const avc = voiceChatSFU ?? voiceChat
-    if (!avc) return
-    avc.toggleVideo()
-  }
-
-  const toggleVoiceScreenShare = () => {
-    const avc = voiceChatSFU ?? voiceChat
-    if (!avc) return
-    avc.toggleScreenShare()
-  }
-  
   const handlePlaySoundboard = async (soundId: string, soundName: string) => {
-    const avc = voiceChatSFU ?? voiceChat
-    if (!avc) return
+    if (!voiceChatSFU) return
     try {
-      await avc.playSoundboard(soundId)
+      await voiceChatSFU.playSoundboard(soundId)
       pushToast({ kind: 'info', message: `Playing: ${soundName}` })
-    } catch (error) {
+    } catch {
       pushToast({ kind: 'error', message: 'Failed to play sound' })
     }
   }
-
-  /* const updateVoiceDevices = () => {
-    if (!voiceChat) return
-    if (selectedMicrophone) voiceChat.setMicrophone(selectedMicrophone)
-    if (selectedSpeaker) voiceChat.setSpeaker(selectedSpeaker)
-    if (selectedCamera) voiceChat.setCamera(selectedCamera)
-    voiceChat.setScreenShareSettings(screenShareResolution, screenShareFramerate)
-  }
-
-  const loadVoiceDevices = async () => {
-    if (!voiceChat) return
-    const audio = await voiceChat.getAudioDevices()
-    const video = await voiceChat.getVideoDevices()
-    const speakers = await voiceChat.getSpeakerDevices()
-    setAudioDevices(audio)
-    setVideoDevices(video)
-    setSpeakerDevices(speakers)
-  } */
 
   const testSMTP = () => {
     if (wsClient.readyState !== WebSocket.OPEN) return
@@ -3860,7 +3719,7 @@ export function ChatPage() {
                   </>
                 )}
                 {/* DM voice call button */}
-                {selectedContext.kind === 'dm' && !isInVoice && (
+                {selectedContext.kind === 'dm' && !isInVoice && !isCallingPeer && (
                   <button
                     type="button"
                     onClick={() => startDirectCall(selectedContext.kind === 'dm' ? (selectedContext.username ?? '') : '')}
@@ -3868,6 +3727,16 @@ export function ChatPage() {
                     title={`Call ${selectedTitle}`}
                   >
                     📞 Call
+                  </button>
+                )}
+                {selectedContext.kind === 'dm' && isCallingPeer && !isInVoice && (
+                  <button
+                    type="button"
+                    onClick={leaveVoice}
+                    className="rounded-xl border border-yellow-500/40 bg-yellow-500/10 px-3 py-1.5 text-xs text-yellow-300 hover:bg-yellow-500/20 transition animate-pulse"
+                    title="Cancel call"
+                  >
+                    📞 Calling… (cancel)
                   </button>
                 )}
                 {selectedContext.kind === 'dm' && isInVoice && (
@@ -4041,7 +3910,22 @@ export function ChatPage() {
                       </div>
                     </div>
                   ) : (
-                    <div className={`grid gap-4 h-full ${
+                    <div className="flex flex-col gap-4 h-full overflow-auto">
+                    {/* Screen share tiles — shown when any participant is sharing */}
+                    {Array.from(remoteScreenStreams.entries()).map(([peer, screenStream]) => (
+                      <div key={`screen-${peer}`} className="relative rounded-2xl border border-purple-500/40 bg-bg-secondary/60 overflow-hidden w-full" style={{ minHeight: 300 }}>
+                        <video
+                          ref={(video) => { if (video) { video.srcObject = screenStream; video.play().catch(console.error) } }}
+                          autoPlay playsInline muted={peer === init?.username}
+                          className="w-full h-full object-contain"
+                        />
+                        <div className="absolute top-2 left-3 flex items-center gap-1.5 rounded-full bg-black/60 px-2 py-0.5 text-xs text-purple-300">
+                          🖥️ {peer} {peer === init?.username ? '(You)' : ''}
+                        </div>
+                      </div>
+                    ))}
+                    {/* Camera / avatar tiles */}
+                    <div className={`grid gap-4 ${
                       voiceParticipants.length === 1 ? 'grid-cols-1' :
                       voiceParticipants.length === 2 ? 'grid-cols-2' :
                       voiceParticipants.length <= 4 ? 'grid-cols-2' :
@@ -4119,6 +4003,7 @@ export function ChatPage() {
                           </div>
                         )
                       })}
+                    </div>
                     </div>
                   )}
                 </div>

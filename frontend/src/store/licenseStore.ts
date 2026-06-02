@@ -27,20 +27,21 @@ const DEFAULT_FEATURES: LicenseFeatures = {
   webhooks: true,
   custom_emojis: true,
   audit_logs: true,
-  sso: false,
-  scim: false,
+  sso: true,
+  scim: true,
+  group_dms: true,
 }
 
 const DEFAULT_LIMITS: LicenseLimits = {
-  max_users: 30,
-  max_servers: 2,
-  max_channels_per_server: 30,
-  max_file_size_mb: 10,
+  max_users: -1,
+  max_servers: -1,
+  max_channels_per_server: -1,
+  max_file_size_mb: -1,
   max_messages_history: -1,
 }
 
 export const useLicenseStore = create<LicenseState>((set, get) => ({
-  tier: 'community',
+  tier: 'off_the_walls',
   features: { ...DEFAULT_FEATURES },
   limits: { ...DEFAULT_LIMITS },
   customer: null,
@@ -71,13 +72,13 @@ export const useLicenseStore = create<LicenseState>((set, get) => ({
   setLoading: (loading) => set({ loading }),
   clear: () =>
     set({
-      tier: 'community',
+      tier: 'off_the_walls',
       features: { ...DEFAULT_FEATURES },
       limits: { ...DEFAULT_LIMITS },
       customer: null,
       expiresAt: null,
       isAdmin: false,
-      loading: true,
+      loading: false,
       lastCheckAt: null,
       isInGracePeriod: false,
       graceDaysRemaining: null,
