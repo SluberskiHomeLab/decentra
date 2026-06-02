@@ -7485,7 +7485,7 @@ async def handler(websocket):
                                 dm_e2ee_key=dm_e2ee_key,
                             )
 
-                            # Notify the friend — they'll get the LiveKit token on accept
+                            # Notify the friend — they'll receive an e2ee key on accept to begin the media session
                             await send_to_user(friend_username, json.dumps({
                                 'type': 'incoming_voice_call',
                                 'from': username

@@ -9,17 +9,8 @@ This guide covers placing Decentra behind a reverse proxy using five common opti
 | Service | Container Port | Host Port | Protocol | Notes |
 |---|---|---|---|---|
 | Frontend (App) | 8443 | 8765 | HTTPS/WSS | Main entry point for the reverse proxy |
-| LiveKit Signaling | 7880 | 7880 | HTTP/WS | Proxied or exposed directly |
-| LiveKit WebRTC TCP | 7881 | 7881 | TCP | Must be exposed directly — not proxiable |
-| LiveKit WebRTC UDP | 7882 | 7882 | UDP | Must be exposed directly — not proxiable |
-| Coturn TURN UDP | 3478 | 3478 | UDP | Must be exposed directly — not proxiable |
-| Coturn TURN TCP | 3478 | 3478 | TCP | Must be exposed directly — not proxiable |
-| Coturn TURN TLS | 5349 | 5349 | TCP | Must be exposed directly — not proxiable |
-| Coturn Relay Range | 49152–49200 | 49152–49200 | UDP | TURN media relay; must be exposed directly |
 
-> **Important:** The frontend container speaks **HTTPS** internally (self-signed certificate). Your reverse proxy must either terminate TLS and proxy to `https://localhost:8765` with SSL verification disabled, or pass the connection through (SSL passthrough). WebRTC/TURN ports **cannot** be proxied by an HTTP reverse proxy — they must be forwarded directly to the host.
->
-> **Security:** Decentra enforces `iceTransportPolicy: 'relay'`, which means **all** voice/video media is routed through the self-hosted Coturn TURN server. If Coturn is unreachable from clients, voice calls will not connect. Ensure the Coturn ports above are open in your firewall.
+> **Important:** The frontend container speaks **HTTPS** internally (self-signed certificate). Your reverse proxy must either terminate TLS and proxy to `https://localhost:8765` with SSL verification disabled, or pass the connection through (SSL passthrough). Voice and video media travel over the same WebSocket connection as chat — no additional ports are required.
 
 ---
 
@@ -102,34 +93,6 @@ sudo ln -s /etc/nginx/sites-available/decentra.conf /etc/nginx/sites-enabled/
 sudo nginx -t
 sudo systemctl reload nginx
 ```
-
-### Step 4 — LiveKit WebRTC Signaling (optional proxy)
-
-If you want the LiveKit signaling port (7880) behind a subdomain, add a second server block:
-
-```nginx
-server {
-    listen 443 ssl;
-    http2 on;
-    server_name livekit.example.com;
-
-    ssl_certificate     /etc/letsencrypt/live/livekit.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/livekit.example.com/privkey.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:7880;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade    $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host       $host;
-        proxy_read_timeout 3600s;
-    }
-}
-```
-
-Then set `LIVEKIT_URL=wss://livekit.example.com` in your `.env`.
-
-> UDP ports 7882 and 3478 must still be open in your firewall and are not handled by Nginx.
 
 ---
 
@@ -252,10 +215,6 @@ Or add this flag to the Traefik service command:
 docker compose down && docker compose up -d
 ```
 
-### LiveKit with Traefik
-
-Add a similar set of labels to the `livekit` service targeting port `7880` with `scheme=http`. UDP ports 7881, 7882, and 3478 must be exposed directly and cannot be routed through Traefik.
-
 ---
 
 ## 3. Caddy
@@ -295,20 +254,7 @@ chat.example.com {
 }
 ```
 
-### Step 2 — Optional: LiveKit Signaling on a Subdomain
-
-```caddyfile
-livekit.example.com {
-    reverse_proxy localhost:7880 {
-        header_up Host            {upstream_hostport}
-        header_up X-Forwarded-For {remote_host}
-    }
-}
-```
-
-Set `LIVEKIT_URL=wss://livekit.example.com` in `.env`.
-
-### Step 3 — Start Caddy
+### Step 2 — Start Caddy
 
 ```bash
 # If using the systemd service
@@ -318,14 +264,14 @@ sudo systemctl reload caddy
 caddy run --config /etc/caddy/Caddyfile
 ```
 
-### Step 4 — Verify
+### Step 3 — Verify
 
 ```bash
 caddy validate --config /etc/caddy/Caddyfile
 curl -I https://chat.example.com
 ```
 
-> Caddy's WebSocket proxying is automatic — no special headers are needed.
+> Caddy's WebSocket proxying is automatic — no special headers are needed. Voice and video also use this same WebSocket connection.
 
 ---
 
@@ -401,27 +347,11 @@ proxy_ssl_verify off;
 
 5. Click **Save**.
 
-### Step 4 — LiveKit Signaling (optional)
-
-Repeat Step 3 for a second proxy host:
-
-- **Domain Names:** `livekit.example.com`
-- **Scheme:** `http`
-- **Forward Hostname / IP:** `decentra-livekit` or `127.0.0.1`
-- **Forward Port:** `7880`
-- **Websockets Support:** on
-
-Set `LIVEKIT_URL=wss://livekit.example.com` in `.env`, then redeploy Decentra.
-
-> NPM cannot proxy UDP ports. Ports 7881, 7882, and 3478 must be exposed directly in `docker-compose.yml` and open in the host firewall.
-
 ---
 
 ## 5. Cloudflare Tunnel
 
-Cloudflare Tunnel (`cloudflared`) creates an outbound-only encrypted tunnel from your server to Cloudflare's edge. No inbound ports need to be opened on your firewall, and Cloudflare handles TLS termination.
-
-> **Limitation:** Cloudflare Tunnel routes HTTP/HTTPS traffic only. LiveKit's WebRTC UDP ports (7882, 3478) and TCP port (7881) **cannot** be tunneled. Voice/video will only work if those ports are separately reachable by clients — either directly exposed on the server or via a TURN server. See the LiveKit note at the end of this section.
+Cloudflare Tunnel (`cloudflared`) creates an outbound-only encrypted tunnel from your server to Cloudflare's edge. No inbound ports need to be opened on your firewall, and Cloudflare handles TLS termination. Since voice and video media travel over the same WebSocket connection as chat, Cloudflare Tunnel fully supports voice/video calls with no extra configuration.
 
 ### Prerequisites
 
@@ -476,10 +406,6 @@ ingress:
       noTLSVerify: true          # self-signed cert inside the container
       httpHostHeader: chat.example.com
 
-  # LiveKit HTTP/WS signaling (optional)
-  - hostname: livekit.example.com
-    service: http://localhost:7880
-
   # Required catch-all rule
   - service: http_status:404
 ```
@@ -490,7 +416,6 @@ Replace `<YOUR_TUNNEL_ID>` with the value from Step 3.
 
 ```bash
 cloudflared tunnel route dns decentra chat.example.com
-cloudflared tunnel route dns decentra livekit.example.com   # if using LiveKit subdomain
 ```
 
 This creates `CNAME` records in Cloudflare DNS pointing to the tunnel.
@@ -531,27 +456,6 @@ In the Cloudflare dashboard under **SSL/TLS**:
 - Set encryption mode to **Full** (not Full (Strict), since the origin uses a self-signed cert)
 - Enable **WebSockets** under **Network → WebSockets** (required for real-time chat)
 
-### LiveKit & WebRTC with Cloudflare Tunnel
-
-Cloudflare Tunnel cannot carry WebRTC UDP or raw TCP. For voice/video to work you have two options:
-
-**Option A — Expose WebRTC ports directly (recommended for self-hosted)**
-
-Keep the LiveKit ports exposed in `docker-compose.yml` and open them in your firewall:
-
-```bash
-# UFW example
-sudo ufw allow 7881/tcp
-sudo ufw allow 7882/udp
-sudo ufw allow 3478/udp
-```
-
-Set `LIVEKIT_URL=wss://livekit.example.com` and point `livekit.example.com` as a regular DNS A record (not via the tunnel) to your server's IP.
-
-**Option B — Use a Cloudflare-compatible TURN/relay service**
-
-Use a third-party TURN provider (e.g., Metered, Xirsys) and configure LiveKit's `turn` section in `livekit.yaml` accordingly.
-
 ---
 
 ## General Firewall Checklist
@@ -561,46 +465,22 @@ Regardless of which reverse proxy you choose, ensure these ports are open on you
 | Port | Protocol | Required for |
 |---|---|---|
 | 80 | TCP | HTTP → HTTPS redirect |
-| 443 | TCP | HTTPS (app traffic) |
-| 7881 | TCP | LiveKit WebRTC TCP fallback |
-| 7882 | UDP | LiveKit WebRTC media |
-| 3478 | UDP+TCP | Coturn TURN relay (required — relay-only ICE is enforced) |
-| 5349 | TCP | Coturn TURN over TLS (recommended for restrictive networks) |
-| 49152–49200 | UDP | Coturn TURN media relay range |
+| 443 | TCP | HTTPS/WSS (app traffic, including voice and video) |
 
 ```bash
 # UFW quick reference
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
-sudo ufw allow 7881/tcp
-sudo ufw allow 7882/udp
-sudo ufw allow 3478/udp
-sudo ufw allow 3478/tcp
-sudo ufw allow 5349/tcp
-sudo ufw allow 49152:49200/udp
 sudo ufw enable
 ```
 
-> **Note:** Since `iceTransportPolicy: 'relay'` is enforced client-side, all voice/video traffic routes through Coturn. If Coturn ports are unreachable, voice calls will fail silently.
+> Voice and video media travel over the same encrypted WebSocket connection as chat, so no additional ports are needed.
 
 ---
 
 ## Environment Variables After Setup
 
-After configuring a reverse proxy, update your `.env` to match your domain:
-
-```env
-# Use wss:// for the LiveKit URL so the browser connects over WebSocket Secure
-LIVEKIT_URL=wss://livekit.example.com
-
-# Coturn TURN relay — set to your public domain/IP
-COTURN_URL=turn:chat.example.com:3478
-COTURN_REALM=chat.example.com
-# Generate a strong secret: python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
-COTURN_SECRET=YOUR_COTURN_SECRET_HERE
-```
-
-Then restart Decentra:
+After configuring a reverse proxy, no additional environment variables are needed for voice/video — media travels over the same WebSocket connection as chat. Restart Decentra if you made any other `.env` changes:
 
 ```bash
 docker compose down && docker compose up -d

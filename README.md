@@ -24,7 +24,7 @@ The Decentra Wiki lives here: [Decentra Wiki](https://decentrachat.atlassian.net
   - 📞 Call friends directly from DMs or friends list
   - 🔊 Join voice channels in servers for group voice chat
   - 🔇 Mute/unmute controls
-  - 🌐 Peer-to-peer WebRTC connections for high-quality audio
+  - 🌐 WebSocket-based media relay — audio, video, and screen share over the existing connection, no extra ports required
 - 🔐 Username/password authentication
 - 🔒 **Security Features** - Multiple layers of security
   - 🛡️ Transport Layer Security (HTTPS/WSS) for encrypted communications
@@ -226,7 +226,7 @@ Then open your browser to `http://localhost:8765`
   - Direct messaging
   - Message routing to appropriate contexts
   - Real-time WebSocket communication
-  - WebRTC signaling for voice chat connections
+  - Binary media relay for voice/video calls (audio/video/screen share over WebSocket)
   - Voice state management
 - **database.py**: PostgreSQL database layer for persistent storage
   - User accounts and authentication
@@ -241,7 +241,6 @@ Then open your browser to `http://localhost:8765`
   - **styles.css**: Application styling with Discord-like layout
   - **auth.js**: Authentication logic
   - **chat.js**: Chat functionality, WebSocket client, and UI management
-  - **voice.js**: WebRTC voice chat implementation and peer connection management
 - **Dockerfile**: Container configuration for the server
 - **requirements.txt**: Python dependencies (websockets, bcrypt, aiohttp, psycopg2-binary)
 
@@ -335,7 +334,7 @@ Server owners can access settings by clicking the **⚙ button** next to the ser
   - Leave the voice channel
 - All users in the same voice channel can hear each other
 
-**Note**: Voice chat uses WebRTC for peer-to-peer connections. Make sure your browser has microphone permissions enabled.
+**Note**: Voice chat requires microphone (and camera, for video calls) permissions. Enable access when prompted by your browser.
 
 ### Message Display
 

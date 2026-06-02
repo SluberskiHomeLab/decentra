@@ -94,7 +94,7 @@ If the feature doesn't work as expected:
 1. Check browser console for errors
 2. Verify microphone permissions are granted
 3. Test with a different browser (Chrome, Firefox, Edge)
-4. Ensure you're using HTTPS or localhost (required for WebRTC)
+4. Ensure you're using HTTPS or localhost (required for microphone access)
 
 ## Browser Compatibility
 
