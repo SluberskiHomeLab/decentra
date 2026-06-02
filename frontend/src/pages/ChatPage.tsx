@@ -4,7 +4,7 @@ import { wsClient } from '../api/wsClient'
 import { clearStoredAuth, getStoredAuth, setStoredAuth } from '../auth/storage'
 import { contextKey, useAppStore } from '../store/appStore'
 import { useToastStore } from '../store/toastStore'
-import { VoiceChatSFU } from '../lib/VoiceChatSFU'
+import { VoiceClient } from '../lib/VoiceClient'
 import type { ChatContext, TypingUser } from '../store/appStore'
 import type { Attachment, AuditLogEntry, GroupDm, Reaction, Server, ServerMember, Thread, WsChatMessage, WsMessage } from '../types/protocol'
 import { LicensePanel } from '../components/admin/LicensePanel'
@@ -208,7 +208,7 @@ export function ChatPage() {
   const [reactionPickerMessageId, setReactionPickerMessageId] = useState<number | null>(null)
 
   // Voice/Video chat state — single SFU instance handles all call types
-  const [voiceChatSFU, setVoiceChatSFU] = useState<VoiceChatSFU | null>(null)
+  const [voiceChatSFU, setVoiceChatSFU] = useState<VoiceClient | null>(null)
   const [isInVoice, setIsInVoice] = useState(false)
   const [isVoiceConnecting, setIsVoiceConnecting] = useState(false)
   const [voiceParticipants, setVoiceParticipants] = useState<string[]>([])
@@ -566,9 +566,9 @@ export function ChatPage() {
     }
   }, [searchParams, setSearchParams, connectionStatus, init])
 
-  /** Create a new SFU instance with all callbacks wired up. */
-  const buildSfu = (username: string): VoiceChatSFU => {
-    const sfu = new VoiceChatSFU(wsClient, username)
+  /** Create a new VoiceClient with all callbacks wired up. */
+  const buildSfu = (username: string): VoiceClient => {
+    const sfu = new VoiceClient(wsClient, username)
     sfu.setOnStateChange(() => {
       setIsVoiceMuted(sfu.getIsMuted())
       setIsVideoEnabled(sfu.getIsVideoEnabled())
@@ -594,7 +594,7 @@ export function ChatPage() {
       })
     })
     sfu.setOnParticipantsChange(setVoiceParticipants)
-    // VoiceChatSFU constructor already reads device prefs from localStorage;
+    // VoiceClient constructor already reads device prefs from localStorage;
     // these calls sync any React-state overrides the user applied in this session.
     if (selectedMicrophone) sfu.setMicrophone(selectedMicrophone)
     if (selectedSpeaker)    sfu.setSpeaker(selectedSpeaker)
@@ -1814,26 +1814,24 @@ export function ChatPage() {
 
       // Voice/Video chat handlers
       if (msg.type === 'voice_channel_joined') {
-        const livekitToken: string | null = (msg as any).livekit_token ?? null
-        const livekitUrl: string | null   = (msg as any).livekit_url   ?? null
-        const serverId: string            = (msg as any).server_id      ?? ''
-        const channelId: string           = (msg as any).channel_id     ?? ''
-        const e2eeKey: string | null      = (msg as any).e2ee_key      ?? null
+        const serverId: string       = (msg as any).server_id ?? ''
+        const channelId: string      = (msg as any).channel_id ?? ''
+        const e2eeKey: string | null = (msg as any).e2ee_key ?? null
 
-        if (livekitToken && livekitUrl) {
-          const sfu = buildSfu(init?.username ?? '')
-          setVoiceChatSFU(sfu)
+        if (e2eeKey) {
+          const client = buildSfu(init?.username ?? '')
+          setVoiceChatSFU(client)
           setIsVoiceConnecting(true)
           try {
-            await sfu.connect(livekitUrl, livekitToken, serverId, channelId, false, e2eeKey)
-          } catch (sfuErr) {
-            console.error('[SFU] Failed to connect to voice channel:', sfuErr)
-            pushToast({ kind: 'error', message: 'Failed to connect to voice server' })
+            await client.connect(e2eeKey, serverId, channelId, false)
+          } catch (err) {
+            console.error('[VoiceClient] Failed to connect to voice channel:', err)
+            pushToast({ kind: 'error', message: 'Failed to connect to voice channel' })
             setVoiceChatSFU(null)
             setIsVoiceConnecting(false)
           }
         } else {
-          pushToast({ kind: 'error', message: 'Voice server is not configured on this instance' })
+          pushToast({ kind: 'error', message: 'Voice channel has no encryption key — please rejoin' })
         }
       }
 
@@ -1859,24 +1857,22 @@ export function ChatPage() {
       }
 
       if (msg.type === 'voice_call_accepted') {
-        const peer: string            = (msg as any).from ?? ''
-        const livekitToken: string | null = (msg as any).livekit_token ?? null
-        const livekitUrl: string | null   = (msg as any).livekit_url   ?? null
-        const e2eeKey: string | null      = (msg as any).e2ee_key      ?? null
-        const dmRoomName: string          = (msg as any).dm_room_name  ?? `dm__${peer}`
+        const peer: string       = (msg as any).from ?? ''
+        const e2eeKey: string | null = (msg as any).e2ee_key ?? null
+        const dmRoomName: string     = (msg as any).dm_room_name ?? `dm__${peer}`
 
         pushToast({ kind: 'success', message: `${peer} accepted your call` })
         setIsCallingPeer(null)
         setIncomingCall(null)
 
-        if (livekitToken && livekitUrl) {
-          const sfu = buildSfu(init?.username ?? '')
-          setVoiceChatSFU(sfu)
+        if (e2eeKey) {
+          const client = buildSfu(init?.username ?? '')
+          setVoiceChatSFU(client)
           setIsVoiceConnecting(true)
           try {
-            await sfu.connect(livekitUrl, livekitToken, 'dm', dmRoomName, false, e2eeKey)
-          } catch (sfuErr) {
-            console.error('[SFU] Failed to connect to DM call:', sfuErr)
+            await client.connect(e2eeKey, 'dm', dmRoomName, false)
+          } catch (err) {
+            console.error('[VoiceClient] Failed to connect to DM call:', err)
             pushToast({ kind: 'error', message: 'Failed to connect to call' })
             setVoiceChatSFU(null)
             setIsVoiceConnecting(false)

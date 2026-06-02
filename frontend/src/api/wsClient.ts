@@ -53,12 +53,10 @@ import type {
 } from '../types/protocol'
 
 type MessageHandler = (msg: WsMessage) => void
-
-type CloseHandler = (ev: CloseEvent) => void
-
-type ErrorHandler = (ev: Event) => void
-
-type OpenHandler = () => void
+type BinaryHandler  = (data: ArrayBuffer) => void
+type CloseHandler   = (ev: CloseEvent) => void
+type ErrorHandler   = (ev: Event) => void
+type OpenHandler    = () => void
 
 function defaultWsUrl(): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -68,6 +66,7 @@ function defaultWsUrl(): string {
 export class WsClient {
   private ws: WebSocket | null = null
   private handlers = new Set<MessageHandler>()
+  private binaryHandlers = new Set<BinaryHandler>()
   private closeHandlers = new Set<CloseHandler>()
   private errorHandlers = new Set<ErrorHandler>()
   private openHandlers = new Set<OpenHandler>()
@@ -88,6 +87,9 @@ export class WsClient {
     this.clearTimers()
 
     this.ws = new WebSocket(url)
+    // Receive binary media frames as ArrayBuffer (not Blob) so VoiceClient
+    // can process them synchronously without an extra async conversion step.
+    this.ws.binaryType = 'arraybuffer'
     const ws = this.ws
     ws.addEventListener('open', () => {
       this.reconnectDelay = 1000
@@ -95,12 +97,16 @@ export class WsClient {
       for (const handler of this.openHandlers) handler()
     })
     this.ws.onmessage = (event) => {
+      // Binary frame → route to binary handlers (voice/video media)
+      if (event.data instanceof ArrayBuffer) {
+        for (const handler of this.binaryHandlers) handler(event.data)
+        return
+      }
+      // Text frame → JSON signalling (existing path)
       try {
         const raw = String(event.data)
-        // Ignore server pong frames sent as plain text
         if (raw === 'pong') return
         const data = JSON.parse(raw) as WsMessage
-        // Ignore server pong frames sent as JSON, e.g. {"type":"pong"}
         if (data && typeof data === 'object' && (data as any).type === 'pong') return
         for (const handler of this.handlers) handler(data)
       } catch {
@@ -406,6 +412,18 @@ export class WsClient {
 
   deleteGroupDm(payload: WsOutboundDeleteGroupDm) {
     this.send(payload)
+  }
+
+  /** Send a binary WebSocket frame (used by VoiceClient for media frames). */
+  sendBinary(data: ArrayBuffer): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+    this.ws.send(data)
+  }
+
+  /** Register a handler for incoming binary frames. Returns an unsubscribe fn. */
+  onBinaryMessage(handler: BinaryHandler): () => void {
+    this.binaryHandlers.add(handler)
+    return () => this.binaryHandlers.delete(handler)
   }
 
   close() {

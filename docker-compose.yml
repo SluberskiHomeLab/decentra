@@ -2,9 +2,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: decentra-postgres
-    # NOTE: Port 5432 is exposed for development and testing purposes.
-    # In production deployments, remove this port mapping or restrict access
-    # to prevent unauthorized database access from external networks.
+    # NOTE: Remove this port mapping in production to prevent external DB access.
     ports:
       - "5432:5432"
     environment:
@@ -22,26 +20,6 @@ services:
       timeout: 5s
       retries: 5
 
-  livekit:
-    image: livekit/livekit-server:v1.9.11
-    container_name: decentra-livekit
-    command: --config /etc/livekit.yaml
-    volumes:
-      - ./livekit.yaml:/etc/livekit.yaml:ro
-      # To enable TURN-over-TLS (turns:// on port 5349), mount your TLS cert:
-      # - /etc/letsencrypt/live/your-domain.com/fullchain.pem:/etc/livekit/tls.crt:ro
-      # - /etc/letsencrypt/live/your-domain.com/privkey.pem:/etc/livekit/tls.key:ro
-    ports:
-      - "7880:7880"       # HTTP/WS signaling — can be proxied by nginx/Caddy
-      - "7881:7881/tcp"   # WebRTC TCP fallback
-      - "7882:7882/udp"   # WebRTC UDP direct
-      - "3478:3478/udp"   # Built-in TURN UDP relay
-      - "3478:3478/tcp"   # Built-in TURN TCP relay (proxy-compatible)
-      - "5349:5349/tcp"   # Built-in TURN-over-TLS (strict firewall compatible)
-    networks:
-      - decentra-network
-    restart: unless-stopped
-
   server:
     build:
       context: ./server
@@ -51,20 +29,12 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - DECENTRA_ENCRYPTION_KEY=${DECENTRA_ENCRYPTION_KEY}
       - DECENTRA_LICENSE_KEY=${DECENTRA_LICENSE_KEY:-}
-      # LiveKit SFU — token signing. Change key/secret before going to production.
-      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
-      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-devsecret_change_me_in_production}
-      # URL the *browser* uses to reach LiveKit (must be reachable from client machines).
-      # In production set this to wss://your-domain.com:7880
-      - LIVEKIT_URL=${LIVEKIT_URL:-ws://localhost:7880}
     networks:
       - decentra-network
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
-      livekit:
-        condition: service_started
 
   frontend:
     build:

@@ -1061,6 +1061,54 @@ def create_voice_state(direct_call_peer=None, server_id=None, channel_id=None,
     return state
 
 
+def get_voice_room_peers(username: str) -> set:
+    """Return the set of other usernames that should receive media from *username*."""
+    state = voice_states.get(username)
+    if not state or not state.get('in_voice'):
+        return set()
+    # Direct/DM call
+    peer = state.get('direct_call_peer')
+    if peer:
+        return {peer}
+    # Server voice channel
+    sid = state.get('server_id')
+    cid = state.get('channel_id')
+    if sid and cid:
+        members = voice_members.get(f"{sid}/{cid}", set())
+        return {m for m in members if m != username}
+    return set()
+
+
+async def relay_media_frame(sender: str, frame: bytes) -> None:
+    """Fan-out a binary media frame to all peers in the sender's voice room.
+
+    Inbound layout:  [frame_type (1)] [IV (12)] [ciphertext]
+    Outbound layout: [frame_type (1)] [sender_len (1)] [sender] [IV (12)] [ciphertext]
+
+    The server never decrypts — it prepends the sender identity and forwards
+    the IV + ciphertext unchanged.
+    """
+    if len(frame) < 13:  # 1 byte type + 12 byte IV minimum
+        return
+    frame_type = frame[0]
+    if frame_type not in (0x01, 0x02, 0x03, 0x04, 0x05, 0x06):
+        return
+    peers = get_voice_room_peers(sender)
+    if not peers:
+        return
+    sender_bytes = sender.encode('utf-8')
+    if len(sender_bytes) > 255:
+        return
+    # [type][sender_len][sender] + [IV + ciphertext from byte 1 onward]
+    outbound = bytes([frame_type, len(sender_bytes)]) + sender_bytes + frame[1:]
+    for ws, user in list(clients.items()):
+        if user in peers:
+            try:
+                await ws.send_bytes(outbound)
+            except Exception:
+                pass
+
+
 async def handler(websocket):
     """Handle client connections."""
     username = None
@@ -1845,6 +1893,10 @@ async def handler(websocket):
         
         # Handle messages from this client
         async for msg in websocket:
+            if msg.type == web.WSMsgType.BINARY:
+                # Binary media frame — relay to voice-room peers, never decoded here
+                await relay_media_frame(username, msg.data)
+                continue
             if msg.type == web.WSMsgType.TEXT:
                 try:
                     data = json.loads(msg.data)
@@ -5366,16 +5418,11 @@ async def handler(websocket):
                                 }))
 
                                 # Send voice_channel_joined directly to the joining user.
-                                # Includes a LiveKit token so the client can switch to SFU
-                                # mode; token is None when LiveKit is not configured.
-                                room_name = f"{server_id}__{channel_id}"
-                                livekit_token = generate_livekit_token(
-                                    room_name, username, username
-                                )
-                                # Generate (or reuse) a random per-session E2EE key for the room.
-                                # All participants in the same room session share this key so that
-                                # the SFU cannot passively decrypt their media.
+                                # Generate (or reuse) a random per-session E2EE key.
+                                # All participants share this key; the server relays
+                                # encrypted binary frames without decrypting them.
                                 import base64 as _b64, secrets as _sec
+                                room_name = f"{server_id}__{channel_id}"
                                 if room_name not in voice_e2ee_keys:
                                     voice_e2ee_keys[room_name] = _b64.urlsafe_b64encode(
                                         _sec.token_bytes(32)
@@ -5385,8 +5432,6 @@ async def handler(websocket):
                                     'server_id': server_id,
                                     'channel_id': channel_id,
                                     'participants': [m['username'] for m in voice_members_list],
-                                    'livekit_token': livekit_token,
-                                    'livekit_url': LIVEKIT_URL if livekit_token else None,
                                     'e2ee_key': voice_e2ee_keys.get(room_name),
                                 }))
                                 print(f"[{datetime.now().strftime('%H:%M:%S')}] {username} joined voice channel {channel_id}")
@@ -7484,26 +7529,18 @@ async def handler(websocket):
                                 dm_e2ee_key=dm_e2ee_key,
                             )
 
-                            # Generate individual LiveKit tokens for each party
-                            callee_token = generate_livekit_token(dm_room_name, username, username)
-                            caller_token = generate_livekit_token(dm_room_name, caller_username, caller_username)
-
-                            # Tell the callee (this user) — connect to LiveKit now
+                            # Tell callee — begin binary media relay session
                             await websocket.send_str(json.dumps({
                                 'type': 'voice_call_accepted',
                                 'from': caller_username,
-                                'livekit_token': callee_token,
-                                'livekit_url': LIVEKIT_URL if callee_token else None,
                                 'e2ee_key': dm_e2ee_key,
                                 'dm_room_name': dm_room_name,
                             }))
 
-                            # Tell the caller — connect to LiveKit now
+                            # Tell caller — begin binary media relay session
                             await send_to_user(caller_username, json.dumps({
                                 'type': 'voice_call_accepted',
                                 'from': username,
-                                'livekit_token': caller_token,
-                                'livekit_url': LIVEKIT_URL if caller_token else None,
                                 'e2ee_key': dm_e2ee_key,
                                 'dm_room_name': dm_room_name,
                             }))
