@@ -122,7 +122,7 @@ voice_states = {}
 voice_members = {}
 # Per-session random E2EE keys for SFU rooms: {room_name: base64_key}
 # Generated on the first participant joining; cleared when the room empties.
-# Keeps the SFU (LiveKit) operator from decrypting media without the Decentra server's key.
+# Keeps relay infrastructure from decrypting media without the Decentra server's key.
 voice_e2ee_keys = {}
 # Store soundboard play cooldowns: {username: last_play_timestamp}
 soundboard_cooldowns = {}

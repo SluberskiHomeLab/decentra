@@ -32,7 +32,6 @@
  */
 
 import type { WsClient } from '../api/wsClient'
-import { loadVoiceQualityPreset } from './voiceQuality'
 
 // ── Frame type constants ───────────────────────────────────────────────────
 const FT_AUDIO_INIT   = 0x01
@@ -218,7 +217,6 @@ export class VoiceClient {
     this.ws = ws
     this.username = username
     this.loadDevicePrefs()
-    loadVoiceQualityPreset() // ensure pref is initialised
   }
 
   // ── Public API (mirrors VoiceChatSFU so ChatPage needs minimal changes) ───

@@ -231,9 +231,6 @@ export function ChatPage() {
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0)
   // Role mentions accumulated while composing
   const [pendingRoleMentions, setPendingRoleMentions] = useState<string[]>([])
-  // const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
-  // const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([])
-  // const [speakerDevices, setSpeakerDevices] = useState<MediaDeviceInfo[]>([])
   const [selectedMicrophone, setSelectedMicrophone] = useState<string | null>(null)
   const [selectedSpeaker, setSelectedSpeaker] = useState<string | null>(null)
   const [selectedCamera, setSelectedCamera] = useState<string | null>(null)
