@@ -219,6 +219,8 @@ export function ChatPage() {
   const [isVideoEnabled, setIsVideoEnabled] = useState(false)
   const [isScreenSharing, setIsScreenSharing] = useState(false)
   const [isE2EEActive, setIsE2EEActive] = useState(false)
+  const [localCameraStream, setLocalCameraStream] = useState<MediaStream | null>(null)
+  const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null)
   // Outgoing DM call waiting for acceptance
   const [isCallingPeer, setIsCallingPeer] = useState<string | null>(null)
   // Incoming direct-call state — set when the server sends 'incoming_voice_call'
@@ -573,6 +575,8 @@ export function ChatPage() {
       setIsInVoice(sfu.getIsInVoice())
       setIsVoiceConnecting(sfu.getIsConnecting())
       setIsE2EEActive(sfu.getIsE2EEActive())
+      setLocalCameraStream(sfu.getLocalCameraStream())
+      setLocalScreenStream(sfu.getLocalScreenStream())
     })
     sfu.setOnRemoteStreamChange((peer, stream) => {
       setRemoteStreams((prev) => {
@@ -3905,6 +3909,18 @@ export function ChatPage() {
                   ) : (
                     <div className="flex flex-col gap-4 h-full overflow-auto">
                     {/* Screen share tiles — shown when any participant is sharing */}
+                    {isScreenSharing && localScreenStream && (
+                      <div key="screen-local" className="relative rounded-2xl border border-purple-500/40 bg-bg-secondary/60 overflow-hidden w-full" style={{ minHeight: 300 }}>
+                        <video
+                          ref={(video) => { if (video) { video.srcObject = localScreenStream; video.play().catch(console.error) } }}
+                          autoPlay playsInline muted
+                          className="w-full h-full object-contain"
+                        />
+                        <div className="absolute top-2 left-3 flex items-center gap-1.5 rounded-full bg-black/60 px-2 py-0.5 text-xs text-purple-300">
+                          🖥️ {init?.username} (You)
+                        </div>
+                      </div>
+                    )}
                     {Array.from(remoteScreenStreams.entries()).map(([peer, screenStream]) => (
                       <div key={`screen-${peer}`} className="relative rounded-2xl border border-purple-500/40 bg-bg-secondary/60 overflow-hidden w-full" style={{ minHeight: 300 }}>
                         <video
@@ -3913,7 +3929,7 @@ export function ChatPage() {
                           className="w-full h-full object-contain"
                         />
                         <div className="absolute top-2 left-3 flex items-center gap-1.5 rounded-full bg-black/60 px-2 py-0.5 text-xs text-purple-300">
-                          🖥️ {peer} {peer === init?.username ? '(You)' : ''}
+                          🖥️ {peer}
                         </div>
                       </div>
                     ))}
@@ -3926,11 +3942,11 @@ export function ChatPage() {
                       'grid-cols-4'
                     }`}>
                       {voiceParticipants.map((participantUsername) => {
-                        const stream = remoteStreams.get(participantUsername)
+                        const isCurrentUser = participantUsername === init?.username
+                        const stream = isCurrentUser ? localCameraStream : remoteStreams.get(participantUsername)
                         const participant = serverMembers[selectedServerId ?? '']?.find(
                           (m) => m.username === participantUsername
                         )
-                        const isCurrentUser = participantUsername === init?.username
 
                         return (
                           <div

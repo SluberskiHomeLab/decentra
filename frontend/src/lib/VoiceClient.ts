@@ -391,12 +391,14 @@ export class VoiceClient {
 
   // ── Getters ───────────────────────────────────────────────────────────────
 
-  getIsMuted():        boolean { return this.isMuted }
-  getIsVideoEnabled(): boolean { return this.isCameraEnabled }
-  getIsScreenSharing():boolean { return this.isScreenSharing }
-  getIsInVoice():      boolean { return this.isConnected }
-  getIsConnecting():   boolean { return this.isConnecting }
-  getIsE2EEActive():   boolean { return this.cryptoKey !== null }
+  getIsMuted():           boolean            { return this.isMuted }
+  getIsVideoEnabled():    boolean            { return this.isCameraEnabled }
+  getIsScreenSharing():   boolean            { return this.isScreenSharing }
+  getIsInVoice():         boolean            { return this.isConnected }
+  getIsConnecting():      boolean            { return this.isConnecting }
+  getIsE2EEActive():      boolean            { return this.cryptoKey !== null }
+  getLocalCameraStream(): MediaStream | null { return this.localCameraStream }
+  getLocalScreenStream(): MediaStream | null { return this.localScreenStream }
 
   getCurrentChannel() { return { server: this.currentServerId, channel: this.currentChannelId } }
   getPendingChannel() { return { server: null, channel: null } }
