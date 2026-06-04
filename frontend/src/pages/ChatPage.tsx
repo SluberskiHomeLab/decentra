@@ -234,11 +234,11 @@ export function ChatPage() {
   // const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
   // const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([])
   // const [speakerDevices, setSpeakerDevices] = useState<MediaDeviceInfo[]>([])
-  const [, setSelectedMicrophone] = useState<string | null>(null)
-  const [, setSelectedSpeaker] = useState<string | null>(null)
-  const [, setSelectedCamera] = useState<string | null>(null)
-  const [, setScreenShareResolution] = useState(1080)
-  const [, setScreenShareFramerate] = useState(60)
+  const [selectedMicrophone, setSelectedMicrophone] = useState<string | null>(null)
+  const [selectedSpeaker, setSelectedSpeaker] = useState<string | null>(null)
+  const [selectedCamera, setSelectedCamera] = useState<string | null>(null)
+  const [screenShareResolution, setScreenShareResolution] = useState(1080)
+  const [screenShareFramerate, setScreenShareFramerate] = useState(60)
 
   // Account settings state
   const [profileBio, setProfileBio] = useState('')

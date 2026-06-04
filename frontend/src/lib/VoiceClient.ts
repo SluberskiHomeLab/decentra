@@ -64,7 +64,7 @@ interface MsePlayer {
   ms: MediaSource
   sb: SourceBuffer | null
   /** Chunks waiting for SourceBuffer to finish updating. */
-  queue: Uint8Array[]
+  queue: Uint8Array<ArrayBuffer>[]
   ready: boolean
   mimeType: string
   capturedStream: MediaStream | null
@@ -104,7 +104,7 @@ function createMsePlayer(
   return player
 }
 
-function appendToPlayer(player: MsePlayer, data: Uint8Array): void {
+function appendToPlayer(player: MsePlayer, data: Uint8Array<ArrayBuffer>): void {
   if (player.ms.readyState !== 'open') { player.queue.push(data); return }
   player.queue.push(data)
   drainQueue(player)
@@ -628,7 +628,7 @@ export class VoiceClient {
 
   // ── Audio playback ────────────────────────────────────────────────────────
 
-  private handleAudioInit(sender: string, chunk: Uint8Array): void {
+  private handleAudioInit(sender: string, chunk: Uint8Array<ArrayBuffer>): void {
     // A new init segment means the sender restarted their recorder.
     // Destroy any existing player so we start fresh with the new header.
     const existing = this.audioPlayers.get(sender)
@@ -647,14 +647,14 @@ export class VoiceClient {
     appendToPlayer(player, chunk)
   }
 
-  private handleAudioChunk(sender: string, chunk: Uint8Array): void {
+  private handleAudioChunk(sender: string, chunk: Uint8Array<ArrayBuffer>): void {
     const player = this.audioPlayers.get(sender)
     if (player) appendToPlayer(player, chunk)
   }
 
   // ── Video playback ────────────────────────────────────────────────────────
 
-  private handleVideoInit(sender: string, chunk: Uint8Array, isScreen: boolean): void {
+  private handleVideoInit(sender: string, chunk: Uint8Array<ArrayBuffer>, isScreen: boolean): void {
     const map = isScreen ? this.screenPlayers : this.videoPlayers
     const existing = map.get(sender)
     if (existing) { destroyPlayer(existing); map.delete(sender) }
@@ -680,7 +680,7 @@ export class VoiceClient {
     }, { once: true })
   }
 
-  private handleVideoChunk(sender: string, chunk: Uint8Array, isScreen: boolean): void {
+  private handleVideoChunk(sender: string, chunk: Uint8Array<ArrayBuffer>, isScreen: boolean): void {
     const map = isScreen ? this.screenPlayers : this.videoPlayers
     const player = map.get(sender)
     if (player) appendToPlayer(player, chunk)

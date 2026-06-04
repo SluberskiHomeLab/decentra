@@ -5,6 +5,8 @@ FROM python:3.11-slim-bookworm AS builder
 
 WORKDIR /app
 
+COPY requirements.txt .
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libldap2-dev \

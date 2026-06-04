@@ -11,6 +11,7 @@ const FEATURE_LABELS: Record<keyof LicenseFeatures, string> = {
   audit_logs: 'Audit Logs',
   sso: 'Single Sign-On (SSO)',
   scim: 'SCIM Provisioning',
+  group_dms: 'Group DMs',
 }
 
 const LIMIT_LABELS: Record<keyof LicenseLimits, string> = {
