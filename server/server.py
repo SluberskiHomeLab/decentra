@@ -87,16 +87,6 @@ JWT_SECRET_KEY = _load_jwt_secret_key()
 JWT_ALGORITHM = 'HS256'
 JWT_EXPIRATION_HOURS = 24  # Token expires after 24 hours
 
-# ── LiveKit SFU Configuration ───────────────────────────────────────────────
-# These env vars must match the keys: block in livekit.yaml.
-# LIVEKIT_URL is the WebSocket URL that BROWSERS use to connect to LiveKit;
-# set to wss://your-domain.com:7880 in production.
-LIVEKIT_API_KEY    = os.environ.get('LIVEKIT_API_KEY', '')
-LIVEKIT_API_SECRET = os.environ.get('LIVEKIT_API_SECRET', '')
-LIVEKIT_URL        = os.environ.get('LIVEKIT_URL', 'ws://localhost:7880')
-# Coturn/TURN relay is now handled by LiveKit's built-in TURN server (see livekit.yaml).
-# Legacy COTURN_* env vars are accepted but ignored for backward compatibility.
-# ────────────────────────────────────────────────────────────────────────────
 
 # Store pending signups temporarily (in-memory)
 # Format: {username: {password_hash, email, invite_code, inviter_username}}
@@ -273,35 +263,6 @@ def verify_jwt_token(token):
     except jwt.InvalidTokenError:
         return None  # Invalid token
 
-
-def generate_livekit_token(room_name: str, participant_identity: str, participant_name: str = '') -> str | None:
-    """
-    Generate a signed LiveKit room-join JWT for a participant.
-
-    Returns None if LIVEKIT_API_KEY or LIVEKIT_API_SECRET are not configured,
-    which means the server is running without the SFU — callers fall back to
-    the existing P2P WebRTC path.
-    """
-    if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
-        return None
-
-    now = int(time.time())
-    claims = {
-        'iss': LIVEKIT_API_KEY,
-        'sub': participant_identity,
-        'exp': now + 3600,    # 1-hour token lifetime (hardened from 24 h)
-        'nbf': now,
-        'video': {
-            'room': room_name,
-            'roomJoin': True,
-            'canPublish': True,
-            'canSubscribe': True,
-        },
-        'metadata': json.dumps({'room': room_name}),
-    }
-    if participant_name:
-        claims['name'] = participant_name
-    return jwt.encode(claims, LIVEKIT_API_SECRET, algorithm='HS256')
 
 
 def check_password_reset_rate_limit(identifier: str) -> bool:
@@ -8131,14 +8092,6 @@ async def main():
     
     print("Starting HTTPS server on https://0.0.0.0:8765")
     print("Starting WebSocket server on wss://0.0.0.0:8765")
-    # ── Voice configuration sanity checks ────────────────────────────────────
-    if not COTURN_SECRET:
-        print("[WARN] COTURN_SECRET is not set — voice relay (TURN) will be disabled. "
-              "Set COTURN_SECRET in your .env file.")
-    if 'localhost' in LIVEKIT_URL or '127.0.0.1' in LIVEKIT_URL:
-        print("[WARN] LIVEKIT_URL contains 'localhost' — browsers on other machines will "
-              "not be able to reach LiveKit. Set LIVEKIT_URL to your public hostname/IP "
-              "(e.g. wss://your-domain.com:7880) in production.")
     print("=" * 50)
     
     # Initialize database counters from existing data
@@ -8151,11 +8104,6 @@ async def main():
     # Create aiohttp application
     app = web.Application()
     app.router.add_get('/ws', websocket_handler)
-
-    # ICE/TURN credentials are now distributed by LiveKit's built-in TURN server.
-    # The /api/voice/ice-servers endpoint has been removed — VoiceChatSFU.ts no
-    # longer fetches credentials; LiveKit handles them in the room-join handshake.
-    # ─────────────────────────────────────────────────────────────────────────
     setup_api_routes(app, db, verify_jwt_token, broadcast_to_server, send_to_user, get_or_create_dm, get_avatar_data, jwt_generate_func=generate_jwt_token)
     
     # Run the server with SSL
