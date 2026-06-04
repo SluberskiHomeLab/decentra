@@ -3297,7 +3297,6 @@ async def handler(websocket):
                     
                     elif data.get('type') == 'create_group_dm':
                         # ── Group DM creation (standard tier required) ─────────────────
-                        from license_validator import check_feature_access
                         if not check_feature_access('group_dms'):
                             await websocket.send_str(json.dumps({
                                 'type': 'error',
@@ -3775,7 +3774,6 @@ async def handler(websocket):
                             settings = data.get('settings', {})
                             
                             # Fetch current settings once — used for diffing in the license gates
-                            from license_validator import check_feature_access as _check_feat, license_validator as _lv
                             current_settings = db.get_admin_settings()
                             
                             # SSO / SCIM license gate — only fires when values actually change
@@ -3789,7 +3787,7 @@ async def handler(websocket):
                                 settings.get(k) != current_settings.get(k)
                                 for k in sso_fields if k in settings
                             )
-                            if has_sso_changes and not _check_feat('sso'):
+                            if has_sso_changes and not check_feature_access('sso'):
                                 await websocket.send_str(json.dumps({
                                     'type': 'error',
                                     'message': 'SSO/SCIM configuration requires a paid license tier.'
@@ -3802,7 +3800,7 @@ async def handler(websocket):
                                 settings.get(k) != current_settings.get(k)
                                 for k in branding_fields if k in settings
                             )
-                            if has_branding_changes and _lv.get_tier() == 'community':
+                            if has_branding_changes and license_validator.get_tier() == 'community':
                                 await websocket.send_str(json.dumps({
                                     'type': 'error',
                                     'message': 'Custom server branding requires a paid license.'
