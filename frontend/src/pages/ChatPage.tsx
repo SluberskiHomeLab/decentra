@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useRef, useState } from 'react'
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { wsClient } from '../api/wsClient'
 import { clearStoredAuth, getStoredAuth, setStoredAuth } from '../auth/storage'
@@ -113,6 +113,12 @@ export function ChatPage() {
   const [showSlashPicker, setShowSlashPicker] = useState(false)
   const [slashFilter, setSlashFilter] = useState('')
   const [serverName, setServerName] = useState('')
+  const [showCreateServerPopover, setShowCreateServerPopover] = useState(false)
+  const [draggedServerId, setDraggedServerId] = useState<string | null>(null)
+  const [dragOverServerId, setDragOverServerId] = useState<string | null>(null)
+  const [serverOrder, setServerOrder] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('decentra_server_order') ?? '[]') } catch { return [] }
+  })
   const [channelName, setChannelName] = useState('')
   const [channelType, setChannelType] = useState<'text' | 'voice'>('text')
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('')
@@ -2298,6 +2304,24 @@ export function ChatPage() {
     setServerName('')
   }
 
+  const saveServerOrder = (ids: string[]) => {
+    setServerOrder(ids)
+    localStorage.setItem('decentra_server_order', JSON.stringify(ids))
+  }
+
+  const sortedServers = useMemo(() => {
+    const servers = init?.servers ?? []
+    if (serverOrder.length === 0) return servers
+    return [...servers].sort((a, b) => {
+      const ai = serverOrder.indexOf(a.id)
+      const bi = serverOrder.indexOf(b.id)
+      if (ai === -1 && bi === -1) return 0
+      if (ai === -1) return 1
+      if (bi === -1) return -1
+      return ai - bi
+    })
+  }, [init?.servers, serverOrder])
+
   const createChannel = () => {
     const name = channelName.trim()
     if (!name || !contextServerId) return
@@ -3197,14 +3221,46 @@ export function ChatPage() {
 
           {/* Server icons */}
           <div className="flex-1 overflow-auto p-3 space-y-2 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-            {(init?.servers ?? []).map((server) => {
+            {sortedServers.map((server) => {
               const hasUnread = (server.unread_count ?? 0) > 0
               const hasMention = server.has_mention ?? false
-              
+              const isDragOver = dragOverServerId === server.id
+
               return (
                 <button
                   key={server.id}
                   type="button"
+                  draggable
+                  onDragStart={(e) => {
+                    setDraggedServerId(server.id)
+                    e.dataTransfer.effectAllowed = 'move'
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault()
+                    e.dataTransfer.dropEffect = 'move'
+                    if (draggedServerId && draggedServerId !== server.id) {
+                      setDragOverServerId(server.id)
+                    }
+                  }}
+                  onDragLeave={() => setDragOverServerId(null)}
+                  onDrop={(e) => {
+                    e.preventDefault()
+                    if (!draggedServerId || draggedServerId === server.id) return
+                    const current = sortedServers.map(s => s.id)
+                    const fromIdx = current.indexOf(draggedServerId)
+                    const toIdx = current.indexOf(server.id)
+                    if (fromIdx === -1 || toIdx === -1) return
+                    const reordered = [...current]
+                    reordered.splice(fromIdx, 1)
+                    reordered.splice(toIdx, 0, draggedServerId)
+                    saveServerOrder(reordered)
+                    setDragOverServerId(null)
+                    setDraggedServerId(null)
+                  }}
+                  onDragEnd={() => {
+                    setDraggedServerId(null)
+                    setDragOverServerId(null)
+                  }}
                   onClick={() => {
                     // If the user hasn't accepted rules yet, show the rules modal instead
                     if (server.rules_pending) {
@@ -3228,7 +3284,9 @@ export function ChatPage() {
                       wsClient.getServerMembers({ type: 'get_server_members', server_id: server.id })
                     }
                   }}
-                  className={`relative flex h-12 w-12 items-center justify-center rounded-2xl text-xl transition overflow-hidden ${
+                  className={`relative flex h-12 w-12 items-center justify-center rounded-2xl text-xl transition overflow-hidden cursor-grab active:cursor-grabbing ${
+                    isDragOver ? 'scale-110 ring-2 ring-sky-400/60' :
+                    draggedServerId === server.id ? 'opacity-40' :
                     server.rules_pending ? 'bg-amber-500/20 ring-2 ring-amber-500/40' :
                     selectedServerId === server.id ? 'bg-sky-500 text-white' : 'bg-bg-tertiary text-text-secondary hover:bg-bg-tertiary/60 hover:rounded-xl'
                   }`}
@@ -3248,6 +3306,52 @@ export function ChatPage() {
                 </button>
               )
             })}
+
+            {/* Add server button */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowCreateServerPopover(!showCreateServerPopover)}
+                className="flex h-12 w-12 items-center justify-center rounded-2xl bg-bg-tertiary text-text-secondary hover:bg-emerald-500/20 hover:text-emerald-400 hover:rounded-xl transition text-2xl font-light"
+                title="Create a server"
+              >
+                +
+              </button>
+              {showCreateServerPopover && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowCreateServerPopover(false)} />
+                  <div className="absolute left-14 top-0 z-50 w-56 rounded-xl border border-white/10 bg-bg-secondary shadow-xl p-3 flex flex-col gap-2">
+                  <div className="text-xs font-semibold text-text-muted">New Server</div>
+                  <input
+                    autoFocus
+                    value={serverName}
+                    onChange={(e) => setServerName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        createServer()
+                        setShowCreateServerPopover(false)
+                      } else if (e.key === 'Escape') {
+                        setShowCreateServerPopover(false)
+                      }
+                    }}
+                    placeholder="Server name"
+                    className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      createServer()
+                      setShowCreateServerPopover(false)
+                    }}
+                    disabled={!serverName.trim() || wsClient.readyState !== WebSocket.OPEN}
+                    className="rounded-lg bg-sky-500 px-3 py-1.5 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                  >
+                    Create
+                  </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
 
           {/* Profile section at bottom */}
@@ -4869,28 +4973,6 @@ export function ChatPage() {
                       </button>
                     </div>
 
-                    <div className="border-t border-border-primary pt-4">
-                      <div className="text-xs font-medium text-text-muted mb-3">Create Server</div>
-                      <div className="flex gap-2">
-                        <input
-                          value={serverName}
-                          onChange={(e) => setServerName(e.target.value)}
-                          placeholder="New server name"
-                          className="flex-1 rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            createServer()
-                            setIsUserMenuOpen(false)
-                          }}
-                          disabled={!serverName.trim() || wsClient.readyState !== WebSocket.OPEN}
-                          className="shrink-0 rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
-                        >
-                          Create
-                        </button>
-                      </div>
-                    </div>
                   </div>
                 ) : (
                   <div className="flex flex-col max-h-[calc(100vh-200px)]">
